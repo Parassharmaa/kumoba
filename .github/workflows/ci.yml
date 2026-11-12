@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: runtime and sdk (linux x86_64, KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .local/libkrun-closefix
+            .local/libkrunfw
+            .local/downloads
+          key: libkrun-${{ runner.os }}-${{ hashFiles('patches/**', 'scripts/build-libkrun-closefix.sh', 'scripts/prepare-linux-host.sh') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/ci-linux.sh
+      - run: bash scripts/ci-sdk.sh
+
+  image:
+    name: default image and desktop (linux x86_64, KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .local/libkrun-closefix
+            .local/libkrunfw
+            .local/downloads
+          key: libkrun-${{ runner.os }}-${{ hashFiles('patches/**', 'scripts/build-libkrun-closefix.sh', 'scripts/prepare-linux-host.sh') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/ci-free-disk.sh --android
+      - run: bash scripts/ci-image.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-screenshot
+          path: .local/ci-image/desktop.png
+          if-no-files-found: ignore

@@ -82,8 +82,33 @@ where
     });
 }
 
+const USAGE: &str = "\
+kumobad: serves microVM sandboxes over HTTP
+
+Configuration is read from the environment:
+  KUMOBAD_STATE_DIR     directory for sandbox disks, metadata and keys (required)
+  KUMOBAD_WORKER        path to the kumoba-worker binary (required)
+  KUMOBAD_IMAGES        name=/path/to/image.raw[,name2=...] (required)
+  KUMOBAD_TOKEN_FILE    file holding the bearer token, 32 bytes or more (required)
+  KUMOBAD_SOCKET        Unix socket to listen on (mode 0600)
+  KUMOBAD_LISTEN        loopback host:port to listen on, e.g. 127.0.0.1:7788
+  KUMOBAD_MAX_RUNNING   concurrently running sandboxes (default 4)
+  KUMOBAD_LIBKRUN       libkrun.so.1 to load (Linux; default: library search path)
+  KUMOBAD_LIBKRUNFW     libkrunfw.so.5 to load (Linux; default: library search path)
+Set KUMOBAD_SOCKET, KUMOBAD_LISTEN or both.
+";
+
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print!("{USAGE}");
+        return;
+    }
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("kumobad {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if let Err(error) = run().await {
         eprintln!(
             "{}",

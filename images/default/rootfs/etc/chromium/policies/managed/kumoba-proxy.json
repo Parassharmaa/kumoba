@@ -1,0 +1,7 @@
+{
+  "ProxySettings": {
+    "ProxyMode": "fixed_servers",
+    "ProxyServer": "http://127.0.0.1:3128",
+    "ProxyBypassList": "localhost;127.0.0.1;<-loopback>"
+  }
+}

@@ -1,0 +1,254 @@
+#!/usr/bin/python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DISPLAY = ":0"
+WIDTH = int(os.environ.get("KUMOBA_DESKTOP_WIDTH", "1024"))
+HEIGHT = int(os.environ.get("KUMOBA_DESKTOP_HEIGHT", "768"))
+VNC_PORT = 5901
+NOVNC_PORT = 6080
+STATE = Path.home() / ".kumoba-desktop"
+PROCESSES = {
+    "xvfb": ["Xvfb", DISPLAY, "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-ac", "-nolisten", "tcp"],
+    "xfce4": ["startxfce4"],
+    "x11vnc": [
+        "x11vnc", "-display", DISPLAY, "-rfbport", str(VNC_PORT), "-localhost", "-shared",
+        "-forever", "-nopw", "-noxdamage", "-quiet",
+    ],
+    "novnc": [
+        "websockify", "--web", "/usr/share/novnc", f"127.0.0.1:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}",
+    ],
+}
+PATTERNS = {
+    "xvfb": f"Xvfb {DISPLAY}",
+    "xfce4": "xfce4-session",
+    "x11vnc": f"x11vnc -display {DISPLAY}",
+    "novnc": f"websockify --web /usr/share/novnc",
+}
+KEYS = {
+    "enter": "Return", "return": "Return", "escape": "Escape", "esc": "Escape", "tab": "Tab",
+    "backspace": "BackSpace", "delete": "Delete", "del": "Delete", "insert": "Insert",
+    "space": "space", "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "pageup": "Prior", "page_up": "Prior", "pagedown": "Next", "page_down": "Next",
+    "home": "Home", "end": "End", "capslock": "Caps_Lock", "printscreen": "Print",
+    "=": "equal", "-": "minus", ",": "comma", ".": "period", "/": "slash", ";": "semicolon",
+    "'": "apostrophe", "[": "bracketleft", "]": "bracketright", "\\": "backslash", "`": "grave",
+    "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "shift": "shift", "cmd": "super",
+    "super": "super", "meta": "super", "win": "super", "plus": "plus",
+}
+BUTTONS = {"left": "1", "middle": "2", "right": "3"}
+
+
+def env():
+    values = dict(os.environ, DISPLAY=DISPLAY)
+    bus = STATE / "dbus.env"
+    if bus.is_file():
+        for line in bus.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key:
+                values[key] = value
+    return values
+
+
+def running(name):
+    return subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", PATTERNS[name]], capture_output=True).returncode == 0
+
+
+def spawn(name):
+    STATE.mkdir(parents=True, exist_ok=True)
+    log = open(STATE / f"{name}.log", "ab")
+    subprocess.Popen(PROCESSES[name], env=env(), stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def wait_for(check, seconds=15):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if check():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def display_ready():
+    return subprocess.run(["xdpyinfo"], env=env(), capture_output=True).returncode == 0
+
+
+def start_process(name):
+    if name == "xvfb":
+        if not running("xvfb"):
+            Path(f"/tmp/.X{DISPLAY[1:]}-lock").unlink(missing_ok=True)
+            spawn("xvfb")
+        if not wait_for(display_ready):
+            raise SystemExit("Xvfb did not become ready")
+        return
+    if name == "xfce4":
+        output = subprocess.run(["dbus-launch", "--sh-syntax"], env=env(), capture_output=True, text=True).stdout
+        pairs = {}
+        for line in output.splitlines():
+            key, _, rest = line.partition("=")
+            if key.startswith("DBUS_SESSION_BUS"):
+                pairs[key] = rest.split(";")[0].strip("'")
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / "dbus.env").write_text("".join(f"{k}={v}\n" for k, v in pairs.items()) + "NO_AT_BRIDGE=0\nGTK_MODULES=gail:atk-bridge\n")
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility", "true"], env=env(), capture_output=True)
+    spawn(name)
+    wait_for(lambda: running(name), 10)
+
+
+def stop_process(name):
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-f", PATTERNS[name]], capture_output=True)
+    wait_for(lambda: not running(name), 5)
+
+
+def start():
+    for name in ["xvfb", "xfce4", "x11vnc", "novnc"]:
+        if not running(name):
+            start_process(name)
+    print(json.dumps({name: running(name) for name in PROCESSES}))
+
+
+def restart(name):
+    stop_process(name)
+    start_process(name)
+    print(json.dumps({"running": running(name)}))
+
+
+def screenshot(path, compressed, fmt, quality, scale, cursor):
+    STATE.mkdir(parents=True, exist_ok=True)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    raw = STATE / f"screen-{os.getpid()}-{time.monotonic_ns()}.png"
+    command = ["scrot", "-o", "-z"] + (["-p"] if cursor else []) + [str(raw)]
+    subprocess.run(command, env=env(), check=True, capture_output=True)
+    if not compressed:
+        shutil.move(raw, path)
+        print(json.dumps({"path": path}))
+        return
+    from PIL import Image
+
+    with Image.open(raw) as source:
+        image = source.copy()
+    raw.unlink(missing_ok=True)
+    if scale and scale != 1:
+        image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
+    if fmt == "jpeg":
+        image.convert("RGB").save(path, "JPEG", quality=quality)
+    else:
+        image.save(path, "PNG", optimize=True)
+    print(json.dumps({"path": path}))
+
+
+def xdotool(*args):
+    subprocess.run(["xdotool", *args], env=env(), check=True, capture_output=True)
+
+
+def keysym(key):
+    lowered = key.lower()
+    if lowered in KEYS:
+        return KEYS[lowered]
+    if len(lowered) >= 2 and lowered[0] == "f" and lowered[1:].isdigit():
+        return lowered.upper()
+    return key
+
+
+def accessibility(max_depth, output=None):
+    os.environ.update(env())
+    import pyatspi
+
+    budget = {"nodes": 0, "truncated": False}
+
+    def node(accessible, depth):
+        budget["nodes"] += 1
+        if budget["nodes"] > 20000:
+            budget["truncated"] = True
+            return None
+        try:
+            role = accessible.getRoleName()
+            name = accessible.name or ""
+            states = [pyatspi.stateToString(state) for state in accessible.getState().getStates()]
+        except Exception:
+            return None
+        result = {"role": role, "name": name, "states": states}
+        try:
+            extents = accessible.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            result["bounds"] = {"x": extents.x, "y": extents.y, "width": extents.width, "height": extents.height}
+        except Exception:
+            pass
+        if depth >= max_depth:
+            if accessible.childCount:
+                budget["truncated"] = True
+            return result
+        children = []
+        for index in range(min(accessible.childCount, 2000)):
+            try:
+                child = node(accessible.getChildAtIndex(index), depth + 1)
+            except Exception:
+                child = None
+            if child:
+                children.append(child)
+        result["children"] = children
+        return result
+
+    root = node(pyatspi.Registry.getDesktop(0), 0)
+    payload = json.dumps({"root": root, "truncated": budget["truncated"]})
+    if output is None:
+        print(payload)
+        return
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    Path(output).write_text(payload)
+    print(json.dumps({"path": output}))
+
+
+def main():
+    command, *args = sys.argv[1:]
+    if command == "start":
+        start()
+    elif command == "status":
+        print(json.dumps({"running": running(args[0])}))
+    elif command == "restart":
+        restart(args[0])
+    elif command == "display":
+        output = subprocess.run(["xdpyinfo"], env=env(), capture_output=True, text=True, check=True).stdout
+        line = next(line for line in output.splitlines() if "dimensions:" in line)
+        width, height = line.split()[1].split("x")
+        print(json.dumps({"displays": [{"isActive": True, "width": int(width), "height": int(height)}]}))
+    elif command == "screenshot":
+        path, mode, fmt, quality, scale, cursor = args
+        screenshot(path, mode == "compressed", fmt, int(quality), float(scale), cursor == "1")
+    elif command == "position":
+        output = subprocess.run(["xdotool", "getmouselocation", "--shell"], env=env(), capture_output=True, text=True, check=True).stdout
+        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        print(json.dumps({"x": int(values["X"]), "y": int(values["Y"])}))
+    elif command == "click":
+        x, y, button, double = args
+        xdotool("mousemove", x, y, "click", "--repeat", "2" if double == "1" else "1", BUTTONS.get(button, "1"))
+    elif command == "move":
+        xdotool("mousemove", *args)
+    elif command == "drag":
+        sx, sy, ex, ey, button = args
+        number = BUTTONS.get(button, "1")
+        xdotool("mousemove", sx, sy, "mousedown", number, "mousemove", "--sync", ex, ey, "mouseup", number)
+    elif command == "scroll":
+        x, y, direction, amount = args
+        xdotool("mousemove", x, y, "click", "--repeat", amount, "4" if direction == "up" else "5")
+    elif command == "type":
+        xdotool("type", "--delay", "12", "--", sys.stdin.read())
+    elif command == "press":
+        key, *modifiers = args
+        xdotool("key", "--", "+".join([keysym(modifier) for modifier in modifiers] + [keysym(key)]))
+    elif command == "hotkey":
+        xdotool("key", "--", "+".join(keysym(part) for part in args[0].split("+")))
+    elif command == "a11y":
+        accessibility(int(args[0]))
+    elif command == "a11y-file":
+        accessibility(int(args[0]), args[1])
+    else:
+        raise SystemExit(f"unknown command {command}")
+
+
+if __name__ == "__main__":
+    main()
