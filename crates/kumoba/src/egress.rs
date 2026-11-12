@@ -747,9 +747,12 @@ pub(crate) async fn connect(
     endpoint: &EgressEndpoint,
     egress: &EgressConfig,
 ) -> io::Result<TcpStream> {
-    if let Some(proxy) = egress.proxy_for(&endpoint.host) {
-        proxy_destination_allowed(endpoint, egress).await?;
-        return connect_via_proxy(proxy, endpoint).await;
+    let proxy = egress.proxy_for(&endpoint.host);
+    if proxy.is_some() && looks_internal(&endpoint.host) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "internal host names are not tunnelled through the upstream proxy",
+        ));
     }
     let permit = DNS_SLOTS
         .get_or_init(|| Arc::new(Semaphore::new(8)))
@@ -765,6 +768,12 @@ pub(crate) async fn connect(
     let addresses = timeout(SETUP_TIMEOUT, lookup)
         .await?
         .map_err(io::Error::other)??;
+    if let Some(proxy) = proxy {
+        let address = *addresses
+            .first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no destination addresses"))?;
+        return connect_via_proxy(proxy, address).await;
+    }
     timeout(SETUP_TIMEOUT, async {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no destination addresses");
         for address in addresses {
@@ -798,39 +807,16 @@ fn looks_internal(host: &str) -> bool {
             .any(|suffix| host.ends_with(suffix))
 }
 
-async fn proxy_destination_allowed(
-    endpoint: &EgressEndpoint,
-    egress: &EgressConfig,
-) -> io::Result<()> {
-    if looks_internal(&endpoint.host) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "internal host names are not tunnelled through the upstream proxy",
-        ));
-    }
-    let endpoint = endpoint.clone();
-    let egress = egress.clone();
-    let lookup = tokio::task::spawn_blocking(move || resolve(&endpoint, &egress));
-    match timeout(SETUP_TIMEOUT, lookup).await {
-        Ok(Ok(Err(error))) if error.kind() == io::ErrorKind::PermissionDenied => Err(error),
-        _ => Ok(()),
-    }
-}
-
 async fn connect_via_proxy(
     proxy: &UpstreamProxy,
-    endpoint: &EgressEndpoint,
+    address: SocketAddrV4,
 ) -> io::Result<TcpStream> {
     let mut stream = timeout(
         SETUP_TIMEOUT,
         TcpStream::connect((proxy.host.as_str(), proxy.port)),
     )
     .await??;
-    let mut request = format!(
-        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n",
-        host = endpoint.host,
-        port = endpoint.port
-    );
+    let mut request = format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n");
     if let Some(authorization) = &proxy.authorization {
         request.push_str(&format!("Proxy-Authorization: {authorization}\r\n"));
     }
@@ -862,7 +848,26 @@ async fn connect_via_proxy(
     }
 }
 
+#[cfg(test)]
+pub(crate) static TEST_DNS: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<Ipv4Addr>>>> =
+    std::sync::Mutex::new(None);
+
 fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<SocketAddrV4>> {
+    #[cfg(test)]
+    if let Some(candidates) = TEST_DNS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|table| table.get(&endpoint.host).cloned())
+    {
+        return checked_addresses(
+            candidates,
+            &local_addresses()?,
+            endpoint.port,
+            &endpoint.host,
+            egress,
+        );
+    }
     let host = CString::new(endpoint.host.as_str()).map_err(|_| invalid("invalid DNS hostname"))?;
     let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
     hints.ai_family = libc::AF_INET;
@@ -1551,6 +1556,22 @@ mod tests {
             "direct.example",
         )
         .unwrap();
+        let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
+        *TEST_DNS.lock().unwrap() = Some(std::collections::HashMap::from([
+            ("intranet.example".to_string(), vec![public]),
+            ("rebound.example".to_string(), vec![Ipv4Addr::new(10, 9, 8, 7)]),
+        ]));
+        let rebound = connect(&EgressEndpoint::new("rebound.example", 443).unwrap(), &config)
+            .await
+            .unwrap_err();
+        assert_eq!(rebound.kind(), io::ErrorKind::PermissionDenied);
+        let unresolvable = connect(
+            &EgressEndpoint::new("does-not-resolve.invalid", 443).unwrap(),
+            &config,
+        )
+        .await
+        .unwrap_err();
+        assert_ne!(unresolvable.kind(), io::ErrorKind::PermissionDenied);
         for internal in ["localhost", "git", "db.internal", "printer.local"] {
             let error = connect(&EgressEndpoint::new(internal, 443).unwrap(), &config)
                 .await
@@ -1567,8 +1588,8 @@ mod tests {
         upstream.await.unwrap();
         proxy_task.abort();
         let head = seen.lock().unwrap().clone();
-        assert!(head.starts_with("CONNECT intranet.example:8443 HTTP/1.1\r\n"), "{head}");
-        assert!(head.contains("Host: intranet.example:8443\r\n"));
+        assert!(head.starts_with("CONNECT 93.184.216.34:8443 HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains("Host: 93.184.216.34:8443\r\n"));
         assert!(head.contains("Proxy-Authorization: Basic YWdlbnQ6c2VjcmV0\r\n"));
 
         let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1589,6 +1610,7 @@ mod tests {
         .unwrap();
         let error = connect(&endpoint, &refusing).await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        *TEST_DNS.lock().unwrap() = None;
     }
 
     #[tokio::test]

@@ -183,7 +183,7 @@ ExecStart=/opt/kumoba/bin/kumobad
 
 - Guests run in a hardware-isolated VM with their own kernel; the only channel to the host is the vsock agent and the egress proxy.
 - Private, link-local and metadata addresses are never reachable from a guest, whatever the sandbox's allowlist says. An operator can open specific intranet hosts or CIDRs with `KUMOBAD_ALLOW_PRIVATE_HOSTS`; loopback, link-local and the host's own addresses stay blocked even then.
-- Behind a corporate proxy, set `KUMOBAD_UPSTREAM_PROXY` and the daemon tunnels through it with `CONNECT` (hosts in `KUMOBAD_NO_PROXY` and allowed intranet hosts go direct). The guest's TLS session rides inside the tunnel, so secrets and certificate checks behave the same.
+- Behind a corporate proxy, set `KUMOBAD_UPSTREAM_PROXY` and the daemon tunnels through it with `CONNECT` to the address it resolved and checked itself (hosts in `KUMOBAD_NO_PROXY` and allowed intranet hosts go direct). The guest's TLS session rides inside the tunnel, so secrets and certificate checks behave the same.
 - Secret values are stored on the host, scrubbed from proxied responses and injected only into HTTPS request headers for the hosts they are scoped to. The guest only ever holds a placeholder.
 - Preview links are HMAC-signed, bound to one sandbox and port, and expire.
 - The Unix socket is created `0600`; the TCP listener accepts loopback addresses only.
