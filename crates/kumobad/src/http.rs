@@ -143,10 +143,22 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
             let since_ms = number("sinceMs", now.saturating_sub(2 * 3_600_000))?;
             let until_ms = number("untilMs", now)?;
             let limit = number("limit", 10_000)? as usize;
-            let (entries, truncated) = service.access_entries(since_ms, until_ms, limit).await?;
+            let cursor = optional_param(&params, "cursor")
+                .map(|value| {
+                    crate::access_log::Cursor::parse(&value)
+                        .ok_or_else(|| ApiError::Status(400, "invalid cursor".into()))
+                })
+                .transpose()?;
+            let page = service
+                .access_entries(since_ms, until_ms, limit, cursor)
+                .await?;
             Ok(json_response(
                 200,
-                json!({"entries": entries, "truncated": truncated}),
+                json!({
+                    "entries": page.entries,
+                    "truncated": page.truncated,
+                    "nextCursor": page.next_cursor.map(|cursor| cursor.to_string()),
+                }),
             ))
         }
         (Method::POST, ["v1", "sandboxes"]) => {

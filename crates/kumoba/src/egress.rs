@@ -522,6 +522,15 @@ async fn connection(
     }
     let remote = match remote_for(&endpoint, &inspection).await {
         Ok(remote) => remote,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            scope.record(endpoint.host(), endpoint.port(), false);
+            response(
+                &mut client,
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+            return Ok(());
+        }
         Err(_) => {
             scope.record(endpoint.host(), endpoint.port(), true);
             response(
@@ -1067,7 +1076,7 @@ mod tests {
                 "CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n",
                 "HTTP/1.1 403",
             ),
-            ("CONNECT localhost:443 HTTP/1.1\r\n\r\n", "HTTP/1.1 502"),
+            ("CONNECT localhost:443 HTTP/1.1\r\n\r\n", "HTTP/1.1 403"),
             ("GET / HTTP/1.1\r\n\r\n", "HTTP/1.1 405"),
         ] {
             let mut client = UnixStream::connect(&path).await.unwrap();

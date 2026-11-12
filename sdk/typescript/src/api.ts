@@ -59,7 +59,11 @@ const accessEntrySchema = z.object({
   completedAtMs: z.number(),
   dropped: z.number().optional(),
 });
-const accessLogSchema = z.object({ entries: z.array(accessEntrySchema), truncated: z.boolean() });
+const accessLogSchema = z.object({
+  entries: z.array(accessEntrySchema),
+  truncated: z.boolean(),
+  nextCursor: z.string().nullable().optional(),
+});
 
 const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
@@ -158,12 +162,14 @@ export class Api {
     sinceMs: number;
     untilMs: number;
     limit: number;
-  }): Promise<{ entries: AccessEntrySummary[]; truncated: boolean }> {
+    cursor?: string;
+  }): Promise<{ entries: AccessEntrySummary[]; truncated: boolean; nextCursor?: string | null | undefined }> {
     const params = new URLSearchParams({
       sinceMs: String(query.sinceMs),
       untilMs: String(query.untilMs),
       limit: String(query.limit),
     });
+    if (query.cursor) params.set("cursor", query.cursor);
     return this.http.json(accessLogSchema, { method: "GET", path: `/v1/access-log?${params.toString()}` });
   }
 

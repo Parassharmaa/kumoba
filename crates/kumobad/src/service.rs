@@ -251,9 +251,10 @@ impl Service {
         since_ms: u64,
         until_ms: u64,
         limit: usize,
-    ) -> ApiResult<(Vec<crate::access_log::AccessEntry>, bool)> {
+        cursor: Option<crate::access_log::Cursor>,
+    ) -> ApiResult<crate::access_log::Page> {
         let access_log = self.access_log.clone();
-        tokio::task::spawn_blocking(move || access_log.query(since_ms, until_ms, limit))
+        tokio::task::spawn_blocking(move || access_log.query(since_ms, until_ms, limit, cursor))
             .await
             .map_err(std::io::Error::other)?
             .map_err(ApiError::from)

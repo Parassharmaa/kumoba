@@ -41,8 +41,14 @@ where
                 .or_else(|| crate::egress::raw_target(&format!("{}:80", authority.host())))
         });
         let outcome = forward(request).await;
-        if let Some((host, port)) = target {
-            scope.record(&host, port, outcome.as_ref().err() != Some(&StatusCode::FORBIDDEN));
+        let decision = match outcome.as_ref().err() {
+            None => Some(true),
+            Some(&StatusCode::BAD_GATEWAY) => Some(true),
+            Some(&StatusCode::FORBIDDEN) => Some(false),
+            Some(_) => None,
+        };
+        if let (Some((host, port)), Some(allowed)) = (target, decision) {
+            scope.record(&host, port, allowed);
         }
         Ok::<_, Infallible>(match outcome {
             Ok(response) => response,
@@ -139,9 +145,13 @@ async fn forward(request: Request<Incoming>) -> Result<Response<ResponseBody>, S
     parts
         .headers
         .insert("connection", HeaderValue::from_static("close"));
-    let remote = crate::egress::connect(&endpoint)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let remote = crate::egress::connect(&endpoint).await.map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::BAD_GATEWAY
+        }
+    })?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(remote))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;

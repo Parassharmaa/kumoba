@@ -116,9 +116,9 @@ Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that po
 
 ## Access log
 
-`GET /v1/access-log?sinceMs=<epoch ms>&untilMs=<epoch ms>&limit=<n>` → `{"entries": [...], "truncated": false}`
+`GET /v1/access-log?sinceMs=<epoch ms>&untilMs=<epoch ms>&limit=<n>[&cursor=<token>]` → `{"entries": [...], "truncated": false, "nextCursor": null}`
 
-Every connection the egress proxy handled, oldest first, for sandboxes of any state:
+Every connection the egress proxy handled, in the order it was recorded (close to completion time), for sandboxes of any state:
 
 ```json
 {
@@ -134,7 +134,7 @@ Every connection the egress proxy handled, oldest first, for sandboxes of any st
 }
 ```
 
-`decision` is `denied` for allowlist misses and for attempts at private, link-local or metadata addresses; those carry zero bytes. A sandbox gets at most 10000 records per hour; beyond that, and whenever the daemon cannot keep up, the gap is reported as a `dropped` marker (`"decision": "dropped"`, empty host, port 0, `"dropped": <count>`) rather than lost silently. `bytesIn` is what reached the guest, `bytesOut` what it sent. Defaults: the last two hours, 10000 entries; `limit` caps at 50000 and `truncated` tells you to continue from the last `completedAtMs + 1`. kumobad keeps 72 hours of entries as hourly files under `<state>/access`.
+`decision` is `denied` for allowlist misses and for attempts at private, link-local or metadata addresses; those carry zero bytes. A sandbox gets at most 10000 records per hour; beyond that, and whenever the daemon cannot keep up, the gap is reported as a `dropped` marker (`"decision": "dropped"`, empty host, port 0, `"dropped": <count>`) rather than lost silently. `bytesIn` is what reached the guest, `bytesOut` what it sent. Defaults: the last two hours, 10000 entries; `limit` caps at 50000. When `truncated` is true, repeat the call with `cursor=<nextCursor>` and the same window to get the next page; the cursor is a position in the log, so pages never skip or repeat entries. The cap is 10000 allowed and 10000 denied records per sandbox per hour, so a flood of permitted traffic cannot push denials out of the log. kumobad keeps 72 hours of entries as hourly files under `<state>/access`.
 
 ## Health
 

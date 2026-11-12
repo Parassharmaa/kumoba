@@ -88,12 +88,40 @@ fn hour_of(ms: u64) -> u64 {
 pub struct AccessLog {
     dir: PathBuf,
     current: Mutex<Option<(u64, File)>>,
-    written: Mutex<HashMap<(String, u64), u64>>,
+    written: Mutex<HashMap<(String, String, u64), u64>>,
 }
 
 pub enum Appended {
     Written,
     OverCap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub hour: u64,
+    pub line: u64,
+}
+
+impl Cursor {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (hour, line) = value.split_once(':')?;
+        Some(Self {
+            hour: hour.parse().ok()?,
+            line: line.parse().ok()?,
+        })
+    }
+}
+
+impl std::fmt::Display for Cursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.hour, self.line)
+    }
+}
+
+pub struct Page {
+    pub entries: Vec<AccessEntry>,
+    pub truncated: bool,
+    pub next_cursor: Option<Cursor>,
 }
 
 impl AccessLog {
@@ -114,7 +142,8 @@ impl AccessLog {
         let hour = hour_of(entry.completed_at_ms);
         if entry.dropped == 0 {
             let mut written = self.written.lock().unwrap_or_else(|poison| poison.into_inner());
-            let count = written.entry((entry.sandbox_id.clone(), hour)).or_insert(0);
+            let key = (entry.sandbox_id.clone(), entry.decision.clone(), hour);
+            let count = written.entry(key).or_insert(0);
             if *count >= MAX_PER_SANDBOX_HOUR {
                 return Ok(Appended::OverCap);
             }
@@ -160,52 +189,48 @@ impl AccessLog {
         since_ms: u64,
         until_ms: u64,
         limit: usize,
-    ) -> std::io::Result<(Vec<AccessEntry>, bool)> {
+        cursor: Option<Cursor>,
+    ) -> std::io::Result<Page> {
         let limit = limit.clamp(1, MAX_QUERY);
-        let mut entries: Vec<AccessEntry> = Vec::new();
+        let mut entries = Vec::new();
+        let mut last = cursor;
         let mut truncated = false;
-        let mut cut_inside_group = false;
         'hours: for hour in self.hours()? {
             if hour + HOUR_MS <= since_ms || hour >= until_ms {
                 continue;
             }
+            if cursor.is_some_and(|cursor| hour < cursor.hour) {
+                continue;
+            }
             let reader = BufReader::new(File::open(self.file_for(hour))?);
-            for line in reader.lines() {
+            for (index, line) in reader.lines().enumerate() {
                 let line = line?;
+                let position = Cursor { hour, line: index as u64 };
+                if cursor.is_some_and(|cursor| hour == cursor.hour && position.line <= cursor.line)
+                {
+                    continue;
+                }
                 let Ok(entry) = serde_json::from_str::<AccessEntry>(&line) else {
+                    last = Some(position);
                     continue;
                 };
                 if entry.completed_at_ms < since_ms || entry.completed_at_ms >= until_ms {
+                    last = Some(position);
                     continue;
                 }
-                let full = entries.len() >= limit;
-                let same_ms_as_last = entries
-                    .last()
-                    .is_some_and(|last| last.completed_at_ms == entry.completed_at_ms);
-                if full && !same_ms_as_last {
+                if entries.len() >= limit {
                     truncated = true;
-                    break 'hours;
-                }
-                if entries.len() >= 2 * MAX_QUERY {
-                    truncated = true;
-                    cut_inside_group = true;
                     break 'hours;
                 }
                 entries.push(entry);
+                last = Some(position);
             }
         }
-        entries.sort_by_key(|entry| entry.completed_at_ms);
-        if cut_inside_group {
-            let boundary = entries
-                .iter()
-                .rposition(|entry| entry.completed_at_ms < entries[entries.len() - 1].completed_at_ms)
-                .map(|index| index + 1)
-                .unwrap_or(entries.len());
-            if boundary > 0 && boundary < entries.len() {
-                entries.truncate(boundary);
-            }
-        }
-        Ok((entries, truncated))
+        Ok(Page {
+            entries,
+            truncated,
+            next_cursor: truncated.then_some(last).flatten(),
+        })
     }
 
     pub fn prune(&self, now_ms: u64, retention: Duration) -> std::io::Result<usize> {
@@ -223,7 +248,7 @@ impl AccessLog {
         }
         drop(current);
         let mut written = self.written.lock().unwrap_or_else(|poison| poison.into_inner());
-        written.retain(|(_, hour), _| hour + HOUR_MS > cutoff);
+        written.retain(|(_, _, hour), _| hour + HOUR_MS > cutoff);
         Ok(removed)
     }
 }
@@ -247,6 +272,10 @@ mod tests {
         }
     }
 
+    fn hosts(page: &Page) -> Vec<&str> {
+        page.entries.iter().map(|entry| entry.host.as_str()).collect()
+    }
+
     #[test]
     fn appends_per_hour_and_queries_by_completion_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -256,38 +285,38 @@ mod tests {
         log.append(&entry(10 * HOUR_MS + 50, "c.example")).unwrap();
         assert_eq!(log.hours().unwrap(), vec![10 * HOUR_MS, 11 * HOUR_MS]);
 
-        let (all, truncated) = log.query(0, 12 * HOUR_MS, 100).unwrap();
-        assert_eq!(
-            all.iter().map(|entry| entry.host.as_str()).collect::<Vec<_>>(),
-            ["a.example", "c.example", "b.example"]
-        );
-        assert!(!truncated);
+        let all = log.query(0, 12 * HOUR_MS, 100, None).unwrap();
+        assert_eq!(hosts(&all), ["a.example", "c.example", "b.example"]);
+        assert!(!all.truncated);
+        assert_eq!(all.next_cursor, None);
 
-        let (window, _) = log.query(10 * HOUR_MS + 6, 11 * HOUR_MS, 100).unwrap();
-        assert_eq!(window.len(), 1);
-        assert_eq!(window[0].host, "c.example");
-
-        let (limited, truncated) = log.query(0, 12 * HOUR_MS, 2).unwrap();
-        assert_eq!(limited.len(), 2);
-        assert!(truncated);
+        let window = log.query(10 * HOUR_MS + 6, 11 * HOUR_MS, 100, None).unwrap();
+        assert_eq!(hosts(&window), ["c.example"]);
     }
 
     #[test]
-    fn pages_cut_on_millisecond_boundaries_so_cursors_never_skip() {
+    fn cursor_pages_never_skip_or_repeat_even_with_out_of_order_times() {
         let dir = tempfile::tempdir().unwrap();
         let log = AccessLog::open(dir.path().join("access")).unwrap();
-        for host in ["a", "b", "c"] {
-            log.append(&entry(HOUR_MS + 1, host)).unwrap();
+        for (host, at) in [("a", 3), ("b", 1), ("c", 1), ("d", 2)] {
+            log.append(&entry(HOUR_MS + at, host)).unwrap();
         }
-        log.append(&entry(HOUR_MS + 2, "d")).unwrap();
-        let (page, truncated) = log.query(0, 2 * HOUR_MS, 2).unwrap();
-        assert!(truncated);
-        assert_eq!(page.len(), 3);
-        assert!(page.iter().all(|entry| entry.completed_at_ms == HOUR_MS + 1));
-        let (rest, truncated) = log.query(HOUR_MS + 2, 2 * HOUR_MS, 2).unwrap();
-        assert!(!truncated);
-        assert_eq!(rest.len(), 1);
-        assert_eq!(rest[0].host, "d");
+        log.append(&entry(2 * HOUR_MS, "e")).unwrap();
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = log.query(0, 3 * HOUR_MS, 2, cursor).unwrap();
+            seen.extend(page.entries.iter().map(|entry| entry.host.clone()));
+            if !page.truncated {
+                break;
+            }
+            cursor = page.next_cursor;
+            assert!(cursor.is_some());
+        }
+        assert_eq!(seen, ["a", "b", "c", "d", "e"]);
+        let parsed = Cursor::parse(&Cursor { hour: HOUR_MS, line: 1 }.to_string()).unwrap();
+        assert_eq!(parsed, Cursor { hour: HOUR_MS, line: 1 });
+        assert_eq!(Cursor::parse("junk"), None);
     }
 
     #[test]
@@ -304,15 +333,21 @@ mod tests {
             log.append(&entry(HOUR_MS + 5, "flood.example")).unwrap(),
             Appended::OverCap
         ));
+        let mut denied = entry(HOUR_MS + 5, "169.254.169.254");
+        denied.decision = "denied".into();
+        assert!(matches!(log.append(&denied).unwrap(), Appended::Written));
         assert!(matches!(
             log.append(&entry(2 * HOUR_MS, "next-hour.example")).unwrap(),
             Appended::Written
         ));
         let marker = AccessEntry::dropped_marker("sbx".into(), BTreeMap::new(), 3 * HOUR_MS, 42);
         assert!(matches!(log.append(&marker).unwrap(), Appended::Written));
-        let (page, _) = log.query(3 * HOUR_MS, 3 * HOUR_MS + 1, 10).unwrap();
-        assert_eq!(page.len(), 1);
-        assert_eq!((page[0].decision.as_str(), page[0].dropped), ("dropped", 42));
+        let page = log.query(3 * HOUR_MS, 3 * HOUR_MS + 1, 10, None).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(
+            (page.entries[0].decision.as_str(), page.entries[0].dropped),
+            ("dropped", 42)
+        );
         let serialized = serde_json::to_string(&entry(HOUR_MS, "x")).unwrap();
         assert!(!serialized.contains("dropped"));
     }
@@ -327,7 +362,7 @@ mod tests {
         assert_eq!(removed, 1);
         assert_eq!(log.hours().unwrap(), vec![80 * HOUR_MS]);
         log.append(&entry(80 * HOUR_MS + 9, "after.example")).unwrap();
-        assert_eq!(log.query(0, 90 * HOUR_MS, 100).unwrap().0.len(), 2);
+        assert_eq!(log.query(0, 90 * HOUR_MS, 100, None).unwrap().entries.len(), 2);
     }
 
     #[test]

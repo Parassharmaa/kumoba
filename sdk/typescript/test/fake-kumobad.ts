@@ -106,10 +106,19 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const sinceMs = Number(url.searchParams.get("sinceMs"));
         const untilMs = Number(url.searchParams.get("untilMs"));
         const limit = Math.min(Number(url.searchParams.get("limit")), fake.accessPageSize);
+        const cursor = url.searchParams.get("cursor");
+        const start = cursor === null ? 0 : Number(cursor) + 1;
         const matched = fake.accessEntries
-          .filter((entry) => entry.completedAtMs >= sinceMs && entry.completedAtMs < untilMs)
-          .sort((a, b) => a.completedAtMs - b.completedAtMs);
-        send(response, 200, { entries: matched.slice(0, limit), truncated: matched.length > limit });
+          .map((entry, index) => ({ entry, index }))
+          .slice(start)
+          .filter(({ entry }) => entry.completedAtMs >= sinceMs && entry.completedAtMs < untilMs);
+        const page = matched.slice(0, limit);
+        const truncated = matched.length > limit;
+        send(response, 200, {
+          entries: page.map(({ entry }) => entry),
+          truncated,
+          nextCursor: truncated ? String(page.at(-1)?.index) : null,
+        });
         return;
       }
       if (method === "GET" && url.pathname === "/v1/images") {

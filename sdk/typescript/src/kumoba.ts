@@ -122,10 +122,11 @@ export class Kumoba {
    */
   async *accessLog(options: AccessLogOptions = {}): AsyncGenerator<AccessEntry, void, undefined> {
     const untilMs = (options.until ?? new Date()).getTime();
-    let sinceMs = (options.since ?? new Date(untilMs - 2 * 3_600_000)).getTime();
+    const sinceMs = (options.since ?? new Date(untilMs - 2 * 3_600_000)).getTime();
     const limit = options.limit ?? 10_000;
-    while (sinceMs < untilMs) {
-      const page = await this.api.accessLog({ sinceMs, untilMs, limit });
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.api.accessLog({ sinceMs, untilMs, limit, ...(cursor ? { cursor } : {}) });
       for (const entry of page.entries) {
         const { startedAtMs, completedAtMs, dropped, ...rest } = entry;
         yield {
@@ -135,9 +136,8 @@ export class Kumoba {
           ...(dropped === undefined ? {} : { dropped }),
         };
       }
-      const last = page.entries.at(-1);
-      if (!page.truncated || !last) return;
-      sinceMs = last.completedAtMs + 1;
+      if (!page.truncated || !page.nextCursor) return;
+      cursor = page.nextCursor;
     }
   }
 
