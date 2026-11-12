@@ -7,6 +7,7 @@ pub use kumoba_protocol::HostMount;
 mod platform;
 pub use platform::HostPlatform;
 mod desktop;
+mod disk_copy;
 mod egress;
 pub use egress::{AccessRecord, EgressConfig, PrivateAllow, UpstreamProxy};
 mod execution;

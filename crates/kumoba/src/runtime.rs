@@ -125,7 +125,7 @@ impl Runtime {
         digest: Option<String>,
     ) -> Result<Sandbox> {
         self.create_verified_with_copy(config, digest, |source, target| {
-            std::fs::copy(source, target)
+            crate::disk_copy::copy_disk(source, target)
         })
         .await
     }
@@ -294,7 +294,7 @@ pub(crate) fn snapshot(
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(&parent)?;
     let target = temp.path().join("root.raw");
-    std::fs::copy(source, &target)?;
+    crate::disk_copy::copy_disk(source, &target)?;
     File::open(&target)?.sync_all()?;
     let manifest = SnapshotManifest {
         version: 2,

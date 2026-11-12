@@ -14,7 +14,7 @@
 
 ## Disks
 
-An image is a raw ext4 filesystem. Creating a sandbox copies the image into `<state>/runtime/sandboxes/<id>/root.raw`; on APFS, XFS and Btrfs the copy is a reflink and takes no time or space until the guest writes. Stopping a sandbox keeps its disk; `start` boots the same disk again. Snapshots (`Runtime::snapshot` in the Rust API) copy a stopped disk into `<state>/runtime/snapshots/`.
+An image is a raw ext4 filesystem. Creating a sandbox copies the image into `<state>/runtime/sandboxes/<id>/root.raw`; on APFS, XFS and Btrfs the copy is a reflink and takes no time or space until the guest writes; elsewhere only the allocated extents are copied, so a sparse image stays sparse. Stopping a sandbox keeps its disk; `start` boots the same disk again. Snapshots (`Runtime::snapshot` in the Rust API) copy a stopped disk into `<state>/runtime/snapshots/`.
 
 ## Network
 

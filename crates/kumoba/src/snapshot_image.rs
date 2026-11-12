@@ -85,7 +85,7 @@ impl SnapshotImageInfo {
 
 impl Snapshot {
     pub async fn export(&self, destination: impl AsRef<Path>) -> Result<SnapshotImage> {
-        self.export_with_copy(destination, |source, target| std::fs::copy(source, target))
+        self.export_with_copy(destination, |source, target| crate::disk_copy::copy_disk(source, target))
             .await
     }
 
@@ -148,7 +148,7 @@ impl Snapshot {
 
 impl Runtime {
     pub async fn restore_image(&self, image: &SnapshotImage) -> Result<Sandbox> {
-        self.restore_image_with_copy(image, |source, target| std::fs::copy(source, target))
+        self.restore_image_with_copy(image, |source, target| crate::disk_copy::copy_disk(source, target))
             .await
     }
 

@@ -38,4 +38,4 @@ Put your Dockerfile and any `rootfs/` overlay in `images/<name>/` and run `scrip
 
 ## Sizing
 
-The `.raw` file is sparse; its apparent size is the guest's disk size and its actual size is what the image uses. Sandbox disks are reflink copies on APFS, XFS and Btrfs, so each new sandbox costs only what it writes. On ext4 every sandbox copies the whole used portion of the image, which `scripts/check-host.sh` warns about.
+The `.raw` file is sparse; its apparent size is the guest's disk size and its actual size is what the image uses. Sandbox disks are reflink copies on APFS, XFS and Btrfs, so each new sandbox costs only what it writes. On ext4 the runtime copies only the allocated extents of the image (holes stay holes), so a sandbox costs the image's used size, which `scripts/check-host.sh` warns about.
