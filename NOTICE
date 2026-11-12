@@ -1,0 +1,11 @@
+kumoba
+Copyright 2025-2026 Paras Sharma
+
+Licensed under the Apache License, Version 2.0.
+
+This product bundles, at build time, the following third-party components:
+
+- libkrun 1.19.6 (Apache-2.0), with the patches in patches/libkrun-1.19.6 applied.
+  https://github.com/containers/libkrun
+- libkrunfw 5.6.2, which contains a Linux kernel licensed under GPL-2.0.
+  Corresponding source: https://github.com/containers/libkrunfw/releases/tag/v5.6.2

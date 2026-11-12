@@ -1,0 +1,79 @@
+--- a/src/devices/src/virtio/vsock/unix.rs
++++ b/src/devices/src/virtio/vsock/unix.rs
+@@ -252,7 +252,32 @@
+         let mut wait_credit = false;
+         let mut queue = self.queue.lock().unwrap();
+ 
+-        while let Some(head) = queue.pop(&self.mem) {
++        loop {
++            // A close can be reported together with readable bytes. Peek before
++            // requiring guest buffers/credit so an empty EOF closes promptly.
++            let mut byte = [0u8; 1];
++            match recv(
++                self.fd.as_raw_fd(),
++                &mut byte,
++                MsgFlags::MSG_PEEK | MsgFlags::MSG_DONTWAIT,
++            ) {
++                Ok(0) => {
++                    self.status = ProxyStatus::Closed;
++                    break;
++                }
++                Ok(_) => {}
++                Err(Errno::EAGAIN) => break,
++                Err(Errno::EINTR) => continue,
++                Err(_) => {
++                    self.status = ProxyStatus::Closed;
++                    break;
++                }
++            }
++            let Some(head) = queue.pop(&self.mem) else {
++                // Keep the existing readable-socket polling when the guest has
++                // not posted RX descriptors. Do not consume bytes or reset.
++                break;
++            };
+             let len = match VsockPacket::from_rx_virtq_head(&head) {
+                 Ok(mut pkt) => match self.recv_to_pkt(&mut pkt) {
+                     RecvPkt::WaitForCredit => {
+@@ -487,6 +512,9 @@
+         self.peer_buf_alloc = pkt.buf_alloc();
+         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
+ 
++        if self.peer_avail_credit() == 0 && self.status == ProxyStatus::WaitingCreditUpdate {
++            return ProxyUpdate::default();
++        }
+         self.status = ProxyStatus::Connected;
+ 
+         ProxyUpdate {
+@@ -578,7 +606,12 @@
+     fn process_event(&mut self, evset: EventSet) -> ProxyUpdate {
+         let mut update = ProxyUpdate::default();
+ 
+-        if evset.contains(EventSet::HANG_UP) {
++        if evset.contains(EventSet::HANG_UP)
++            && !matches!(
++                self.status,
++                ProxyStatus::Connected | ProxyStatus::WaitingCreditUpdate
++            )
++        {
+             debug!("process_event: HANG_UP");
+ 
+             if self.status == ProxyStatus::Connecting {
+@@ -595,8 +628,8 @@
+             return update;
+         }
+ 
+-        if evset.contains(EventSet::IN) {
+-            debug!("process_event: IN");
++        if evset.intersects(EventSet::IN | EventSet::HANG_UP) {
++            debug!("process_event: readable or hung up");
+             if self.status == ProxyStatus::Connected {
+                 let (signal_queue, wait_credit) = self.recv_pkt();
+                 update.signal_queue = signal_queue;
+@@ -620,6 +653,7 @@
+                     self.push_reset();
+                     update.signal_queue = true;
+                     update.polling = Some((self.id(), self.fd.as_raw_fd(), EventSet::empty()));
++                    update.remove_proxy = ProxyRemoval::Deferred;
+                     return update;
+                 } else if self.status == ProxyStatus::WaitingCreditUpdate {
+                     debug!("process_event: WaitingCreditUpdate");

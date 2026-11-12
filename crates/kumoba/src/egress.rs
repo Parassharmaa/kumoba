@@ -1,0 +1,938 @@
+use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeSet,
+    ffi::CString,
+    io,
+    net::{Ipv4Addr, SocketAddrV4},
+    path::Path,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpStream, UnixListener, UnixStream},
+    sync::{Semaphore, oneshot, watch},
+    task::{JoinHandle, JoinSet},
+    time::{Instant, timeout},
+};
+
+const MAX_ENDPOINTS: usize = 128;
+const MAX_HEADERS: usize = 8 * 1024;
+const MAX_ADDRESSES: usize = 64;
+const MAX_CONNECTIONS: usize = 16;
+const MAX_WEB_CONNECTIONS: usize = 32;
+const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const TUNNEL_TIMEOUT: Duration = Duration::from_secs(3600);
+static DNS_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "EndpointData")]
+pub struct EgressEndpoint {
+    host: String,
+    port: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EndpointData {
+    host: String,
+    port: u16,
+}
+
+impl TryFrom<EndpointData> for EgressEndpoint {
+    type Error = Error;
+    fn try_from(value: EndpointData) -> Result<Self> {
+        Self::new(value.host, value.port)
+    }
+}
+
+impl EgressEndpoint {
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+    pub fn new(host: impl Into<String>, port: u16) -> Result<Self> {
+        let host = host.into();
+        let host = host.strip_suffix('.').unwrap_or(&host);
+        if port == 0
+            || host.is_empty()
+            || host.len() > 253
+            || !host.is_ascii()
+            || host.parse::<std::net::IpAddr>().is_ok()
+            || numeric_ipv4_name(host)
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || !label.as_bytes()[0].is_ascii_alphanumeric()
+                    || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                    || !label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+        {
+            return Err(Error::InvalidInput(
+                "egress requires an ASCII DNS hostname and a nonzero port".into(),
+            ));
+        }
+        Ok(Self {
+            host: host.to_ascii_lowercase(),
+            port,
+        })
+    }
+}
+
+fn numeric_ipv4_name(host: &str) -> bool {
+    let mut labels = host.split('.');
+    labels.clone().count() <= 4
+        && labels.all(|label| {
+            if let Some(hex) = label
+                .strip_prefix("0x")
+                .or_else(|| label.strip_prefix("0X"))
+            {
+                !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            } else {
+                !label.is_empty() && label.bytes().all(|byte| byte.is_ascii_digit())
+            }
+        })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PolicyData")]
+pub struct HttpConnectPolicy {
+    endpoints: Vec<EgressEndpoint>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    public_web: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyData {
+    endpoints: Vec<EgressEndpoint>,
+    #[serde(default)]
+    public_web: bool,
+}
+
+impl TryFrom<PolicyData> for HttpConnectPolicy {
+    type Error = Error;
+    fn try_from(value: PolicyData) -> Result<Self> {
+        if value.public_web {
+            if !value.endpoints.is_empty() {
+                return Err(Error::InvalidInput(
+                    "public-web policy cannot contain endpoint grants".into(),
+                ));
+            }
+            Ok(Self::public_web())
+        } else {
+            Self::new(value.endpoints)
+        }
+    }
+}
+
+impl HttpConnectPolicy {
+    pub fn new(endpoints: impl IntoIterator<Item = EgressEndpoint>) -> Result<Self> {
+        let mut unique = BTreeSet::new();
+        for (index, endpoint) in endpoints.into_iter().enumerate() {
+            if index >= MAX_ENDPOINTS {
+                return Err(Error::InvalidInput(
+                    "egress allows at most 128 endpoint entries".into(),
+                ));
+            }
+            unique.insert(endpoint);
+        }
+        if unique.is_empty() {
+            return Err(Error::InvalidInput(
+                "egress endpoint policy is empty".into(),
+            ));
+        }
+        Ok(Self {
+            endpoints: unique.into_iter().collect(),
+            public_web: false,
+        })
+    }
+
+    pub fn public_web() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            public_web: true,
+        }
+    }
+    pub(crate) fn is_public_web(&self) -> bool {
+        self.public_web
+    }
+    pub(crate) fn endpoints(&self) -> &[EgressEndpoint] {
+        &self.endpoints
+    }
+
+    pub(crate) fn allows(&self, endpoint: &EgressEndpoint) -> bool {
+        if self.public_web {
+            matches!(endpoint.port, 80 | 443)
+        } else {
+            self.endpoints.binary_search(endpoint).is_ok()
+        }
+    }
+}
+
+pub(crate) struct Broker {
+    task: Option<JoinHandle<io::Result<()>>>,
+    stop: Option<oneshot::Sender<()>>,
+}
+
+impl Broker {
+    pub(crate) async fn bind(
+        path: &Path,
+        policy: HttpConnectPolicy,
+        inspection: Option<crate::secret_https::Inspection>,
+    ) -> io::Result<Self> {
+        let listener = UnixListener::bind(path)?;
+        let (stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(serve(listener, Arc::new(policy), inspection, stopped));
+        Ok(Self {
+            task: Some(task),
+            stop: Some(stop),
+        })
+    }
+
+    pub(crate) async fn wait(&mut self) -> io::Result<()> {
+        let Some(task) = self.task.as_mut() else {
+            return Ok(());
+        };
+        let result = task.await.map_err(io::Error::other);
+        self.task = None;
+        result?
+    }
+
+    pub(crate) async fn shutdown(&mut self) -> io::Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        self.wait().await
+    }
+}
+
+impl Drop for Broker {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
+async fn serve(
+    listener: UnixListener,
+    policy: Arc<HttpConnectPolicy>,
+    inspection: Option<crate::secret_https::Inspection>,
+    mut stopped: oneshot::Receiver<()>,
+) -> io::Result<()> {
+    let mut relays = JoinSet::new();
+    let limit = if policy.is_public_web() {
+        MAX_WEB_CONNECTIONS
+    } else {
+        MAX_CONNECTIONS
+    };
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = &mut stopped => break Ok(()),
+            completed = relays.join_next(), if !relays.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    break Err(io::Error::other(error));
+                }
+            }
+            accepted = listener.accept(), if relays.len() < limit => {
+                let (stream, _) = match accepted {
+                    Ok(value) => value,
+                    Err(error) => break Err(error),
+                };
+                let policy = policy.clone();
+                let inspection = inspection.clone();
+                relays.spawn(async move { let _ = connection(stream, &policy, inspection).await; });
+            }
+        }
+    };
+    drop(listener);
+    relays.shutdown().await;
+    result
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn authority(value: &str) -> io::Result<EgressEndpoint> {
+    let (host, port) = value
+        .split_once(':')
+        .ok_or_else(|| invalid("missing CONNECT port"))?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid("invalid CONNECT port"));
+    }
+    let port = port.parse().map_err(|_| invalid("invalid CONNECT port"))?;
+    EgressEndpoint::new(host, port).map_err(|_| invalid("invalid CONNECT authority"))
+}
+
+fn parse_headers(bytes: &[u8]) -> io::Result<EgressEndpoint> {
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid("invalid CONNECT headers"))?;
+    if !text.is_ascii() || !text.ends_with("\r\n\r\n") {
+        return Err(invalid("invalid CONNECT headers"));
+    }
+    let mut lines = text[..text.len() - 4].split("\r\n");
+    let mut request = lines.next().unwrap_or("").split(' ');
+    if request.next() != Some("CONNECT") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only CONNECT is supported",
+        ));
+    }
+    let endpoint = authority(request.next().unwrap_or(""))?;
+    if request.next() != Some("HTTP/1.1") || request.next().is_some() {
+        return Err(invalid("invalid CONNECT request line"));
+    }
+    let mut host_seen = false;
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| invalid("invalid CONNECT header"))?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+            || value
+                .bytes()
+                .any(|byte| byte < 0x20 && byte != b'\t' || byte == 0x7f)
+        {
+            return Err(invalid("invalid CONNECT header"));
+        }
+        if name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding")
+        {
+            return Err(invalid("CONNECT request bodies are not supported"));
+        }
+        if name.eq_ignore_ascii_case("host") {
+            if host_seen || authority(value.trim_matches([' ', '\t']))? != endpoint {
+                return Err(invalid("conflicting CONNECT Host header"));
+            }
+            host_seen = true;
+        }
+    }
+    Ok(endpoint)
+}
+
+async fn read_head(stream: &mut UnixStream) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let mut bytes = Vec::with_capacity(MAX_HEADERS);
+    let mut buffer = [0u8; 1024];
+    loop {
+        let available = (MAX_HEADERS - bytes.len()).min(buffer.len());
+        if available == 0 {
+            return Err(invalid("CONNECT headers exceed 8 KiB"));
+        }
+        let count = stream.read(&mut buffer[..available]).await?;
+        if count == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            let end = end + 4;
+            let pending = bytes.split_off(end);
+            return Ok((bytes, pending));
+        }
+    }
+}
+
+#[cfg(test)]
+async fn read_request(stream: &mut UnixStream) -> io::Result<(EgressEndpoint, Vec<u8>)> {
+    let (head, pending) = read_head(stream).await?;
+    Ok((parse_headers(&head)?, pending))
+}
+
+async fn response(stream: &mut UnixStream, status: &'static [u8]) -> io::Result<()> {
+    timeout(SETUP_TIMEOUT, stream.write_all(status)).await?
+}
+
+async fn connection(
+    mut client: UnixStream,
+    policy: &HttpConnectPolicy,
+    inspection: Option<crate::secret_https::Inspection>,
+) -> io::Result<()> {
+    let (endpoint, pending) = match timeout(SETUP_TIMEOUT, read_head(&mut client)).await {
+        Ok(Ok((head, pending))) => match parse_headers(&head) {
+            Ok(endpoint) => (endpoint, pending),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported && policy.public_web => {
+                return crate::public_http::serve(client, head, pending).await;
+            }
+            Err(error) => {
+                let status: &[u8] = if error.kind() == io::ErrorKind::Unsupported {
+                    b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                response(&mut client, status).await?;
+                return Ok(());
+            }
+        },
+        result => {
+            let status: &[u8] = match result {
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Unsupported => b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                _ => b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            };
+            response(&mut client, status).await?;
+            return Ok(());
+        }
+    };
+    if !policy.allows(&endpoint) || (policy.public_web && endpoint.port != 443) {
+        response(
+            &mut client,
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    }
+    let connecting = async {
+        #[cfg(test)]
+        if let Some(address) = inspection
+            .as_ref()
+            .and_then(|inspection| inspection.test_route(&endpoint))
+        {
+            return TcpStream::connect(address).await;
+        }
+        connect(&endpoint).await
+    };
+    let mut remote = match connecting.await {
+        Ok(remote) => remote,
+        Err(_) => {
+            response(
+                &mut client,
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    response(&mut client, b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+    if let Some(inspection) = inspection.filter(|inspection| inspection.covers(&endpoint)) {
+        return inspection.serve(client, pending, remote, endpoint).await;
+    }
+    timeout(SETUP_TIMEOUT, remote.write_all(&pending)).await??;
+    relay(
+        client,
+        remote,
+        if policy.is_public_web() {
+            ClientLifetime::Web
+        } else {
+            ClientLifetime::HalfClose
+        },
+    )
+    .await
+}
+
+pub(crate) async fn connect(endpoint: &EgressEndpoint) -> io::Result<TcpStream> {
+    let permit = DNS_SLOTS
+        .get_or_init(|| Arc::new(Semaphore::new(8)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DNS capacity exhausted"))?;
+    let endpoint = endpoint.clone();
+    let lookup = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        resolve(&endpoint)
+    });
+    let addresses = timeout(SETUP_TIMEOUT, lookup)
+        .await?
+        .map_err(io::Error::other)??;
+    timeout(SETUP_TIMEOUT, async {
+        let mut last = io::Error::new(io::ErrorKind::NotFound, "no destination addresses");
+        for address in addresses {
+            match TcpStream::connect(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    })
+    .await?
+}
+
+fn resolve(endpoint: &EgressEndpoint) -> io::Result<Vec<SocketAddrV4>> {
+    let host = CString::new(endpoint.host.as_str()).map_err(|_| invalid("invalid DNS hostname"))?;
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_family = libc::AF_INET;
+    hints.ai_socktype = libc::SOCK_STREAM;
+    hints.ai_protocol = libc::IPPROTO_TCP;
+    let mut addresses = std::ptr::null_mut();
+    let code =
+        unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut addresses) };
+    if code != 0 {
+        return Err(io::Error::other(format!("host DNS failed ({code})")));
+    }
+    struct Addresses(*mut libc::addrinfo);
+    impl Drop for Addresses {
+        fn drop(&mut self) {
+            unsafe { libc::freeaddrinfo(self.0) };
+        }
+    }
+    let _addresses = Addresses(addresses);
+    let mut candidates = Vec::new();
+    let mut current = addresses;
+    while !current.is_null() {
+        if candidates.len() >= MAX_ADDRESSES {
+            return Err(invalid("too many DNS addresses"));
+        }
+        let entry = unsafe { &*current };
+        if entry.ai_family != libc::AF_INET
+            || entry.ai_addr.is_null()
+            || (entry.ai_addrlen as usize) < std::mem::size_of::<libc::sockaddr_in>()
+        {
+            return Err(invalid("unexpected DNS address family"));
+        }
+        let address = unsafe { &*(entry.ai_addr.cast::<libc::sockaddr_in>()) };
+        candidates.push(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
+        current = entry.ai_next;
+    }
+    checked_addresses(candidates, &local_addresses()?, endpoint.port)
+}
+
+fn local_addresses() -> io::Result<BTreeSet<Ipv4Addr>> {
+    let mut interfaces = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut interfaces) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    struct Interfaces(*mut libc::ifaddrs);
+    impl Drop for Interfaces {
+        fn drop(&mut self) {
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+    let _interfaces = Interfaces(interfaces);
+    let mut result = BTreeSet::new();
+    let mut current = interfaces;
+    while !current.is_null() {
+        let interface = unsafe { &*current };
+        if !interface.ifa_addr.is_null()
+            && unsafe { (*interface.ifa_addr).sa_family as i32 } == libc::AF_INET
+        {
+            let address = unsafe { &*(interface.ifa_addr.cast::<libc::sockaddr_in>()) };
+            result.insert(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
+        }
+        current = interface.ifa_next;
+    }
+    Ok(result)
+}
+
+fn checked_addresses(
+    candidates: Vec<Ipv4Addr>,
+    local: &BTreeSet<Ipv4Addr>,
+    port: u16,
+) -> io::Result<Vec<SocketAddrV4>> {
+    if candidates.is_empty()
+        || candidates.len() > MAX_ADDRESSES
+        || candidates
+            .iter()
+            .any(|ip| !public_ipv4(*ip) || local.contains(ip))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "DNS destination is not public IPv4",
+        ));
+    }
+    Ok(candidates
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|ip| SocketAddrV4::new(ip, port))
+        .collect())
+}
+
+fn public_ipv4(ip: Ipv4Addr) -> bool {
+    const DENIED: &[(u32, u32)] = &[
+        (0x00000000, 8),
+        (0x0a000000, 8),
+        (0x64400000, 10),
+        (0x7f000000, 8),
+        (0xa9fe0000, 16),
+        (0xac100000, 12),
+        (0xc0000000, 24),
+        (0xc0000200, 24),
+        (0xc01fc400, 24),
+        (0xc034c100, 24),
+        (0xc0586300, 24),
+        (0xc0a80000, 16),
+        (0xc0af3000, 24),
+        (0xc6120000, 15),
+        (0xc6336400, 24),
+        (0xcb007100, 24),
+        (0xe0000000, 4),
+        (0xf0000000, 4),
+    ];
+    let ip = u32::from(ip);
+    !DENIED
+        .iter()
+        .any(|(network, prefix)| ip & (u32::MAX << (32 - prefix)) == *network)
+}
+
+async fn copy_active<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    mut reader: R,
+    mut writer: W,
+    activity: watch::Sender<Instant>,
+) -> io::Result<()> {
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let length = reader.read(&mut buffer).await?;
+        if length == 0 {
+            return writer.shutdown().await;
+        }
+        activity.send_replace(Instant::now());
+        let mut offset = 0;
+        while offset < length {
+            let written = writer.write(&buffer[offset..length]).await?;
+            if written == 0 {
+                return Err(io::Error::from(io::ErrorKind::WriteZero));
+            }
+            offset += written;
+            activity.send_replace(Instant::now());
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClientLifetime {
+    HalfClose,
+    Web,
+}
+async fn relay(client: UnixStream, remote: TcpStream, lifetime: ClientLifetime) -> io::Result<()> {
+    let (client_read, client_write) = client.into_split();
+    let (remote_read, remote_write) = remote.into_split();
+    let (activity, mut changes) = watch::channel(Instant::now());
+    timeout(TUNNEL_TIMEOUT, async {
+        let copying = async {
+            let upload = copy_active(client_read, remote_write, activity.clone());
+            let download = copy_active(remote_read, client_write, activity);
+            match lifetime {
+                ClientLifetime::HalfClose => {
+                    tokio::try_join!(upload, download)?;
+                    Ok(())
+                }
+                ClientLifetime::Web => tokio::select! {
+                    result = upload => result,
+                    result = download => result,
+                },
+            }
+        };
+        let idle = async {
+            loop {
+                let expires = *changes.borrow_and_update() + IDLE_TIMEOUT;
+                tokio::select! {
+                    _ = tokio::time::sleep_until(expires) => return Err(io::Error::new(io::ErrorKind::TimedOut, "egress tunnel idle")),
+                    changed = changes.changed() => { if changed.is_err() { return Ok(()); } }
+                }
+            }
+        };
+        tokio::select! { result = copying => result, result = idle => result }
+    }).await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn sockets() -> (UnixStream, UnixStream, TcpStream, TcpStream) {
+        let (client, proxy) = UnixStream::pair().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        (client, proxy, remote, server)
+    }
+
+    #[tokio::test]
+    async fn aborted_web_client_releases_tunnel_without_waiting_for_remote_fin() {
+        let (mut client, proxy, remote, mut server) = sockets().await;
+        let task = tokio::spawn(relay(proxy, remote, ClientLifetime::Web));
+        client.write_all(b"request").await.unwrap();
+        let mut request = [0; 7];
+        server.read_exact(&mut request).await.unwrap();
+        client.shutdown().await.unwrap();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn allowlist_tunnels_preserve_half_close_responses() {
+        let (mut client, proxy, remote, mut server) = sockets().await;
+        let task = tokio::spawn(relay(proxy, remote, ClientLifetime::HalfClose));
+        client.write_all(b"request").await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        server.read_to_end(&mut request).await.unwrap();
+        assert_eq!(request, b"request");
+        server
+            .write_all(b"response after half-close")
+            .await
+            .unwrap();
+        server.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert_eq!(response, b"response after half-close");
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn web_remote_eof_drains_all_response_bytes() {
+        let (mut client, proxy, remote, mut server) = sockets().await;
+        let task = tokio::spawn(relay(proxy, remote, ClientLifetime::Web));
+        let payload = vec![42; 256 * 1024];
+        let expected = payload.clone();
+        let writer = tokio::spawn(async move {
+            server.write_all(&payload).await.unwrap();
+            server.shutdown().await.unwrap();
+        });
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response, expected);
+        writer.await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn busy_broker_queues_instead_of_dropping_new_connections() {
+        use crate::secret_https::{Authority, Inspection};
+        use crate::secrets::{LiveBindings, SecretSession};
+        let endpoint = EgressEndpoint::new("test.example", 443).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut authority = Authority::new().unwrap();
+        authority.route_test_endpoint(endpoint.clone(), listener.local_addr().unwrap());
+        let servers = tokio::spawn(async move {
+            let mut clients = Vec::new();
+            loop {
+                clients.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let store = crate::SecretStore::new();
+        let secret = store
+            .create(
+                "broker-secret",
+                crate::SecretValue::new("broker-secret-value").unwrap(),
+                HttpConnectPolicy::new([endpoint.clone()]).unwrap(),
+            )
+            .unwrap();
+        let inspection = Inspection::new(
+            Arc::new(authority),
+            SecretSession::new(
+                store,
+                LiveBindings::new([("BROKER_TOKEN".to_string(), secret.id)].into()),
+            ),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("broker.sock");
+        let mut broker = Broker::bind(
+            &path,
+            HttpConnectPolicy::new([endpoint]).unwrap(),
+            Some(inspection),
+        )
+        .await
+        .unwrap();
+        let mut admitted = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            let mut client = UnixStream::connect(&path).await.unwrap();
+            client
+                .write_all(b"CONNECT test.example:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = [0; 39];
+            timeout(Duration::from_secs(1), client.read_exact(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&response, b"HTTP/1.1 200 Connection Established\r\n\r\n");
+            admitted.push(client);
+        }
+        let mut queued = UnixStream::connect(&path).await.unwrap();
+        queued
+            .write_all(b"CONNECT denied.example:443 HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(50), queued.read(&mut [0]))
+                .await
+                .is_err()
+        );
+        drop(admitted.pop());
+        let mut reply = String::new();
+        timeout(Duration::from_secs(1), queued.read_to_string(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.starts_with("HTTP/1.1 403"));
+        broker.shutdown().await.unwrap();
+        servers.abort();
+    }
+
+    #[test]
+    fn policy_is_canonical_and_validated_on_load() {
+        let endpoint = EgressEndpoint::new("Registry.NPMJS.org.", 443).unwrap();
+        assert_eq!(endpoint.host, "registry.npmjs.org");
+        let policy = HttpConnectPolicy::new([endpoint.clone(), endpoint]).unwrap();
+        assert_eq!(policy.endpoints.len(), 1);
+        assert!(policy.allows(&EgressEndpoint::new("registry.npmjs.org", 443).unwrap()));
+        assert!(!policy.allows(&EgressEndpoint::new("evil.registry.npmjs.org", 443).unwrap()));
+        assert!(!policy.allows(&EgressEndpoint::new("registry.npmjs.org", 80).unwrap()));
+        for host in [
+            "",
+            "*",
+            "*.example.org",
+            "127.0.0.1",
+            "2130706433",
+            "0x08080808",
+            "0177.1",
+            "0x7f.0.0.1",
+            "[::1]",
+            "a..b",
+            "-a.com",
+            "a-.com",
+            "a_b.com",
+            "é.com",
+            "a.com..",
+            "a.com/path",
+        ] {
+            assert!(EgressEndpoint::new(host, 443).is_err(), "{host}");
+        }
+        assert!(EgressEndpoint::new("example.org", 0).is_err());
+        assert!(
+            serde_json::from_str::<HttpConnectPolicy>(
+                r#"{"endpoints":[{"host":"127.0.0.1","port":443}]}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<HttpConnectPolicy>(r#"{"endpoints":[]}"#).is_err());
+        let restored: HttpConnectPolicy =
+            serde_json::from_str(r#"{"endpoints":[{"host":"Registry.NPMJS.org.","port":443}]}"#)
+                .unwrap();
+        assert_eq!(restored, policy);
+    }
+
+    #[test]
+    fn connect_parser_rejects_ambiguous_and_body_requests() {
+        assert_eq!(
+            parse_headers(b"CONNECT Example.org:443 HTTP/1.1\r\nHost: example.org:443\r\n\r\n")
+                .unwrap(),
+            EgressEndpoint::new("example.org", 443).unwrap()
+        );
+        for request in [
+            "GET https://example.org HTTP/1.1\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.0\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\nHost: other.org:443\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\nHost: example.org:443\r\nHost: example.org:443\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\n Fold: value\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\r\nBad : value\r\n\r\n",
+            "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n",
+            "CONNECT example.org:443@other.org HTTP/1.1\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.1\nX: y\r\n\r\n",
+        ] {
+            assert!(parse_headers(request.as_bytes()).is_err(), "{request}");
+        }
+    }
+
+    #[test]
+    fn special_and_local_addresses_fail_before_any_dial() {
+        for address in [
+            "0.0.0.0",
+            "10.255.255.255",
+            "100.64.0.0",
+            "100.127.255.255",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.0",
+            "172.31.255.255",
+            "192.0.0.9",
+            "192.0.2.1",
+            "192.31.196.1",
+            "192.52.193.1",
+            "192.88.99.1",
+            "192.168.1.1",
+            "192.175.48.1",
+            "198.18.0.0",
+            "198.19.255.255",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "255.255.255.255",
+        ] {
+            assert!(!public_ipv4(address.parse().unwrap()), "{address}");
+        }
+        let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
+        assert!(public_ipv4(public));
+        assert!(
+            checked_addresses(vec![public, Ipv4Addr::LOCALHOST], &BTreeSet::new(), 443).is_err()
+        );
+        assert!(checked_addresses(vec![public], &BTreeSet::from([public]), 443).is_err());
+        assert_eq!(
+            checked_addresses(vec![public, public], &BTreeSet::new(), 443).unwrap(),
+            vec![SocketAddrV4::new(public, 443)]
+        );
+        assert!(checked_addresses(vec![public; 65], &BTreeSet::new(), 443).is_err());
+        assert!(checked_addresses(vec![], &BTreeSet::new(), 443).is_err());
+    }
+
+    #[tokio::test]
+    async fn broker_denies_unlisted_and_private_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("egress.sock");
+        let policy =
+            HttpConnectPolicy::new([EgressEndpoint::new("localhost", 443).unwrap()]).unwrap();
+        let mut broker = Broker::bind(&path, policy, None).await.unwrap();
+        for (request, expected) in [
+            (
+                "CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n",
+                "HTTP/1.1 403",
+            ),
+            ("CONNECT localhost:443 HTTP/1.1\r\n\r\n", "HTTP/1.1 502"),
+            ("GET / HTTP/1.1\r\n\r\n", "HTTP/1.1 405"),
+        ] {
+            let mut client = UnixStream::connect(&path).await.unwrap();
+            client.write_all(request.as_bytes()).await.unwrap();
+            let mut reply = String::new();
+            timeout(Duration::from_secs(6), client.read_to_string(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(reply.starts_with(expected), "{reply}");
+        }
+        broker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parser_preserves_tunnel_prefix_and_broker_joins_pending_clients() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client
+            .write_all(b"CONNECT example.org:443 HTTP/1.1\r\n\r\nprefix")
+            .await
+            .unwrap();
+        let (_, pending) = read_request(&mut server).await.unwrap();
+        assert_eq!(pending, b"prefix");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("egress.sock");
+        let policy =
+            HttpConnectPolicy::new([EgressEndpoint::new("example.org", 443).unwrap()]).unwrap();
+        let mut broker = Broker::bind(&path, policy, None).await.unwrap();
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        client.write_all(b"CONNECT ").await.unwrap();
+        timeout(Duration::from_secs(1), broker.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        broker.shutdown().await.unwrap();
+        let mut byte = [0];
+        assert!(matches!(client.read(&mut byte).await, Ok(0) | Err(_)));
+    }
+}

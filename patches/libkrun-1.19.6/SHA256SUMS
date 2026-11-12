@@ -1,0 +1,2 @@
+608040ab7925d1e34566017380c99cea35bb66447e7e73a4c714a20181c8fbab  patches/libkrun-1.19.6/0001-close-regressions.patch
+df445e8a61114fc4055c7f0fcd3d3fadc892dd8bc4ab5e2b63d703a73874d4f4  patches/libkrun-1.19.6/0002-drain-before-reset.patch
