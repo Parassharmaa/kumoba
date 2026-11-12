@@ -748,6 +748,7 @@ pub(crate) async fn connect(
     egress: &EgressConfig,
 ) -> io::Result<TcpStream> {
     if let Some(proxy) = egress.proxy_for(&endpoint.host) {
+        proxy_destination_allowed(endpoint, egress).await?;
         return connect_via_proxy(proxy, endpoint).await;
     }
     let permit = DNS_SLOTS
@@ -775,6 +776,45 @@ pub(crate) async fn connect(
         Err(last)
     })
     .await?
+}
+
+const INTERNAL_NAME_SUFFIXES: &[&str] = &[
+    ".localhost",
+    ".local",
+    ".internal",
+    ".intranet",
+    ".lan",
+    ".home",
+    ".corp",
+    ".private",
+];
+
+fn looks_internal(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == "localhost"
+        || !host.contains('.')
+        || INTERNAL_NAME_SUFFIXES
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
+}
+
+async fn proxy_destination_allowed(
+    endpoint: &EgressEndpoint,
+    egress: &EgressConfig,
+) -> io::Result<()> {
+    if looks_internal(&endpoint.host) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "internal host names are not tunnelled through the upstream proxy",
+        ));
+    }
+    let endpoint = endpoint.clone();
+    let egress = egress.clone();
+    let lookup = tokio::task::spawn_blocking(move || resolve(&endpoint, &egress));
+    match timeout(SETUP_TIMEOUT, lookup).await {
+        Ok(Ok(Err(error))) if error.kind() == io::ErrorKind::PermissionDenied => Err(error),
+        _ => Ok(()),
+    }
 }
 
 async fn connect_via_proxy(
@@ -1511,6 +1551,12 @@ mod tests {
             "direct.example",
         )
         .unwrap();
+        for internal in ["localhost", "git", "db.internal", "printer.local"] {
+            let error = connect(&EgressEndpoint::new(internal, 443).unwrap(), &config)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{internal}");
+        }
         let endpoint = EgressEndpoint::new("intranet.example", 8443).unwrap();
         let mut stream = connect(&endpoint, &config).await.unwrap();
         stream.write_all(b"hello").await.unwrap();
