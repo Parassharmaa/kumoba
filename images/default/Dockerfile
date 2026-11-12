@@ -11,7 +11,7 @@ RUN apt-get update \
     nodejs npm \
     chromium fonts-dejavu fonts-liberation fonts-noto-cjk \
     xvfb xfce4-session xfwm4 xfdesktop4 xfce4-panel xfce4-terminal xfce4-settings \
-    dbus-x11 at-spi2-core x11-utils x11vnc novnc websockify scrot xdotool libnss3-tools \
+    dbus-x11 at-spi2-core libglib2.0-bin gsettings-desktop-schemas x11-utils x11vnc novnc websockify scrot xdotool libnss3-tools \
   && rm -rf /var/lib/apt/lists/* \
   && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen \
   && locale-gen

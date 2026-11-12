@@ -95,7 +95,8 @@ def start_process(name):
                 pairs[key] = rest.split(";")[0].strip("'")
         STATE.mkdir(parents=True, exist_ok=True)
         (STATE / "dbus.env").write_text("".join(f"{k}={v}\n" for k, v in pairs.items()) + "NO_AT_BRIDGE=0\nGTK_MODULES=gail:atk-bridge\n")
-        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility", "true"], env=env(), capture_output=True)
+        if shutil.which("gsettings"):
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "toolkit-accessibility", "true"], env=env(), capture_output=True)
     spawn(name)
     wait_for(lambda: running(name), 10)
 
