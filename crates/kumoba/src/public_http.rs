@@ -36,20 +36,7 @@ where
     head.extend(pending);
     let scope = &scope;
     let service = hyper::service::service_fn(|request| async move {
-        let target = request.uri().authority().and_then(|authority| {
-            crate::egress::raw_target(authority.as_str())
-                .or_else(|| crate::egress::raw_target(&format!("{}:80", authority.host())))
-        });
-        let outcome = forward(request).await;
-        let decision = match outcome.as_ref().err() {
-            None => Some(true),
-            Some(&StatusCode::BAD_GATEWAY) => Some(true),
-            Some(&StatusCode::FORBIDDEN) => Some(false),
-            Some(_) => None,
-        };
-        if let (Some((host, port)), Some(allowed)) = (target, decision) {
-            scope.record(&host, port, allowed);
-        }
+        let outcome = forward(request, scope).await;
         Ok::<_, Infallible>(match outcome {
             Ok(response) => response,
             Err(status) => failure(status),
@@ -119,11 +106,28 @@ fn strip_hop_headers(headers: &mut HeaderMap) -> Result<(), StatusCode> {
     }
     Ok(())
 }
-async fn forward(request: Request<Incoming>) -> Result<Response<ResponseBody>, StatusCode> {
+async fn forward(
+    request: Request<Incoming>,
+    scope: &crate::egress::AccessScope,
+) -> Result<Response<ResponseBody>, StatusCode> {
     if request.method() == hyper::Method::CONNECT || request.headers().contains_key("upgrade") {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let endpoint = destination(request.uri(), request.headers())?;
+    let endpoint = match destination(request.uri(), request.headers()) {
+        Ok(endpoint) => endpoint,
+        Err(status) => {
+            if status == StatusCode::FORBIDDEN
+                && let Some((host, port)) = request.uri().authority().and_then(|authority| {
+                    crate::egress::raw_target(authority.as_str()).or_else(|| {
+                        crate::egress::raw_target(&format!("{}:80", authority.host()))
+                    })
+                })
+            {
+                scope.record(&host, port, false);
+            }
+            return Err(status);
+        }
+    };
     let (mut parts, body) = request.into_parts();
     parts.uri = parts
         .uri
@@ -145,13 +149,19 @@ async fn forward(request: Request<Incoming>) -> Result<Response<ResponseBody>, S
     parts
         .headers
         .insert("connection", HeaderValue::from_static("close"));
-    let remote = crate::egress::connect(&endpoint).await.map_err(|error| {
-        if error.kind() == io::ErrorKind::PermissionDenied {
-            StatusCode::FORBIDDEN
-        } else {
-            StatusCode::BAD_GATEWAY
+    let remote = match crate::egress::connect(&endpoint).await {
+        Ok(remote) => remote,
+        Err(error) => {
+            let denied = error.kind() == io::ErrorKind::PermissionDenied;
+            scope.record(endpoint.host(), endpoint.port(), !denied);
+            return Err(if denied {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_GATEWAY
+            });
         }
-    })?;
+    };
+    scope.record(endpoint.host(), endpoint.port(), true);
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(remote))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
