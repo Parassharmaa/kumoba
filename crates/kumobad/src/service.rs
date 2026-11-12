@@ -166,12 +166,17 @@ pub fn network_policy(spec: &crate::model::NetworkSpec) -> ApiResult<Network> {
         NetworkMode::Open => Network::HttpConnect(HttpConnectPolicy::public_web()),
         NetworkMode::Allowlist => {
             let mut endpoints = Vec::new();
+            let mut domains = Vec::new();
             for host in &spec.hosts {
+                if let Some(domain) = host.strip_prefix("*.") {
+                    domains.push(domain.to_string());
+                    continue;
+                }
                 for port in [80, 443] {
                     endpoints.push(EgressEndpoint::new(host.clone(), port)?);
                 }
             }
-            Network::HttpConnect(HttpConnectPolicy::new(endpoints)?)
+            Network::HttpConnect(HttpConnectPolicy::with_domains(endpoints, domains)?)
         }
     })
 }

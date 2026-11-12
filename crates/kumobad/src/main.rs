@@ -56,12 +56,18 @@ fn options() -> Result<Options, String> {
             return Err("KUMOBAD_LISTEN must be a loopback address".into());
         }
     }
-    let egress = kumoba::EgressConfig::parse(
+    let mut egress = kumoba::EgressConfig::parse(
         &std::env::var("KUMOBAD_ALLOW_PRIVATE_HOSTS").unwrap_or_default(),
         std::env::var("KUMOBAD_UPSTREAM_PROXY").ok().as_deref(),
         &std::env::var("KUMOBAD_NO_PROXY").unwrap_or_default(),
     )
     .map_err(|error| format!("invalid egress configuration: {error}"))?;
+    let connect_by = std::env::var("KUMOBAD_UPSTREAM_PROXY_CONNECT").unwrap_or_default();
+    egress.upstream_proxy = match (egress.upstream_proxy, connect_by.as_str()) {
+        (proxy, "" | "address") => proxy,
+        (proxy, "host") => proxy.map(|proxy| proxy.connect_by_name(true)),
+        _ => return Err("KUMOBAD_UPSTREAM_PROXY_CONNECT must be address or host".into()),
+    };
     Ok(Options {
         egress,
         state_dir: env_path("KUMOBAD_STATE_DIR")?,
@@ -107,6 +113,8 @@ Configuration is read from the environment:
                         and this host's own addresses stay blocked
   KUMOBAD_UPSTREAM_PROXY  http://[user:pass@]host[:port] corporate proxy to tunnel through
   KUMOBAD_NO_PROXY      host names reached directly instead of through the upstream proxy
+  KUMOBAD_UPSTREAM_PROXY_CONNECT  what the proxy CONNECT names: address (the checked IP,
+                        default) or host (the name, for proxies with domain rules)
   KUMOBAD_LIBKRUN       libkrun.so.1 to load (Linux; default: library search path)
   KUMOBAD_LIBKRUNFW     libkrunfw.so.5 to load (Linux; default: library search path)
 Set KUMOBAD_SOCKET, KUMOBAD_LISTEN or both.

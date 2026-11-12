@@ -109,6 +109,8 @@ fn numeric_ipv4_name(host: &str) -> bool {
 #[serde(try_from = "PolicyData")]
 pub struct HttpConnectPolicy {
     endpoints: Vec<EgressEndpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    domains: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     public_web: bool,
 }
@@ -118,6 +120,8 @@ pub struct HttpConnectPolicy {
 struct PolicyData {
     endpoints: Vec<EgressEndpoint>,
     #[serde(default)]
+    domains: Vec<String>,
+    #[serde(default)]
     public_web: bool,
 }
 
@@ -125,20 +129,27 @@ impl TryFrom<PolicyData> for HttpConnectPolicy {
     type Error = Error;
     fn try_from(value: PolicyData) -> Result<Self> {
         if value.public_web {
-            if !value.endpoints.is_empty() {
+            if !value.endpoints.is_empty() || !value.domains.is_empty() {
                 return Err(Error::InvalidInput(
                     "public-web policy cannot contain endpoint grants".into(),
                 ));
             }
             Ok(Self::public_web())
         } else {
-            Self::new(value.endpoints)
+            Self::with_domains(value.endpoints, value.domains)
         }
     }
 }
 
 impl HttpConnectPolicy {
     pub fn new(endpoints: impl IntoIterator<Item = EgressEndpoint>) -> Result<Self> {
+        Self::with_domains(endpoints, Vec::new())
+    }
+
+    pub fn with_domains(
+        endpoints: impl IntoIterator<Item = EgressEndpoint>,
+        domains: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
         let mut unique = BTreeSet::new();
         for (index, endpoint) in endpoints.into_iter().enumerate() {
             if index >= MAX_ENDPOINTS {
@@ -148,13 +159,23 @@ impl HttpConnectPolicy {
             }
             unique.insert(endpoint);
         }
-        if unique.is_empty() {
+        let mut unique_domains = BTreeSet::new();
+        for (index, domain) in domains.into_iter().enumerate() {
+            if index >= MAX_ENDPOINTS {
+                return Err(Error::InvalidInput(
+                    "egress allows at most 128 domain entries".into(),
+                ));
+            }
+            unique_domains.insert(EgressEndpoint::new(domain, 443)?.host);
+        }
+        if unique.is_empty() && unique_domains.is_empty() {
             return Err(Error::InvalidInput(
                 "egress endpoint policy is empty".into(),
             ));
         }
         Ok(Self {
             endpoints: unique.into_iter().collect(),
+            domains: unique_domains.into_iter().collect(),
             public_web: false,
         })
     }
@@ -162,6 +183,7 @@ impl HttpConnectPolicy {
     pub fn public_web() -> Self {
         Self {
             endpoints: Vec::new(),
+            domains: Vec::new(),
             public_web: true,
         }
     }
@@ -174,10 +196,16 @@ impl HttpConnectPolicy {
 
     pub(crate) fn allows(&self, endpoint: &EgressEndpoint) -> bool {
         if self.public_web {
-            matches!(endpoint.port, 80 | 443)
-        } else {
-            self.endpoints.binary_search(endpoint).is_ok()
+            return matches!(endpoint.port, 80 | 443);
         }
+        self.endpoints.binary_search(endpoint).is_ok()
+            || (matches!(endpoint.port, 80 | 443)
+                && self.domains.iter().any(|domain| {
+                    endpoint.host.len() > domain.len() + 1
+                        && endpoint.host.ends_with(domain)
+                        && endpoint.host.as_bytes()[endpoint.host.len() - domain.len() - 1]
+                            == b'.'
+                }))
     }
 }
 
@@ -192,6 +220,7 @@ pub struct UpstreamProxy {
     host: String,
     port: u16,
     authorization: Option<String>,
+    by_name: bool,
 }
 
 impl UpstreamProxy {
@@ -226,7 +255,13 @@ impl UpstreamProxy {
             host: host.to_string(),
             port,
             authorization,
+            by_name: false,
         })
+    }
+
+    pub fn connect_by_name(mut self, by_name: bool) -> Self {
+        self.by_name = by_name;
+        self
     }
 }
 
@@ -759,20 +794,20 @@ pub(crate) async fn connect(
         .clone()
         .try_acquire_owned()
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DNS capacity exhausted"))?;
-    let endpoint = endpoint.clone();
-    let egress = egress.clone();
+    let target = endpoint.clone();
+    let config = egress.clone();
     let lookup = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        resolve(&endpoint, &egress)
+        resolve(&target, &config)
     });
     let addresses = timeout(SETUP_TIMEOUT, lookup)
         .await?
         .map_err(io::Error::other)??;
     if let Some(proxy) = proxy {
-        let address = *addresses
+        let checked = *addresses
             .first()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no destination addresses"))?;
-        return connect_via_proxy(proxy, address).await;
+        return connect_via_proxy(proxy, endpoint, checked).await;
     }
     timeout(SETUP_TIMEOUT, async {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no destination addresses");
@@ -809,14 +844,20 @@ fn looks_internal(host: &str) -> bool {
 
 async fn connect_via_proxy(
     proxy: &UpstreamProxy,
-    address: SocketAddrV4,
+    endpoint: &EgressEndpoint,
+    checked: SocketAddrV4,
 ) -> io::Result<TcpStream> {
     let mut stream = timeout(
         SETUP_TIMEOUT,
         TcpStream::connect((proxy.host.as_str(), proxy.port)),
     )
     .await??;
-    let mut request = format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n");
+    let target = if proxy.by_name {
+        format!("{}:{}", endpoint.host, endpoint.port)
+    } else {
+        checked.to_string()
+    };
+    let mut request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
     if let Some(authorization) = &proxy.authorization {
         request.push_str(&format!("Proxy-Authorization: {authorization}\r\n"));
     }
@@ -1261,6 +1302,22 @@ mod tests {
             serde_json::from_str(r#"{"endpoints":[{"host":"Registry.NPMJS.org.","port":443}]}"#)
                 .unwrap();
         assert_eq!(restored, policy);
+
+        let wildcard = HttpConnectPolicy::with_domains(
+            [EgressEndpoint::new("pypi.org", 443).unwrap()],
+            ["GitHub.com.".to_string()],
+        )
+        .unwrap();
+        assert!(wildcard.allows(&EgressEndpoint::new("api.github.com", 443).unwrap()));
+        assert!(wildcard.allows(&EgressEndpoint::new("raw.githubusercontent.github.com", 80).unwrap()));
+        assert!(!wildcard.allows(&EgressEndpoint::new("github.com", 443).unwrap()));
+        assert!(!wildcard.allows(&EgressEndpoint::new("evilgithub.com", 443).unwrap()));
+        assert!(!wildcard.allows(&EgressEndpoint::new("api.github.com", 8443).unwrap()));
+        assert!(wildcard.allows(&EgressEndpoint::new("pypi.org", 443).unwrap()));
+        let serialized = serde_json::to_string(&wildcard).unwrap();
+        assert!(serialized.contains(r#""domains":["github.com"]"#));
+        assert_eq!(serde_json::from_str::<HttpConnectPolicy>(&serialized).unwrap(), wildcard);
+        assert!(HttpConnectPolicy::with_domains([], ["*.github.com".to_string()]).is_err());
     }
 
     #[test]
@@ -1517,37 +1574,43 @@ mod tests {
         let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target_address = target.local_addr().unwrap();
         let upstream = tokio::spawn(async move {
-            let (mut socket, _) = target.accept().await.unwrap();
-            let mut hello = [0u8; 5];
-            socket.read_exact(&mut hello).await.unwrap();
-            assert_eq!(&hello, b"hello");
-            socket.write_all(b"world").await.unwrap();
+            for _ in 0..2 {
+                let (mut socket, _) = target.accept().await.unwrap();
+                let mut hello = [0u8; 5];
+                socket.read_exact(&mut hello).await.unwrap();
+                assert_eq!(&hello, b"hello");
+                socket.write_all(b"world").await.unwrap();
+            }
         });
         let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_address = proxy.local_addr().unwrap();
-        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let proxy_task = {
             let seen = seen.clone();
             tokio::spawn(async move {
-                let (mut client, _) = proxy.accept().await.unwrap();
-                let mut head = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    client.read_exact(&mut byte).await.unwrap();
-                    head.push(byte[0]);
+                loop {
+                    let (mut client, _) = proxy.accept().await.unwrap();
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        client.read_exact(&mut byte).await.unwrap();
+                        head.push(byte[0]);
+                    }
+                    seen.lock().unwrap().push(String::from_utf8(head).unwrap());
+                    let remote = TcpStream::connect(target_address).await.unwrap();
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    tokio::spawn(async move {
+                        let (mut client_read, mut client_write) = client.into_split();
+                        let (mut remote_read, mut remote_write) = remote.into_split();
+                        let _ = tokio::join!(
+                            tokio::io::copy(&mut client_read, &mut remote_write),
+                            tokio::io::copy(&mut remote_read, &mut client_write)
+                        );
+                    });
                 }
-                *seen.lock().unwrap() = String::from_utf8(head).unwrap();
-                let remote = TcpStream::connect(target_address).await.unwrap();
-                client
-                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                    .await
-                    .unwrap();
-                let (mut client_read, mut client_write) = client.into_split();
-                let (mut remote_read, mut remote_write) = remote.into_split();
-                let _ = tokio::join!(
-                    tokio::io::copy(&mut client_read, &mut remote_write),
-                    tokio::io::copy(&mut remote_read, &mut client_write)
-                );
             })
         };
         let config = EgressConfig::parse(
@@ -1585,12 +1648,19 @@ mod tests {
         stream.read_exact(&mut reply).await.unwrap();
         assert_eq!(&reply, b"world");
         drop(stream);
+        let mut by_name = config.clone();
+        by_name.upstream_proxy = by_name.upstream_proxy.map(|proxy| proxy.connect_by_name(true));
+        let mut named = connect(&endpoint, &by_name).await.unwrap();
+        named.write_all(b"hello").await.unwrap();
+        named.read_exact(&mut reply).await.unwrap();
+        drop(named);
         upstream.await.unwrap();
         proxy_task.abort();
-        let head = seen.lock().unwrap().clone();
-        assert!(head.starts_with("CONNECT 93.184.216.34:8443 HTTP/1.1\r\n"), "{head}");
-        assert!(head.contains("Host: 93.184.216.34:8443\r\n"));
-        assert!(head.contains("Proxy-Authorization: Basic YWdlbnQ6c2VjcmV0\r\n"));
+        let heads = seen.lock().unwrap().clone();
+        assert!(heads[0].starts_with("CONNECT 93.184.216.34:8443 HTTP/1.1\r\n"), "{}", heads[0]);
+        assert!(heads[0].contains("Host: 93.184.216.34:8443\r\n"));
+        assert!(heads[0].contains("Proxy-Authorization: Basic YWdlbnQ6c2VjcmV0\r\n"));
+        assert!(heads[1].starts_with("CONNECT intranet.example:8443 HTTP/1.1\r\n"), "{}", heads[1]);
 
         let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused_address = refused.local_addr().unwrap();

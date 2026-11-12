@@ -26,7 +26,7 @@ Errors are JSON: `{"error": "<code>", "message": "<detail>"}` with an HTTP statu
 }
 ```
 
-Only `image` is required. `network.mode` is `open`, `allowlist` or `blocked`. `autoStopMinutes: 0` disables auto-stop. `autoDeleteMinutes` removes a stopped sandbox after that many minutes; `null` keeps it.
+Only `image` is required. `network.mode` is `open`, `allowlist` or `blocked`. In `allowlist` mode `hosts` holds exact host names and `*.domain` wildcards (which match subdomains, not the domain itself), reachable on ports 80 and 443. `autoStopMinutes: 0` disables auto-stop. `autoDeleteMinutes` removes a stopped sandbox after that many minutes; `null` keeps it.
 
 The new sandbox is **stopped**. Returns a summary:
 
