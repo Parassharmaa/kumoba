@@ -61,4 +61,29 @@ check access-log-denied "$access" '"decision":"denied"'
 check access-log-labels "$access" '"team":"o1"'
 check access-log-sandbox "$access" "\"sandboxId\":\"$open_id\""
 api -X DELETE "http://d/v1/sandboxes/$open_id" >/dev/null
+
+keep_id=$(api -X POST http://d/v1/sandboxes -H 'content-type: application/json' \
+  -d '{"image":"test","labels":{"keep":"yes"},"cpu":1,"memoryMib":512,"autoStopMinutes":0,"network":{"mode":"blocked"}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+api -X POST "http://d/v1/sandboxes/$keep_id/start" >/dev/null
+api -X POST "http://d/v1/sandboxes/$keep_id/exec" -H 'content-type: application/json' \
+  -d '{"argv":["/bin/sh","-c","echo survived > /workspace/restart.txt"],"timeoutMs":10000}' >/dev/null
+check network-while-running "$(curl -sS --unix-socket "$socket" -H "authorization: Bearer $token" -X PATCH "http://d/v1/sandboxes/$keep_id" -H 'content-type: application/json' -d '{"network":{"mode":"allowlist","hosts":["pypi.org","*.github.com"]}}')" "stop the sandbox"
+kill "$daemon"; wait "$daemon" 2>/dev/null || true
+KUMOBAD_STATE_DIR="$work/state" KUMOBAD_WORKER="$PWD/.local/bin/kumoba-worker" \
+  KUMOBAD_IMAGES="test=$image" KUMOBAD_SOCKET="$socket" KUMOBAD_TOKEN_FILE="$work/token" \
+  .local/bin/kumobad 2>> "$work/daemon.log" &
+daemon=$!
+for _ in $(seq 100); do [[ -S "$socket" ]] && break; sleep 0.1; done
+restarted=$(api "http://d/v1/sandboxes/$keep_id")
+check restart-stopped "$restarted" '"state":"stopped"'
+check restart-labels "$restarted" '"keep":"yes"'
+check restart-list "$(api "http://d/v1/sandboxes?label=keep:yes")" "$keep_id"
+check network-update "$(api -X PATCH "http://d/v1/sandboxes/$keep_id" -H 'content-type: application/json' -d '{"network":{"mode":"allowlist","hosts":["pypi.org","*.github.com"]}}')" '"mode":"allowlist"'
+api -X POST "http://d/v1/sandboxes/$keep_id/start" >/dev/null
+check network-applied "$(api "http://d/v1/sandboxes/$keep_id")" '"hosts":["pypi.org","*.github.com"]'
+check network-enforced "$(api -X POST "http://d/v1/sandboxes/$keep_id/exec" -H 'content-type: application/json' \
+  -d '{"argv":["/bin/sh","-c","wget -T 3 -q -O - http://example.com/ 2>&1 || echo blocked"],"timeoutMs":15000}')" "$(printf 'blocked' | base64 | cut -c1-8)"
+check restart-disk "$(api -X POST "http://d/v1/sandboxes/$keep_id/exec" -H 'content-type: application/json' \
+  -d '{"argv":["/bin/cat","/workspace/restart.txt"],"timeoutMs":10000}')" "$(printf 'survived\n' | base64)"
+api -X DELETE "http://d/v1/sandboxes/$keep_id" >/dev/null
 echo SMOKE_PASS

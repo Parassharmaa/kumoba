@@ -181,6 +181,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const patch = JSON.parse((await body(request)).toString()) as Partial<FakeSandbox>;
         if (patch.labels) sandbox.labels = patch.labels;
         if (patch.autoStopMinutes !== undefined) sandbox.autoStopMinutes = patch.autoStopMinutes;
+        if (patch.network) {
+          if (sandbox.state === "started") {
+            send(response, 409, { error: "conflict", message: "stop the sandbox before changing its network" });
+            return;
+          }
+          sandbox.network = patch.network;
+        }
         send(response, 200, summary(sandbox));
       } else if (method === "DELETE" && action === undefined) {
         fake.sandboxes.delete(sandbox.id);

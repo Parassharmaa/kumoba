@@ -80,6 +80,44 @@ pub struct Entry {
     secrets: std::sync::Mutex<BTreeMap<String, (SecretId, Vec<String>)>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntrySnapshot {
+    pub activity_ms: u64,
+    pub stopped_at_ms: u64,
+    pub operations: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapAction {
+    Stop,
+    Delete,
+}
+
+pub fn reap_action(
+    state: State,
+    meta: &Meta,
+    snapshot: EntrySnapshot,
+    now_ms: u64,
+) -> Option<ReapAction> {
+    let minutes = |value: u32| u64::from(value) * 60_000;
+    if snapshot.operations > 0 {
+        return None;
+    }
+    match state {
+        State::Running => (meta.auto_stop_minutes > 0
+            && now_ms.saturating_sub(snapshot.activity_ms) >= minutes(meta.auto_stop_minutes))
+        .then_some(ReapAction::Stop),
+        State::Stopped => meta
+            .auto_delete_minutes
+            .filter(|delete_after| {
+                snapshot.stopped_at_ms > 0
+                    && now_ms.saturating_sub(snapshot.stopped_at_ms) >= minutes(*delete_after)
+            })
+            .map(|_| ReapAction::Delete),
+        State::Deleted => None,
+    }
+}
+
 pub struct OperationGuard(Arc<Entry>);
 
 impl Drop for OperationGuard {
@@ -99,6 +137,14 @@ impl Entry {
             operations: AtomicUsize::new(0),
             secrets: std::sync::Mutex::new(BTreeMap::new()),
         })
+    }
+
+    pub fn snapshot(&self) -> EntrySnapshot {
+        EntrySnapshot {
+            activity_ms: self.activity_ms.load(Ordering::SeqCst),
+            stopped_at_ms: self.stopped_at_ms.load(Ordering::SeqCst),
+            operations: self.operations.load(Ordering::SeqCst),
+        }
     }
 
     pub fn touch(&self) {
@@ -390,6 +436,18 @@ impl Service {
 
     pub async fn update(&self, id: &str, request: UpdateRequest) -> ApiResult<Summary> {
         let entry = self.entry(id).await?;
+        if let Some(network) = &request.network {
+            let policy = network_policy(network)?;
+            let mut sandbox = entry.sandbox.lock().await;
+            if sandbox.state()? != State::Stopped {
+                return Err(ApiError::Status(
+                    409,
+                    "stop the sandbox before changing its network".into(),
+                ));
+            }
+            sandbox.set_network(policy)?;
+            entry.meta.lock().expect("meta lock").network = network.clone();
+        }
         let meta = {
             let mut meta = entry.meta.lock().expect("meta lock");
             if let Some(labels) = request.labels {
@@ -584,28 +642,25 @@ impl Service {
                 Ok(state) => state,
                 Err(_) => continue,
             };
-            let minutes = |value: u32| u64::from(value) * 60_000;
-            let idle = |entry: &Entry| {
-                entry.operations.load(Ordering::SeqCst) == 0
-                    && now_ms().saturating_sub(entry.activity_ms.load(Ordering::SeqCst))
-                        >= minutes(meta.auto_stop_minutes)
-            };
-            if state == State::Running && meta.auto_stop_minutes > 0 && idle(&entry) {
-                let mut sandbox = entry.sandbox.lock().await;
-                if matches!(sandbox.state(), Ok(State::Running)) && idle(&entry) {
-                    let result = sandbox.stop().await;
-                    if result.is_ok() {
-                        entry.stopped_at_ms.store(now_ms(), Ordering::SeqCst);
+            match reap_action(state, &meta, entry.snapshot(), now) {
+                Some(ReapAction::Stop) => {
+                    let mut sandbox = entry.sandbox.lock().await;
+                    if matches!(sandbox.state(), Ok(State::Running))
+                        && reap_action(State::Running, &meta, entry.snapshot(), now_ms())
+                            == Some(ReapAction::Stop)
+                    {
+                        let result = sandbox.stop().await;
+                        if result.is_ok() {
+                            entry.stopped_at_ms.store(now_ms(), Ordering::SeqCst);
+                        }
+                        log("auto_stop", &id, result.err().map(ApiError::from));
                     }
-                    log("auto_stop", &id, result.err().map(ApiError::from));
+                    continue;
                 }
-                continue;
+                Some(ReapAction::Delete) => {}
+                None => continue,
             }
             let stopped_at = entry.stopped_at_ms.load(Ordering::SeqCst);
-            if state == State::Stopped
-                && stopped_at > 0
-                && let Some(delete_after) = meta.auto_delete_minutes
-                && now.saturating_sub(stopped_at) >= minutes(delete_after)
             {
                 let mut sandbox = entry.sandbox.lock().await;
                 if !matches!(sandbox.state(), Ok(State::Stopped))
@@ -654,4 +709,57 @@ fn log(event: &str, id: &str, error: Option<ApiError>) {
         "error": error.map(|error| error.to_string()),
     });
     eprintln!("{line}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(auto_stop_minutes: u32, auto_delete_minutes: Option<u32>) -> Meta {
+        Meta {
+            id: "sbx".into(),
+            image: "test".into(),
+            labels: BTreeMap::new(),
+            cpu: 1,
+            memory_mib: 512,
+            auto_stop_minutes,
+            auto_delete_minutes,
+            network: crate::model::NetworkSpec::default(),
+            created_at_ms: 0,
+        }
+    }
+
+    fn snapshot(activity_ms: u64, stopped_at_ms: u64, operations: usize) -> EntrySnapshot {
+        EntrySnapshot {
+            activity_ms,
+            stopped_at_ms,
+            operations,
+        }
+    }
+
+    const MINUTE: u64 = 60_000;
+
+    #[test]
+    fn running_sandboxes_stop_only_when_idle_past_their_limit() {
+        let m = meta(15, None);
+        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE), Some(ReapAction::Stop));
+        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE - 1), None);
+        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 1), 60 * MINUTE), None);
+        assert_eq!(reap_action(State::Running, &meta(0, None), snapshot(0, 0, 0), u64::MAX), None);
+        assert_eq!(reap_action(State::Running, &m, snapshot(10 * MINUTE, 0, 0), 24 * MINUTE), None);
+    }
+
+    #[test]
+    fn stopped_sandboxes_delete_only_after_a_recorded_stop() {
+        let m = meta(15, Some(30));
+        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 31 * MINUTE), Some(ReapAction::Delete));
+        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 30 * MINUTE), None);
+        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, 0, 0), u64::MAX), None);
+        assert_eq!(reap_action(State::Stopped, &meta(15, None), snapshot(0, MINUTE, 0), u64::MAX), None);
+        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 2), u64::MAX), None);
+        assert_eq!(reap_action(State::Deleted, &m, snapshot(0, MINUTE, 0), u64::MAX), None);
+        let restarted = snapshot(0, 5 * MINUTE + RESTART_DELETE_GRACE_MS, 0);
+        assert_eq!(reap_action(State::Stopped, &m, restarted, 5 * MINUTE + RESTART_DELETE_GRACE_MS + 29 * MINUTE), None);
+        assert_eq!(reap_action(State::Stopped, &m, restarted, 5 * MINUTE + RESTART_DELETE_GRACE_MS + 30 * MINUTE), Some(ReapAction::Delete));
+    }
 }

@@ -55,6 +55,8 @@ export type ListOptions = {
 export type UpdateOptions = {
   labels?: Record<string, string>;
   autoStopMinutes?: number;
+  /** New network policy; only accepted while the sandbox is stopped, applied on the next start. */
+  network?: NetworkOption;
 };
 
 export type RunOptions = {

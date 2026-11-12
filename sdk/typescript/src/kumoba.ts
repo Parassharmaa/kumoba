@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Api, toInfo } from "./api.js";
 import { KumobaError } from "./errors.js";
+import { toNetwork } from "./network.js";
 import { Sandbox, type SandboxContext } from "./sandbox.js";
 import type {
   AccessEntry,
@@ -25,11 +26,6 @@ export type KumobaOptions = {
   defaultUser?: string;
 };
 
-function toNetwork(option: NetworkOption | undefined): Network {
-  if (option === undefined || option === "open") return { mode: "open", hosts: [] };
-  if (option === "blocked") return { mode: "blocked", hosts: [] };
-  return { mode: "allowlist", hosts: option.allow };
-}
 
 /** Entry point. Talks to one kumobad daemon. */
 export class Kumoba {

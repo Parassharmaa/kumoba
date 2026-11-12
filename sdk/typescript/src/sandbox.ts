@@ -1,6 +1,7 @@
 import { type Api, type ExecEvent, toInfo } from "./api.js";
 import { Desktop } from "./desktop.js";
 import { Files } from "./files.js";
+import { toNetwork } from "./network.js";
 import { toArgv } from "./shell.js";
 import type {
   Exposed,
@@ -82,7 +83,13 @@ export class Sandbox implements AsyncDisposable {
   }
 
   async update(options: UpdateOptions): Promise<SandboxInfo> {
-    this.current = toInfo(await this.context.api.update(this.id, options));
+    const { network, ...rest } = options;
+    this.current = toInfo(
+      await this.context.api.update(this.id, {
+        ...rest,
+        ...(network === undefined ? {} : { network: toNetwork(network) }),
+      })
+    );
     return this.current;
   }
 

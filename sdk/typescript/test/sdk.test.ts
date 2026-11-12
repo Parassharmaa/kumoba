@@ -226,6 +226,17 @@ describe("Sandbox extras", () => {
   });
 });
 
+describe("Sandbox.update", () => {
+  it("changes the network policy of a stopped sandbox", async () => {
+    const sandbox = await kumoba.create({ start: false });
+    await sandbox.update({ network: { allow: ["pypi.org", "*.github.com"] }, autoStopMinutes: 3 });
+    expect(sandbox.info.network).toEqual({ mode: "allowlist", hosts: ["pypi.org", "*.github.com"] });
+    expect(sandbox.info.autoStopMinutes).toBe(3);
+    await sandbox.start();
+    await expect(sandbox.update({ network: "blocked" })).rejects.toMatchObject({ status: 409 });
+  });
+});
+
 describe("Kumoba.accessLog", () => {
   it("pages through the daemon's access log inside the window", async () => {
     const base = {

@@ -51,6 +51,8 @@ pub struct UpdateRequest {
     #[serde(default)]
     pub labels: Option<BTreeMap<String, String>>,
     #[serde(default)]
+    pub network: Option<NetworkSpec>,
+    #[serde(default)]
     pub auto_stop_minutes: Option<u32>,
     #[serde(default)]
     pub auto_delete_minutes: Option<Option<u32>>,

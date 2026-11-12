@@ -50,7 +50,7 @@ The new sandbox is **stopped**. Returns a summary:
 
 - `GET /v1/sandboxes?label=key:value&label=k2:v2&limit=100` → `{"sandboxes": [...], "truncated": false}`. Every `label` filter must match. Newest first.
 - `GET /v1/sandboxes/{id}` → summary.
-- `PATCH /v1/sandboxes/{id}` with `{"labels": {...}, "autoStopMinutes": 30}` (both optional) → summary.
+- `PATCH /v1/sandboxes/{id}` with `{"labels": {...}, "autoStopMinutes": 30, "network": {...}}` (all optional) → summary. `network` can only change while the sandbox is stopped (409 otherwise) and takes effect on the next start; the disk is kept.
 - `DELETE /v1/sandboxes/{id}` → `{"deleted": true}`. Stops the VM if needed and removes its disk.
 
 ### Start and stop

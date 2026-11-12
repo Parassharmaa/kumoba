@@ -141,7 +141,7 @@ export class Api {
 
   async update(
     id: string,
-    patch: { labels?: Record<string, string>; autoStopMinutes?: number }
+    patch: { labels?: Record<string, string>; autoStopMinutes?: number; network?: Network }
   ): Promise<Summary> {
     return this.http.json(summarySchema, { method: "PATCH", path: sandboxPath(id), json: patch });
   }

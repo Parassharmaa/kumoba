@@ -352,6 +352,22 @@ impl Sandbox {
         Ok(())
     }
 
+    pub fn set_network(&mut self, network: crate::Network) -> Result<()> {
+        self.available()?;
+        if self.state()? != State::Stopped {
+            return Err(Error::Busy);
+        }
+        let mut next = self.manifest.config.clone();
+        next.network = network;
+        next.validate()?;
+        let previous = std::mem::replace(&mut self.manifest.config, next);
+        if let Err(error) = save_manifest(&self.directory, &self.manifest) {
+            self.manifest.config = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn mount_host_directories(&mut self) -> Result<()> {
         for (index, mount) in self.manifest.config.mounts.clone().iter().enumerate() {
             let mkdir = self
