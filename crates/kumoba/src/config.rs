@@ -13,6 +13,7 @@ pub struct RuntimeConfig {
     pub stop_timeout: Duration,
     pub secret_store: Option<crate::SecretStore>,
     pub access_sink: Option<AccessSink>,
+    pub egress: Arc<crate::EgressConfig>,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ impl RuntimeConfig {
             stop_timeout: Duration::from_secs(10),
             secret_store: None,
             access_sink: None,
+            egress: Arc::default(),
         }
     }
 }

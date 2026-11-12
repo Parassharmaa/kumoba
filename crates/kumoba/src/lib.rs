@@ -8,7 +8,7 @@ mod platform;
 pub use platform::HostPlatform;
 mod desktop;
 mod egress;
-pub use egress::AccessRecord;
+pub use egress::{AccessRecord, EgressConfig, PrivateAllow, UpstreamProxy};
 mod execution;
 mod public_http;
 mod runtime;

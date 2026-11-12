@@ -178,8 +178,14 @@ impl Sandbox {
                     .access_sink
                     .as_ref()
                     .map(|sink| sink.for_sandbox(self.id()));
-                let broker =
-                    crate::egress::Broker::bind(&path, policy.clone(), inspection, sink).await?;
+                let broker = crate::egress::Broker::bind(
+                    &path,
+                    policy.clone(),
+                    inspection,
+                    sink,
+                    self.inner.config.egress.clone(),
+                )
+                .await?;
                 (Some(path), Some(broker))
             }
         };

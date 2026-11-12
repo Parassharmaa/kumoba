@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::{TcpListener, UnixListener};
 
 struct Options {
+    egress: kumoba::EgressConfig,
     state_dir: PathBuf,
     worker: PathBuf,
     images: BTreeMap<String, PathBuf>,
@@ -55,7 +56,14 @@ fn options() -> Result<Options, String> {
             return Err("KUMOBAD_LISTEN must be a loopback address".into());
         }
     }
+    let egress = kumoba::EgressConfig::parse(
+        &std::env::var("KUMOBAD_ALLOW_PRIVATE_HOSTS").unwrap_or_default(),
+        std::env::var("KUMOBAD_UPSTREAM_PROXY").ok().as_deref(),
+        &std::env::var("KUMOBAD_NO_PROXY").unwrap_or_default(),
+    )
+    .map_err(|error| format!("invalid egress configuration: {error}"))?;
     Ok(Options {
+        egress,
         state_dir: env_path("KUMOBAD_STATE_DIR")?,
         worker: env_path("KUMOBAD_WORKER")?,
         images,
@@ -94,6 +102,11 @@ Configuration is read from the environment:
   KUMOBAD_SOCKET        Unix socket to listen on (mode 0600)
   KUMOBAD_LISTEN        loopback host:port to listen on, e.g. 127.0.0.1:7788
   KUMOBAD_MAX_RUNNING   concurrently running sandboxes (default 4)
+  KUMOBAD_ALLOW_PRIVATE_HOSTS  intranet destinations sandboxes may reach: host names (with
+                        subdomains) and IPv4 CIDRs, comma separated. Loopback, link-local
+                        and this host's own addresses stay blocked
+  KUMOBAD_UPSTREAM_PROXY  http://[user:pass@]host[:port] corporate proxy to tunnel through
+  KUMOBAD_NO_PROXY      host names reached directly instead of through the upstream proxy
   KUMOBAD_LIBKRUN       libkrun.so.1 to load (Linux; default: library search path)
   KUMOBAD_LIBKRUNFW     libkrunfw.so.5 to load (Linux; default: library search path)
 Set KUMOBAD_SOCKET, KUMOBAD_LISTEN or both.
@@ -132,6 +145,7 @@ async fn run() -> Result<(), String> {
     runtime_config.boot_timeout = Duration::from_secs(120);
     let store = kumoba::SecretStore::new();
     runtime_config.secret_store = Some(store.clone());
+    runtime_config.egress = Arc::new(options.egress.clone());
     let (access_tx, access_rx) = tokio::sync::mpsc::channel(65_536);
     let dropped = service::DroppedRecords::default();
     let overflow = dropped.clone();

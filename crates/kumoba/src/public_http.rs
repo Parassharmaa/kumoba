@@ -28,6 +28,7 @@ pub(crate) async fn serve<S>(
     mut head: Vec<u8>,
     pending: Vec<u8>,
     scope: crate::egress::AccessScope,
+    egress: &crate::egress::EgressConfig,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -36,7 +37,7 @@ where
     head.extend(pending);
     let scope = &scope;
     let service = hyper::service::service_fn(|request| async move {
-        let outcome = forward(request, scope).await;
+        let outcome = forward(request, scope, egress).await;
         Ok::<_, Infallible>(match outcome {
             Ok(response) => response,
             Err(status) => failure(status),
@@ -109,6 +110,7 @@ fn strip_hop_headers(headers: &mut HeaderMap) -> Result<(), StatusCode> {
 async fn forward(
     request: Request<Incoming>,
     scope: &crate::egress::AccessScope,
+    egress: &crate::egress::EgressConfig,
 ) -> Result<Response<ResponseBody>, StatusCode> {
     if request.method() == hyper::Method::CONNECT || request.headers().contains_key("upgrade") {
         return Err(StatusCode::BAD_REQUEST);
@@ -149,7 +151,7 @@ async fn forward(
     parts
         .headers
         .insert("connection", HeaderValue::from_static("close"));
-    let remote = match crate::egress::connect(&endpoint).await {
+    let remote = match crate::egress::connect(&endpoint, egress).await {
         Ok(remote) => remote,
         Err(error) => {
             let denied = error.kind() == io::ErrorKind::PermissionDenied;
@@ -285,6 +287,7 @@ mod tests {
             b"GET http://example.com/ HTTP/1.1\r\nHost: localhost\r\n\r\n".to_vec(),
             Vec::new(),
             crate::egress::AccessScope::new(None),
+            Box::leak(Box::default()),
         ));
         let mut response = Vec::new();
         timeout(Duration::from_secs(2), client.read_to_end(&mut response))

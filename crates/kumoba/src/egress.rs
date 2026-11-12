@@ -182,6 +182,133 @@ impl HttpConnectPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrivateAllow {
+    Host(String),
+    Cidr(Ipv4Addr, u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamProxy {
+    host: String,
+    port: u16,
+    authorization: Option<String>,
+}
+
+impl UpstreamProxy {
+    pub fn parse(url: &str) -> Result<Self> {
+        let rest = url
+            .strip_prefix("http://")
+            .ok_or_else(|| Error::InvalidInput("upstream proxy must be an http:// URL".into()))?;
+        let rest = rest.trim_end_matches('/');
+        let (credentials, authority) = match rest.rsplit_once('@') {
+            Some((credentials, authority)) => (Some(credentials), authority),
+            None => (None, rest),
+        };
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => (
+                host,
+                port.parse::<u16>()
+                    .map_err(|_| Error::InvalidInput("invalid upstream proxy port".into()))?,
+            ),
+            None => (authority, 3128),
+        };
+        if host.is_empty() || host.contains(['/', '?', '#']) {
+            return Err(Error::InvalidInput("invalid upstream proxy host".into()));
+        }
+        let authorization = credentials.map(|credentials| {
+            use base64::Engine;
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(credentials)
+            )
+        });
+        Ok(Self {
+            host: host.to_string(),
+            port,
+            authorization,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EgressConfig {
+    pub private_allow: Vec<PrivateAllow>,
+    pub upstream_proxy: Option<UpstreamProxy>,
+    pub no_proxy: Vec<String>,
+}
+
+fn host_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.trim_start_matches('.').to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    !pattern.is_empty()
+        && (host == pattern || host.ends_with(&format!(".{pattern}")))
+}
+
+fn cidr_contains(network: Ipv4Addr, prefix: u8, ip: Ipv4Addr) -> bool {
+    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - u32::from(prefix)) };
+    u32::from(ip) & mask == u32::from(network) & mask
+}
+
+impl EgressConfig {
+    pub fn parse(
+        private_allow: &str,
+        upstream_proxy: Option<&str>,
+        no_proxy: &str,
+    ) -> Result<Self> {
+        let mut allow = Vec::new();
+        for item in private_allow.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+            if let Some((network, prefix)) = item.split_once('/') {
+                let network: Ipv4Addr = network
+                    .parse()
+                    .map_err(|_| Error::InvalidInput(format!("invalid CIDR {item}")))?;
+                let prefix: u8 = prefix
+                    .parse()
+                    .ok()
+                    .filter(|prefix| *prefix <= 32)
+                    .ok_or_else(|| Error::InvalidInput(format!("invalid CIDR {item}")))?;
+                allow.push(PrivateAllow::Cidr(network, prefix));
+            } else if let Ok(ip) = item.parse::<Ipv4Addr>() {
+                allow.push(PrivateAllow::Cidr(ip, 32));
+            } else {
+                EgressEndpoint::new(item, 443)?;
+                allow.push(PrivateAllow::Host(item.to_ascii_lowercase()));
+            }
+        }
+        Ok(Self {
+            private_allow: allow,
+            upstream_proxy: upstream_proxy
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(UpstreamProxy::parse)
+                .transpose()?,
+            no_proxy: no_proxy
+                .split(',')
+                .map(str::trim)
+                .map(|item| item.trim_start_matches('.').to_ascii_lowercase())
+                .filter(|item| !item.is_empty())
+                .collect(),
+        })
+    }
+
+    fn proxy_for(&self, host: &str) -> Option<&UpstreamProxy> {
+        let proxy = self.upstream_proxy.as_ref()?;
+        let bypass = self.no_proxy.iter().any(|pattern| host_matches(pattern, host))
+            || self.private_allow.iter().any(|allow| match allow {
+                PrivateAllow::Host(pattern) => host_matches(pattern, host),
+                PrivateAllow::Cidr(..) => false,
+            });
+        (!bypass).then_some(proxy)
+    }
+
+    pub(crate) fn private_allowed(&self, host: &str, ip: Ipv4Addr) -> bool {
+        self.private_allow.iter().any(|allow| match allow {
+            PrivateAllow::Host(pattern) => host_matches(pattern, host),
+            PrivateAllow::Cidr(network, prefix) => cidr_contains(*network, *prefix, ip),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessRecord {
     pub host: String,
     pub port: u16,
@@ -291,10 +418,18 @@ impl Broker {
         policy: HttpConnectPolicy,
         inspection: Option<crate::secret_https::Inspection>,
         sink: Option<AccessSink>,
+        egress: Arc<EgressConfig>,
     ) -> io::Result<Self> {
         let listener = UnixListener::bind(path)?;
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(serve(listener, Arc::new(policy), inspection, sink, stopped));
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(policy),
+            inspection,
+            sink,
+            egress,
+            stopped,
+        ));
         Ok(Self {
             task: Some(task),
             stop: Some(stop),
@@ -331,6 +466,7 @@ async fn serve(
     policy: Arc<HttpConnectPolicy>,
     inspection: Option<crate::secret_https::Inspection>,
     sink: Option<AccessSink>,
+    egress: Arc<EgressConfig>,
     mut stopped: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let mut relays = JoinSet::new();
@@ -356,7 +492,8 @@ async fn serve(
                 let policy = policy.clone();
                 let inspection = inspection.clone();
                 let scope = AccessScope::new(sink.clone());
-                relays.spawn(async move { let _ = connection(stream, &policy, inspection, scope).await; });
+                let egress = egress.clone();
+                relays.spawn(async move { let _ = connection(stream, &policy, inspection, scope, &egress).await; });
             }
         }
     };
@@ -481,13 +618,14 @@ async fn connection(
     policy: &HttpConnectPolicy,
     inspection: Option<crate::secret_https::Inspection>,
     scope: AccessScope,
+    egress: &EgressConfig,
 ) -> io::Result<()> {
     let (endpoint, pending) = match timeout(SETUP_TIMEOUT, read_head(&mut client)).await {
         Ok(Ok((head, pending))) => match parse_headers(&head) {
             Ok(endpoint) => (endpoint, pending),
             Err(error) if error.kind() == io::ErrorKind::Unsupported && policy.public_web => {
                 let client = Counted::new(client, scope.counters());
-                return crate::public_http::serve(client, head, pending, scope).await;
+                return crate::public_http::serve(client, head, pending, scope, egress).await;
             }
             Err(error) => {
                 if let Some((host, port)) = raw_connect_target(&head) {
@@ -520,7 +658,7 @@ async fn connection(
         .await?;
         return Ok(());
     }
-    let remote = match remote_for(&endpoint, &inspection).await {
+    let remote = match remote_for(&endpoint, &inspection, egress).await {
         Ok(remote) => remote,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             scope.record(endpoint.host(), endpoint.port(), false);
@@ -555,8 +693,10 @@ async fn connection(
 fn remote_for(
     endpoint: &EgressEndpoint,
     inspection: &Option<crate::secret_https::Inspection>,
+    egress: &EgressConfig,
 ) -> impl Future<Output = io::Result<TcpStream>> + use<> {
     let endpoint = endpoint.clone();
+    let egress = egress.clone();
     #[cfg(test)]
     let test_route = inspection
         .as_ref()
@@ -570,7 +710,7 @@ fn remote_for(
         if let Some(address) = test_route {
             return TcpStream::connect(address).await;
         }
-        connect(&endpoint).await
+        connect(&endpoint, &egress).await
     }
 }
 
@@ -603,16 +743,23 @@ where
     .await
 }
 
-pub(crate) async fn connect(endpoint: &EgressEndpoint) -> io::Result<TcpStream> {
+pub(crate) async fn connect(
+    endpoint: &EgressEndpoint,
+    egress: &EgressConfig,
+) -> io::Result<TcpStream> {
+    if let Some(proxy) = egress.proxy_for(&endpoint.host) {
+        return connect_via_proxy(proxy, endpoint).await;
+    }
     let permit = DNS_SLOTS
         .get_or_init(|| Arc::new(Semaphore::new(8)))
         .clone()
         .try_acquire_owned()
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DNS capacity exhausted"))?;
     let endpoint = endpoint.clone();
+    let egress = egress.clone();
     let lookup = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        resolve(&endpoint)
+        resolve(&endpoint, &egress)
     });
     let addresses = timeout(SETUP_TIMEOUT, lookup)
         .await?
@@ -630,7 +777,52 @@ pub(crate) async fn connect(endpoint: &EgressEndpoint) -> io::Result<TcpStream> 
     .await?
 }
 
-fn resolve(endpoint: &EgressEndpoint) -> io::Result<Vec<SocketAddrV4>> {
+async fn connect_via_proxy(
+    proxy: &UpstreamProxy,
+    endpoint: &EgressEndpoint,
+) -> io::Result<TcpStream> {
+    let mut stream = timeout(
+        SETUP_TIMEOUT,
+        TcpStream::connect((proxy.host.as_str(), proxy.port)),
+    )
+    .await??;
+    let mut request = format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n",
+        host = endpoint.host,
+        port = endpoint.port
+    );
+    if let Some(authorization) = &proxy.authorization {
+        request.push_str(&format!("Proxy-Authorization: {authorization}\r\n"));
+    }
+    request.push_str("\r\n");
+    timeout(SETUP_TIMEOUT, stream.write_all(request.as_bytes())).await??;
+    let mut head = Vec::new();
+    timeout(SETUP_TIMEOUT, async {
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if head.len() >= 8192 || stream.read(&mut byte).await? == 0 {
+                return Err(invalid("upstream proxy closed before answering CONNECT"));
+            }
+            head.push(byte[0]);
+        }
+        Ok(())
+    })
+    .await??;
+    let status = std::str::from_utf8(&head)
+        .ok()
+        .and_then(|head| head.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok());
+    match status {
+        Some(200) => Ok(stream),
+        Some(403 | 407) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "upstream proxy refused the destination",
+        )),
+        _ => Err(io::Error::other("upstream proxy rejected CONNECT")),
+    }
+}
+
+fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<SocketAddrV4>> {
     let host = CString::new(endpoint.host.as_str()).map_err(|_| invalid("invalid DNS hostname"))?;
     let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
     hints.ai_family = libc::AF_INET;
@@ -666,7 +858,13 @@ fn resolve(endpoint: &EgressEndpoint) -> io::Result<Vec<SocketAddrV4>> {
         candidates.push(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
         current = entry.ai_next;
     }
-    checked_addresses(candidates, &local_addresses()?, endpoint.port)
+    checked_addresses(
+        candidates,
+        &local_addresses()?,
+        endpoint.port,
+        &endpoint.host,
+        egress,
+    )
 }
 
 fn local_addresses() -> io::Result<BTreeSet<Ipv4Addr>> {
@@ -696,16 +894,36 @@ fn local_addresses() -> io::Result<BTreeSet<Ipv4Addr>> {
     Ok(result)
 }
 
+fn never_allowed_ipv4(ip: Ipv4Addr) -> bool {
+    const DENIED: &[(u32, u32)] = &[
+        (0x00000000, 8),
+        (0x7f000000, 8),
+        (0xa9fe0000, 16),
+        (0xc0000000, 24),
+        (0xe0000000, 4),
+        (0xf0000000, 4),
+    ];
+    let ip = u32::from(ip);
+    DENIED
+        .iter()
+        .any(|(network, prefix)| ip & (u32::MAX << (32 - prefix)) == *network)
+}
+
 fn checked_addresses(
     candidates: Vec<Ipv4Addr>,
     local: &BTreeSet<Ipv4Addr>,
     port: u16,
+    host: &str,
+    egress: &EgressConfig,
 ) -> io::Result<Vec<SocketAddrV4>> {
+    let permitted = |ip: Ipv4Addr| {
+        !local.contains(&ip)
+            && !never_allowed_ipv4(ip)
+            && (public_ipv4(ip) || egress.private_allowed(host, ip))
+    };
     if candidates.is_empty()
         || candidates.len() > MAX_ADDRESSES
-        || candidates
-            .iter()
-            .any(|ip| !public_ipv4(*ip) || local.contains(ip))
+        || candidates.iter().any(|ip| !permitted(*ip))
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -917,6 +1135,7 @@ mod tests {
             HttpConnectPolicy::new([endpoint]).unwrap(),
             Some(inspection),
             None,
+            Arc::default(),
         )
         .await
         .unwrap();
@@ -1053,15 +1272,26 @@ mod tests {
         let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
         assert!(public_ipv4(public));
         assert!(
-            checked_addresses(vec![public, Ipv4Addr::LOCALHOST], &BTreeSet::new(), 443).is_err()
+            checked_addresses(
+                vec![public, Ipv4Addr::LOCALHOST],
+                &BTreeSet::new(),
+                443,
+                "example.com",
+                &EgressConfig::default()
+            )
+            .is_err()
         );
-        assert!(checked_addresses(vec![public], &BTreeSet::from([public]), 443).is_err());
+        let direct = EgressConfig::default();
+        let check = |candidates: Vec<Ipv4Addr>, local: BTreeSet<Ipv4Addr>| {
+            checked_addresses(candidates, &local, 443, "example.com", &direct)
+        };
+        assert!(check(vec![public], BTreeSet::from([public])).is_err());
         assert_eq!(
-            checked_addresses(vec![public, public], &BTreeSet::new(), 443).unwrap(),
+            check(vec![public, public], BTreeSet::new()).unwrap(),
             vec![SocketAddrV4::new(public, 443)]
         );
-        assert!(checked_addresses(vec![public; 65], &BTreeSet::new(), 443).is_err());
-        assert!(checked_addresses(vec![], &BTreeSet::new(), 443).is_err());
+        assert!(check(vec![public; 65], BTreeSet::new()).is_err());
+        assert!(check(vec![], BTreeSet::new()).is_err());
     }
 
     #[tokio::test]
@@ -1070,7 +1300,7 @@ mod tests {
         let path = directory.path().join("egress.sock");
         let policy =
             HttpConnectPolicy::new([EgressEndpoint::new("localhost", 443).unwrap()]).unwrap();
-        let mut broker = Broker::bind(&path, policy, None, None).await.unwrap();
+        let mut broker = Broker::bind(&path, policy, None, None, Arc::default()).await.unwrap();
         for (request, expected) in [
             (
                 "CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n",
@@ -1129,7 +1359,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("egress.sock");
         let policy = HttpConnectPolicy::new([endpoint, other]).unwrap();
-        let mut broker = Broker::bind(&path, policy, Some(inspection), Some(sink))
+        let mut broker = Broker::bind(&path, policy, Some(inspection), Some(sink), Arc::default())
             .await
             .unwrap();
 
@@ -1175,6 +1405,146 @@ mod tests {
         assert!(records[1].completed >= records[1].started);
     }
 
+    #[test]
+    fn egress_config_parses_allowlists_and_proxy_urls() {
+        let config = EgressConfig::parse(
+            "gitlab.corp.example, 10.20.0.0/16,192.168.7.9",
+            Some("http://user:p%40ss@proxy.corp.example:8080"),
+            ".corp.example, intranet.local",
+        )
+        .unwrap();
+        assert_eq!(
+            config.private_allow,
+            [
+                PrivateAllow::Host("gitlab.corp.example".into()),
+                PrivateAllow::Cidr("10.20.0.0".parse().unwrap(), 16),
+                PrivateAllow::Cidr("192.168.7.9".parse().unwrap(), 32),
+            ]
+        );
+        let proxy = config.upstream_proxy.as_ref().unwrap();
+        assert_eq!((proxy.host.as_str(), proxy.port), ("proxy.corp.example", 8080));
+        assert_eq!(
+            proxy.authorization.as_deref(),
+            Some("Basic dXNlcjpwJTQwc3M=")
+        );
+        assert_eq!(config.no_proxy, ["corp.example", "intranet.local"]);
+        assert!(EgressConfig::parse("10.0.0.0/33", None, "").is_err());
+        assert!(EgressConfig::parse("", Some("https://proxy"), "").is_err());
+        assert_eq!(
+            UpstreamProxy::parse("http://proxy").unwrap().port,
+            3128
+        );
+
+        assert!(config.proxy_for("pypi.org").is_some());
+        assert!(config.proxy_for("jira.corp.example").is_none());
+        assert!(config.proxy_for("GITLAB.corp.example").is_none());
+        assert!(config.proxy_for("intranet.local").is_none());
+        assert!(config.proxy_for("notintranet.local").is_some());
+        assert!(EgressConfig::default().proxy_for("pypi.org").is_none());
+    }
+
+    #[test]
+    fn private_allowlist_opens_intranet_ranges_but_never_the_host_itself() {
+        let config = EgressConfig::parse("gitlab.corp.example,10.20.0.0/16", None, "").unwrap();
+        let check = |host: &str, ip: &str| {
+            checked_addresses(
+                vec![ip.parse().unwrap()],
+                &BTreeSet::from(["10.20.0.1".parse().unwrap()]),
+                443,
+                host,
+                &config,
+            )
+            .is_ok()
+        };
+        assert!(check("gitlab.corp.example", "192.168.5.5"));
+        assert!(check("anything.example", "10.20.9.9"));
+        assert!(!check("anything.example", "10.21.0.1"));
+        assert!(!check("anything.example", "192.168.5.5"));
+        assert!(!check("gitlab.corp.example", "127.0.0.1"));
+        assert!(!check("gitlab.corp.example", "169.254.169.254"));
+        assert!(!check("anything.example", "10.20.0.1"));
+        assert!(check("anything.example", "93.184.216.34"));
+        assert!(!check("anything.example", "0.0.0.0"));
+    }
+
+    #[tokio::test]
+    async fn upstream_proxy_receives_connect_with_credentials_and_relays() {
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = target.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = target.accept().await.unwrap();
+            let mut hello = [0u8; 5];
+            socket.read_exact(&mut hello).await.unwrap();
+            assert_eq!(&hello, b"hello");
+            socket.write_all(b"world").await.unwrap();
+        });
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let proxy_task = {
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let (mut client, _) = proxy.accept().await.unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    client.read_exact(&mut byte).await.unwrap();
+                    head.push(byte[0]);
+                }
+                *seen.lock().unwrap() = String::from_utf8(head).unwrap();
+                let remote = TcpStream::connect(target_address).await.unwrap();
+                client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await
+                    .unwrap();
+                let (mut client_read, mut client_write) = client.into_split();
+                let (mut remote_read, mut remote_write) = remote.into_split();
+                let _ = tokio::join!(
+                    tokio::io::copy(&mut client_read, &mut remote_write),
+                    tokio::io::copy(&mut remote_read, &mut client_write)
+                );
+            })
+        };
+        let config = EgressConfig::parse(
+            "",
+            Some(&format!("http://agent:secret@127.0.0.1:{}", proxy_address.port())),
+            "direct.example",
+        )
+        .unwrap();
+        let endpoint = EgressEndpoint::new("intranet.example", 8443).unwrap();
+        let mut stream = connect(&endpoint, &config).await.unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        let mut reply = [0u8; 5];
+        stream.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"world");
+        drop(stream);
+        upstream.await.unwrap();
+        proxy_task.abort();
+        let head = seen.lock().unwrap().clone();
+        assert!(head.starts_with("CONNECT intranet.example:8443 HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains("Host: intranet.example:8443\r\n"));
+        assert!(head.contains("Proxy-Authorization: Basic YWdlbnQ6c2VjcmV0\r\n"));
+
+        let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused_address = refused.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut client, _) = refused.accept().await.unwrap();
+            let mut buffer = [0u8; 1024];
+            let _ = client.read(&mut buffer).await;
+            let _ = client
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+        let refusing = EgressConfig::parse(
+            "",
+            Some(&format!("http://127.0.0.1:{}", refused_address.port())),
+            "",
+        )
+        .unwrap();
+        let error = connect(&endpoint, &refusing).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
     #[tokio::test]
     async fn parser_preserves_tunnel_prefix_and_broker_joins_pending_clients() {
         let (mut client, mut server) = UnixStream::pair().unwrap();
@@ -1188,7 +1558,7 @@ mod tests {
         let path = directory.path().join("egress.sock");
         let policy =
             HttpConnectPolicy::new([EgressEndpoint::new("example.org", 443).unwrap()]).unwrap();
-        let mut broker = Broker::bind(&path, policy, None, None).await.unwrap();
+        let mut broker = Broker::bind(&path, policy, None, None, Arc::default()).await.unwrap();
         let mut client = UnixStream::connect(&path).await.unwrap();
         client.write_all(b"CONNECT ").await.unwrap();
         timeout(Duration::from_secs(1), broker.shutdown())
