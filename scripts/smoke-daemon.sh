@@ -45,7 +45,20 @@ api -X POST "http://d/v1/sandboxes/$id/exec" -H 'content-type: application/json'
 preview_path=$(api -X POST "http://d/v1/sandboxes/$id/preview" -H 'content-type: application/json' -d '{"port":8080,"ttlSeconds":60}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
 check preview-tunnel "$(curl -sS --unix-socket "$socket" "http://d${preview_path}index.html")" preview-ok
 check preview-forged "$(curl -sS --unix-socket "$socket" "http://d/v1/preview/AAAA.BBBB/index.html")" invalid
+check access-log-empty "$(api "http://d/v1/access-log?sinceMs=0&untilMs=9999999999999")" '"entries":[]'
 check stop "$(api -X POST "http://d/v1/sandboxes/$id/stop")" '"state":"stopped"'
 check delete "$(api -X DELETE "http://d/v1/sandboxes/$id")" '"deleted":true'
 check gone "$(curl -sS --unix-socket "$socket" -H "authorization: Bearer $token" "http://d/v1/sandboxes/$id")" not_found
+open_id=$(api -X POST http://d/v1/sandboxes -H 'content-type: application/json' \
+  -d '{"image":"test","labels":{"team":"o1"},"cpu":1,"memoryMib":512,"network":{"mode":"open"}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+api -X POST "http://d/v1/sandboxes/$open_id/start" >/dev/null
+api -X POST "http://d/v1/sandboxes/$open_id/exec" -H 'content-type: application/json' \
+  -d '{"argv":["/bin/sh","-c","wget -T 3 -q -O - http://169.254.169.254/ 2>/dev/null; wget -T 3 -q -O - https://169.254.169.254/ 2>/dev/null; true"],"timeoutMs":15000}' >/dev/null
+sleep 0.5
+access=$(api "http://d/v1/access-log?sinceMs=0&untilMs=9999999999999")
+check access-log-host "$access" '"host":"169.254.169.254"'
+check access-log-denied "$access" '"decision":"denied"'
+check access-log-labels "$access" '"team":"o1"'
+check access-log-sandbox "$access" "\"sandboxId\":\"$open_id\""
+api -X DELETE "http://d/v1/sandboxes/$open_id" >/dev/null
 echo SMOKE_PASS

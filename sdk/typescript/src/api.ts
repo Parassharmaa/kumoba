@@ -47,12 +47,27 @@ const entriesSchema = z.object({
   ),
 });
 
+const accessEntrySchema = z.object({
+  sandboxId: z.string(),
+  labels: z.record(z.string(), z.string()),
+  host: z.string(),
+  port: z.number(),
+  decision: z.enum(["allowed", "denied", "dropped"]),
+  bytesIn: z.number(),
+  bytesOut: z.number(),
+  startedAtMs: z.number(),
+  completedAtMs: z.number(),
+  dropped: z.number().optional(),
+});
+const accessLogSchema = z.object({ entries: z.array(accessEntrySchema), truncated: z.boolean() });
+
 const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
 const deletedSchema = z.object({ deletedNames: z.array(z.string()) });
 const anySchema = z.unknown();
 
 export type Summary = z.infer<typeof summarySchema>;
+export type AccessEntrySummary = z.infer<typeof accessEntrySchema>;
 export type ExecEvent = z.infer<typeof execEventSchema>;
 
 export type CreateRequest = {
@@ -137,6 +152,19 @@ export class Api {
 
   async delete(id: string): Promise<void> {
     await this.http.json(anySchema, { method: "DELETE", path: sandboxPath(id) });
+  }
+
+  async accessLog(query: {
+    sinceMs: number;
+    untilMs: number;
+    limit: number;
+  }): Promise<{ entries: AccessEntrySummary[]; truncated: boolean }> {
+    const params = new URLSearchParams({
+      sinceMs: String(query.sinceMs),
+      untilMs: String(query.untilMs),
+      limit: String(query.limit),
+    });
+    return this.http.json(accessLogSchema, { method: "GET", path: `/v1/access-log?${params.toString()}` });
   }
 
   async preview(

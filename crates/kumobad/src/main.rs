@@ -1,3 +1,4 @@
+mod access_log;
 mod http;
 mod model;
 mod preview;
@@ -5,7 +6,7 @@ mod service;
 
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use kumoba::{Runtime, RuntimeConfig};
+use kumoba::{AccessSink, Runtime, RuntimeConfig};
 use service::{Service, ServiceConfig};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::{TcpListener, UnixListener};
@@ -131,6 +132,14 @@ async fn run() -> Result<(), String> {
     runtime_config.boot_timeout = Duration::from_secs(120);
     let store = kumoba::SecretStore::new();
     runtime_config.secret_store = Some(store.clone());
+    let (access_tx, access_rx) = tokio::sync::mpsc::channel(65_536);
+    let dropped = service::DroppedRecords::default();
+    let overflow = dropped.clone();
+    runtime_config.access_sink = Some(AccessSink::new(move |id, record| {
+        if access_tx.try_send((id, record)).is_err() {
+            overflow.add(&id.to_string(), 1);
+        }
+    }));
     let runtime = Runtime::open(runtime_config)
         .await
         .map_err(|error| error.to_string())?;
@@ -141,6 +150,8 @@ async fn run() -> Result<(), String> {
             state_dir: options.state_dir.clone(),
             images: options.images,
         },
+        access_rx,
+        dropped,
     )
     .await
     .map_err(|error| error.to_string())?;

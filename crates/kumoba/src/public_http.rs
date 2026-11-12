@@ -14,20 +14,37 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::{net::UnixStream, task::JoinHandle, time::timeout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    task::JoinHandle,
+    time::timeout,
+};
 
 type ResponseBody = UnsyncBoxBody<Bytes, io::Error>;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub(crate) async fn serve(
-    client: UnixStream,
+pub(crate) async fn serve<S>(
+    client: S,
     mut head: Vec<u8>,
     pending: Vec<u8>,
-) -> io::Result<()> {
+    scope: crate::egress::AccessScope,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     crate::secret_https::check_wire_headers(&head)?;
     head.extend(pending);
-    let service = hyper::service::service_fn(|request| async {
-        Ok::<_, Infallible>(match forward(request).await {
+    let scope = &scope;
+    let service = hyper::service::service_fn(|request| async move {
+        let target = request.uri().authority().and_then(|authority| {
+            crate::egress::raw_target(authority.as_str())
+                .or_else(|| crate::egress::raw_target(&format!("{}:80", authority.host())))
+        });
+        let outcome = forward(request).await;
+        if let Some((host, port)) = target {
+            scope.record(&host, port, outcome.as_ref().err() != Some(&StatusCode::FORBIDDEN));
+        }
+        Ok::<_, Infallible>(match outcome {
             Ok(response) => response,
             Err(status) => failure(status),
         })
@@ -193,6 +210,7 @@ fn failure(status: StatusCode) -> Response<ResponseBody> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UnixStream;
     #[test]
     fn destination_requires_public_web_scheme_port_and_matching_authority() {
         for (uri, host, allowed) in [
@@ -246,6 +264,7 @@ mod tests {
             server,
             b"GET http://example.com/ HTTP/1.1\r\nHost: localhost\r\n\r\n".to_vec(),
             Vec::new(),
+            crate::egress::AccessScope::new(None),
         ));
         let mut response = Vec::new();
         timeout(Duration::from_secs(2), client.read_to_end(&mut response))

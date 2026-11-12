@@ -27,7 +27,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpStream, UnixStream},
+    net::TcpStream,
     sync::Mutex,
     time::timeout,
 };
@@ -171,13 +171,16 @@ impl Inspection {
         self.authority.test_routes.get(endpoint).copied()
     }
 
-    pub(crate) async fn serve(
+    pub(crate) async fn serve<S>(
         &self,
-        client: UnixStream,
+        client: S,
         pending: Vec<u8>,
         remote: TcpStream,
         endpoint: EgressEndpoint,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         timeout(
             SESSION_TIMEOUT,
             self.exchange(client, pending, remote, endpoint),
@@ -186,13 +189,16 @@ impl Inspection {
         .map_err(|_| failure())?
     }
 
-    async fn exchange(
+    async fn exchange<S>(
         &self,
-        client: UnixStream,
+        client: S,
         pending: Vec<u8>,
         remote: TcpStream,
         endpoint: EgressEndpoint,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let config = self.authority.server_config(endpoint.host())?;
         let client = Prefix::new(client, pending);
         let client = timeout(HANDSHAKE_TIMEOUT, TlsAcceptor::from(config).accept(client))
@@ -722,6 +728,7 @@ fn scrub_wire_header_names(bytes: &[u8], secrets: &RequestSecrets) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UnixStream;
     use crate::{HttpConnectPolicy, SecretStore, SecretValue, secrets::LiveBindings};
     use std::collections::BTreeMap;
     use tokio::{

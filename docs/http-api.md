@@ -114,6 +114,28 @@ Replaces the sandbox's secret set. Returns `{"mountedEnvVars": ["GITHUB_TOKEN"]}
 
 Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that port inside the guest, including WebSocket upgrades, without a bearer token. The token is an HMAC over the sandbox id, port and expiry, so it cannot be reused for another sandbox or after it expires. Hop-by-hop and host-identifying headers are stripped in both directions, and responses carry `content-disposition: attachment` for types a browser would otherwise render, so a page served from a sandbox cannot script against the daemon's origin.
 
+## Access log
+
+`GET /v1/access-log?sinceMs=<epoch ms>&untilMs=<epoch ms>&limit=<n>` → `{"entries": [...], "truncated": false}`
+
+Every connection the egress proxy handled, oldest first, for sandboxes of any state:
+
+```json
+{
+  "sandboxId": "6a0b...",
+  "labels": {"project": "demo"},
+  "host": "api.github.com",
+  "port": 443,
+  "decision": "allowed",
+  "bytesIn": 18233,
+  "bytesOut": 912,
+  "startedAtMs": 1760000000000,
+  "completedAtMs": 1760000000412
+}
+```
+
+`decision` is `denied` for allowlist misses and for attempts at private, link-local or metadata addresses; those carry zero bytes. A sandbox gets at most 10000 records per hour; beyond that, and whenever the daemon cannot keep up, the gap is reported as a `dropped` marker (`"decision": "dropped"`, empty host, port 0, `"dropped": <count>`) rather than lost silently. `bytesIn` is what reached the guest, `bytesOut` what it sent. Defaults: the last two hours, 10000 entries; `limit` caps at 50000 and `truncated` tells you to continue from the last `completedAtMs + 1`. kumobad keeps 72 hours of entries as hourly files under `<state>/access`.
+
 ## Health
 
 `GET /healthz` → `{"ok": true}`, no authentication.

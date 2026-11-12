@@ -150,3 +150,35 @@ export type AccessibilityNode = {
 };
 
 export type DisplayInfo = { width: number; height: number };
+
+/** One proxied connection attempt, as recorded by kumobad's egress broker. */
+export type AccessEntry = {
+  sandboxId: string;
+  /** Labels the sandbox carried when the connection was made. */
+  labels: Record<string, string>;
+  host: string;
+  port: number;
+  /**
+   * `denied` covers allowlist misses and attempts at private or metadata addresses.
+   * `dropped` is a marker, not a connection: `dropped` says how many records from this
+   * sandbox were not kept because it exceeded 10000 per hour or the daemon fell behind.
+   */
+  decision: "allowed" | "denied" | "dropped";
+  /** Bytes sent to the guest. */
+  bytesIn: number;
+  /** Bytes sent by the guest. */
+  bytesOut: number;
+  startedAt: Date;
+  completedAt: Date;
+  /** Records not kept, only on `dropped` markers. */
+  dropped?: number;
+};
+
+export type AccessLogOptions = {
+  /** Start of the window. Defaults to two hours ago. */
+  since?: Date;
+  /** End of the window, exclusive. Defaults to now. */
+  until?: Date;
+  /** Maximum entries per page, up to 50000. Defaults to 10000. */
+  limit?: number;
+};

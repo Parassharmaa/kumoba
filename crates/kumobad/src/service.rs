@@ -121,9 +121,32 @@ pub struct ServiceConfig {
     pub images: BTreeMap<String, PathBuf>,
 }
 
+#[derive(Clone, Default)]
+pub struct DroppedRecords(Arc<std::sync::Mutex<HashMap<String, u64>>>);
+
+impl DroppedRecords {
+    pub fn add(&self, id: &str, count: u64) {
+        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        *dropped.entry(id.to_string()).or_insert(0) += count;
+    }
+
+    fn take_if(&self, id: &str, ready: impl Fn(u64) -> bool) -> Option<u64> {
+        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let count = *dropped.get(id)?;
+        ready(count).then(|| dropped.remove(id)).flatten()
+    }
+
+    fn take_all(&self) -> Vec<(String, u64)> {
+        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        dropped.drain().collect()
+    }
+}
+
 pub struct Service {
     pub runtime: Runtime,
     pub preview_key: crate::preview::PreviewKey,
+    pub access_log: Arc<crate::access_log::AccessLog>,
+    dropped: DroppedRecords,
     store: SecretStore,
     config: ServiceConfig,
     entries: RwLock<HashMap<String, Arc<Entry>>>,
@@ -158,19 +181,82 @@ impl Service {
         runtime: Runtime,
         store: SecretStore,
         config: ServiceConfig,
+        mut access: tokio::sync::mpsc::Receiver<(kumoba::SandboxId, kumoba::AccessRecord)>,
+        dropped: DroppedRecords,
     ) -> ApiResult<Arc<Self>> {
         std::fs::create_dir_all(config.state_dir.join("meta"))?;
         let preview_key =
             crate::preview::PreviewKey::load_or_create(&config.state_dir.join("preview.key"))?;
+        let access_log = Arc::new(crate::access_log::AccessLog::open(
+            config.state_dir.join("access"),
+        )?);
         let service = Arc::new(Self {
             runtime,
             preview_key,
+            access_log,
+            dropped,
             store,
             config,
             entries: RwLock::new(HashMap::new()),
         });
         service.reconcile().await?;
+        let recorder = service.clone();
+        tokio::spawn(async move {
+            while let Some((id, record)) = access.recv().await {
+                let id = id.to_string();
+                let labels = recorder.labels_of(&id).await;
+                let entry = crate::access_log::AccessEntry::new(id.clone(), labels.clone(), record);
+                match recorder.access_log.append(&entry) {
+                    Ok(crate::access_log::Appended::Written) => {}
+                    Ok(crate::access_log::Appended::OverCap) => recorder.dropped.add(&id, 1),
+                    Err(error) => log("access_log_failed", &id, Some(ApiError::Io(error))),
+                }
+                if let Some(count) = recorder
+                    .dropped
+                    .take_if(&id, |count| count >= crate::access_log::DROPPED_MARKER_INTERVAL)
+                {
+                    recorder.write_dropped_marker(&id, labels, count);
+                }
+            }
+        });
         Ok(service)
+    }
+
+    async fn labels_of(&self, id: &str) -> BTreeMap<String, String> {
+        self.entries
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.meta().labels)
+            .unwrap_or_default()
+    }
+
+    fn write_dropped_marker(&self, id: &str, labels: BTreeMap<String, String>, count: u64) {
+        let marker =
+            crate::access_log::AccessEntry::dropped_marker(id.to_string(), labels, now_ms(), count);
+        if let Err(error) = self.access_log.append(&marker) {
+            log("access_log_failed", id, Some(ApiError::Io(error)));
+        }
+    }
+
+    async fn flush_dropped_markers(&self) {
+        for (id, count) in self.dropped.take_all() {
+            let labels = self.labels_of(&id).await;
+            self.write_dropped_marker(&id, labels, count);
+        }
+    }
+
+    pub async fn access_entries(
+        &self,
+        since_ms: u64,
+        until_ms: u64,
+        limit: usize,
+    ) -> ApiResult<(Vec<crate::access_log::AccessEntry>, bool)> {
+        let access_log = self.access_log.clone();
+        tokio::task::spawn_blocking(move || access_log.query(since_ms, until_ms, limit))
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(ApiError::from)
     }
 
     fn meta_path(&self, id: &str) -> PathBuf {
@@ -471,6 +557,13 @@ impl Service {
     }
 
     pub async fn reap(&self) {
+        self.flush_dropped_markers().await;
+        if let Err(error) = self
+            .access_log
+            .prune(now_ms(), crate::access_log::RETENTION)
+        {
+            log("access_log_prune_failed", "", Some(ApiError::Io(error)));
+        }
         let entries: Vec<(String, Arc<Entry>)> = self
             .entries
             .read()

@@ -2,7 +2,14 @@ import { readFileSync } from "node:fs";
 import { Api, toInfo } from "./api.js";
 import { KumobaError } from "./errors.js";
 import { Sandbox, type SandboxContext } from "./sandbox.js";
-import type { CreateOptions, ListOptions, Network, NetworkOption } from "./types.js";
+import type {
+  AccessEntry,
+  AccessLogOptions,
+  CreateOptions,
+  ListOptions,
+  Network,
+  NetworkOption,
+} from "./types.js";
 
 export type KumobaOptions = {
   /** `unix:///path/to/kumobad.sock` or `http://127.0.0.1:<port>`. */
@@ -107,6 +114,31 @@ export class Kumoba {
   async list(options: ListOptions = {}): Promise<Sandbox[]> {
     const { sandboxes } = await this.api.list(options.labels ?? {}, options.limit ?? 100);
     return sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary)));
+  }
+
+  /**
+   * Every proxied connection attempt across all sandboxes in a time window, oldest
+   * first. kumobad keeps 72 hours; pages past `limit` are fetched automatically.
+   */
+  async *accessLog(options: AccessLogOptions = {}): AsyncGenerator<AccessEntry, void, undefined> {
+    const untilMs = (options.until ?? new Date()).getTime();
+    let sinceMs = (options.since ?? new Date(untilMs - 2 * 3_600_000)).getTime();
+    const limit = options.limit ?? 10_000;
+    while (sinceMs < untilMs) {
+      const page = await this.api.accessLog({ sinceMs, untilMs, limit });
+      for (const entry of page.entries) {
+        const { startedAtMs, completedAtMs, dropped, ...rest } = entry;
+        yield {
+          ...rest,
+          startedAt: new Date(startedAtMs),
+          completedAt: new Date(completedAtMs),
+          ...(dropped === undefined ? {} : { dropped }),
+        };
+      }
+      const last = page.entries.at(-1);
+      if (!page.truncated || !last) return;
+      sinceMs = last.completedAtMs + 1;
+    }
   }
 
   /** Forget secrets by name across every sandbox. Returns the names that existed. */

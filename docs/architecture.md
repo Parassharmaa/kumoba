@@ -26,6 +26,10 @@ Guests have no network device. The worker exposes an HTTP CONNECT proxy to the g
 
 TLS is end to end for ordinary hosts: the guest sees the real certificate. Only hosts that have a secret scoped to them are terminated at the proxy with a per-runtime CA, which the agent installs into the guest's trust store and `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`, so the proxy can rewrite request headers and scrub responses. See [secrets.md](secrets.md).
 
+## Access log
+
+The broker reports every connection attempt (host, port, allowed or denied, bytes in each direction, start and end time) to the daemon, which stamps it with the sandbox id and labels and appends it to `<state>/access/<hour>.jsonl`. The reaper deletes files older than 72 hours. `GET /v1/access-log` reads them back, so an operator can attribute traffic per sandbox or per label without touching the host's own logs.
+
 ## Previews
 
 `POST .../preview` signs `{sandbox, port, expiry}` with a key kept in `<state>/preview.key`. A request to `/v1/preview/<token>/...` verifies the token, opens a tunnel to the guest port through the agent, and relays the HTTP exchange, including WebSocket upgrades. Because the token is in the path, browsers can use these links directly; the daemon strips hop-by-hop headers and forces `content-disposition: attachment` on browser-renderable types so a sandbox cannot run scripts under the daemon's origin.

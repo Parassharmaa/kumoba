@@ -172,7 +172,14 @@ impl Sandbox {
                     )),
                     _ => None,
                 };
-                let broker = crate::egress::Broker::bind(&path, policy.clone(), inspection).await?;
+                let sink = self
+                    .inner
+                    .config
+                    .access_sink
+                    .as_ref()
+                    .map(|sink| sink.for_sandbox(self.id()));
+                let broker =
+                    crate::egress::Broker::bind(&path, policy.clone(), inspection, sink).await?;
                 (Some(path), Some(broker))
             }
         };

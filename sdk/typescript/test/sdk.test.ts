@@ -225,3 +225,31 @@ describe("Sandbox extras", () => {
     expect((await sandbox.desktop.liveView()).path).toBe("/v1/preview/token-6080/");
   });
 });
+
+describe("Kumoba.accessLog", () => {
+  it("pages through the daemon's access log inside the window", async () => {
+    const base = {
+      sandboxId: "sbx-1",
+      labels: { team: "a" },
+      port: 443,
+      decision: "allowed" as const,
+      bytesIn: 10,
+      bytesOut: 2,
+    };
+    fake.accessPageSize = 2;
+    fake.accessEntries = [
+      { ...base, host: "a.example", startedAtMs: 1, completedAtMs: 10 },
+      { ...base, host: "b.example", startedAtMs: 2, completedAtMs: 20 },
+      { ...base, host: "169.254.169.254", port: 80, decision: "denied", startedAtMs: 3, completedAtMs: 30 },
+      { ...base, host: "late.example", startedAtMs: 4, completedAtMs: 40 },
+    ];
+    const seen = [];
+    for await (const entry of kumoba.accessLog({ since: new Date(5), until: new Date(40) })) seen.push(entry);
+    expect(seen.map((entry) => [entry.host, entry.decision])).toEqual([
+      ["a.example", "allowed"],
+      ["b.example", "allowed"],
+      ["169.254.169.254", "denied"],
+    ]);
+    expect(seen[0]?.completedAt).toEqual(new Date(10));
+  });
+});

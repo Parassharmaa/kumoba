@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -12,7 +12,28 @@ pub struct RuntimeConfig {
     pub boot_timeout: Duration,
     pub stop_timeout: Duration,
     pub secret_store: Option<crate::SecretStore>,
+    pub access_sink: Option<AccessSink>,
 }
+
+#[derive(Clone)]
+pub struct AccessSink(Arc<dyn Fn(SandboxId, crate::AccessRecord) + Send + Sync>);
+
+impl AccessSink {
+    pub fn new(sink: impl Fn(SandboxId, crate::AccessRecord) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(sink))
+    }
+    pub(crate) fn for_sandbox(&self, id: SandboxId) -> crate::egress::AccessSink {
+        let sink = self.0.clone();
+        Arc::new(move |record| sink(id, record))
+    }
+}
+
+impl std::fmt::Debug for AccessSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccessSink")
+    }
+}
+
 impl RuntimeConfig {
     pub fn new(
         worker: impl Into<PathBuf>,
@@ -29,6 +50,7 @@ impl RuntimeConfig {
             boot_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(10),
             secret_store: None,
+            access_sink: None,
         }
     }
 }

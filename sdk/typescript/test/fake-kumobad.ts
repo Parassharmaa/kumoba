@@ -32,10 +32,25 @@ export type FakeExecReply =
   | { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; signal?: number }
   | { error: string };
 
+export type FakeAccessEntry = {
+  sandboxId: string;
+  labels: Record<string, string>;
+  host: string;
+  port: number;
+  decision: "allowed" | "denied" | "dropped";
+  bytesIn: number;
+  bytesOut: number;
+  startedAtMs: number;
+  completedAtMs: number;
+  dropped?: number;
+};
+
 export type FakeKumobad = {
   url: string;
   token: string;
   sandboxes: Map<string, FakeSandbox>;
+  accessEntries: FakeAccessEntry[];
+  accessPageSize: number;
   execs: FakeExecCall[];
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
@@ -67,6 +82,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     url: `unix://${socketPath}`,
     token: "fake-token-0123456789abcdef0123456789",
     sandboxes: new Map(),
+    accessEntries: [],
+    accessPageSize: 1000,
     execs: [],
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
@@ -85,6 +102,16 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
       const parts = url.pathname.split("/").filter(Boolean);
       const method = request.method ?? "GET";
       const sandbox = parts[2] ? fake.sandboxes.get(parts[2]) : undefined;
+      if (method === "GET" && url.pathname === "/v1/access-log") {
+        const sinceMs = Number(url.searchParams.get("sinceMs"));
+        const untilMs = Number(url.searchParams.get("untilMs"));
+        const limit = Math.min(Number(url.searchParams.get("limit")), fake.accessPageSize);
+        const matched = fake.accessEntries
+          .filter((entry) => entry.completedAtMs >= sinceMs && entry.completedAtMs < untilMs)
+          .sort((a, b) => a.completedAtMs - b.completedAtMs);
+        send(response, 200, { entries: matched.slice(0, limit), truncated: matched.length > limit });
+        return;
+      }
       if (method === "GET" && url.pathname === "/v1/images") {
         send(response, 200, { images: ["default", "test"] });
         return;

@@ -128,6 +128,27 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
         (Method::GET, ["v1", "images"]) => {
             Ok(json_response(200, json!({"images": service.image_names()})))
         }
+        (Method::GET, ["v1", "access-log"]) => {
+            let params = query(&request);
+            let now = crate::service::now_ms();
+            let number = |name: &str, default: u64| -> ApiResult<u64> {
+                optional_param(&params, name)
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| ApiError::Status(400, format!("invalid {name}")))
+                    })
+                    .unwrap_or(Ok(default))
+            };
+            let since_ms = number("sinceMs", now.saturating_sub(2 * 3_600_000))?;
+            let until_ms = number("untilMs", now)?;
+            let limit = number("limit", 10_000)? as usize;
+            let (entries, truncated) = service.access_entries(since_ms, until_ms, limit).await?;
+            Ok(json_response(
+                200,
+                json!({"entries": entries, "truncated": truncated}),
+            ))
+        }
         (Method::POST, ["v1", "sandboxes"]) => {
             let body: CreateRequest = read_json(request.into_body()).await?;
             Ok(json_response(

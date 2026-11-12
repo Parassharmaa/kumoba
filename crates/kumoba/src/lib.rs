@@ -8,6 +8,7 @@ mod platform;
 pub use platform::HostPlatform;
 mod desktop;
 mod egress;
+pub use egress::AccessRecord;
 mod execution;
 mod public_http;
 mod runtime;
@@ -19,7 +20,7 @@ mod snapshot_image;
 pub use snapshot_image::{SnapshotImage, SnapshotImageInfo};
 
 pub use config::{
-    Command, ExecOutput, ExecSummary, GuestPath, Network, RuntimeConfig, SandboxConfig, SandboxId,
+    AccessSink, Command, ExecOutput, ExecSummary, GuestPath, Network, RuntimeConfig, SandboxConfig, SandboxId,
     State, StopOutcome, Termination,
 };
 pub use runtime::{Runtime, Snapshot};

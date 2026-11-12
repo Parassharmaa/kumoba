@@ -128,6 +128,11 @@ const view = await sandbox.desktop.liveView(); // noVNC websocket link
 await sandbox.stop(); await sandbox.start(); await sandbox.delete();
 await kumoba.list({ labels: { project: "demo" } });
 await kumoba.get(id); await kumoba.find(id);
+
+// Network activity: every proxied connection, allowed or denied, with bytes
+for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_000) })) {
+  console.log(entry.sandboxId, entry.host, entry.decision, entry.bytesIn);
+}
 ```
 
 `await using` deletes the sandbox when the scope ends. Errors are `KumobaError` with `status` and `code`.
