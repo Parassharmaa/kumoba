@@ -43,4 +43,4 @@ with open(os.path.join(stage, "manifest.json"), "w") as out:
 PY
 bundle="$output_dir/kumoba-$version-$platform.tar.zst"
 tar --sparse --owner=0 --group=0 -C "$stage" -cf - . | zstd -T0 -10 -q -f -o "$bundle"
-printf '%s\n' "$PWD/$bundle"
+printf '%s\n' "$(cd "$(dirname "$bundle")" && pwd)/$(basename "$bundle")"
