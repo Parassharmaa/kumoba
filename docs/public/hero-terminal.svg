@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300" role="img" aria-label="A terminal running kumoba commands">
+  <rect x="0.5" y="0.5" width="559" height="299" rx="14" fill="#111418" stroke="#2a3038"/>
+  <circle cx="24" cy="22" r="5.5" fill="#3a4049"/>
+  <circle cx="42" cy="22" r="5.5" fill="#3a4049"/>
+  <circle cx="60" cy="22" r="5.5" fill="#3a4049"/>
+  <line x1="0" y1="42" x2="560" y2="42" stroke="#22272e"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5">
+    <text x="24" y="76"><tspan fill="#2dd4bf">$</tspan><tspan fill="#e6e8eb"> kumoba run -- python3 -c 'print(21 * 2)'</tspan></text>
+    <text x="24" y="100" fill="#9aa4b1">42</text>
+    <text x="24" y="138"><tspan fill="#2dd4bf">$</tspan><tspan fill="#e6e8eb"> id=$(kumoba create --image default -q)</tspan></text>
+    <text x="24" y="162"><tspan fill="#2dd4bf">$</tspan><tspan fill="#e6e8eb"> kumoba start $id -q</tspan></text>
+    <text x="24" y="186"><tspan fill="#2dd4bf">$</tspan><tspan fill="#e6e8eb"> kumoba exec $id -- pip install requests</tspan></text>
+    <text x="24" y="210" fill="#9aa4b1">Successfully installed requests-2.32.3</text>
+    <text x="24" y="248"><tspan fill="#2dd4bf">$</tspan><tspan fill="#e6e8eb"> kumoba desktop $id --user kumoba --open</tspan></text>
+    <text x="24" y="272" fill="#9aa4b1">opens the sandbox desktop in your browser</text>
+  </g>
+</svg>

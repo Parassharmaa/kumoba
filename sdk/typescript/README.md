@@ -6,6 +6,8 @@
 
 TypeScript SDK and CLI for [kumoba](https://github.com/Parassharmaa/kumoba): local microVM sandboxes for AI agents and untrusted code. Talks to a `kumobad` daemon over a Unix socket or loopback TCP. Depends only on `zod`; needs Node 20 or later.
 
+> **Alpha.** APIs and formats may change between 0.x releases. Docs: [parassharmaa.github.io/kumoba](https://parassharmaa.github.io/kumoba/).
+
 ```sh
 npm install kumoba
 ```

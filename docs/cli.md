@@ -76,7 +76,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 
 `--open` opens a returned `url` in your browser. That is how `kumoba desktop <id> --open` shows the desktop live and `kumoba expose <id> --port 3000 --ttl-seconds 600 --open` opens a web app running in the sandbox. Those links point at the daemon's preview listener, which the zero-config daemon starts on `127.0.0.1:7789`, apart from its API. A daemon configured by hand needs `KUMOBAD_PREVIEW_LISTEN`, and behind a reverse proxy `KUMOBAD_PREVIEW_URL`.
 
-![The default image's desktop in the browser, opened with kumoba desktop --open](desktop-live-view.png)
+![The default image's desktop in the browser, opened with kumoba desktop --open](public/desktop-live-view.png)
 
 ## Exit status
 

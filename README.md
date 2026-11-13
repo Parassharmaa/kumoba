@@ -6,8 +6,12 @@
 [![kumobad](https://img.shields.io/crates/v/kumobad?label=crates.io%20kumobad)](https://crates.io/crates/kumobad)
 [![docs.rs](https://img.shields.io/docsrs/kumoba?label=docs.rs%20kumoba)](https://docs.rs/kumoba)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Status](https://img.shields.io/badge/status-alpha-orange)](#status)
+[![Docs](https://img.shields.io/badge/docs-github.io-0f766e)](https://parassharmaa.github.io/kumoba/)
 
 Local microVM sandboxes for AI agents and untrusted code. One small daemon, a CLI, an HTTP API, and SDKs for TypeScript and Rust.
+
+> **Alpha.** kumoba works end to end and every release is installed and tested on real VMs, but the HTTP API, CLI, SDK and image format may still change between 0.x releases. Pin a version for anything you depend on. Docs: **[parassharmaa.github.io/kumoba](https://parassharmaa.github.io/kumoba/)**.
 
 - **Real VMs, not containers.** Every sandbox is a [libkrun](https://github.com/containers/libkrun) microVM with its own kernel. KVM on Linux, Hypervisor.framework on Apple silicon.
 - **Fast.** Create, boot, run a command and delete in about 0.4 s on an M-series Mac.
@@ -27,6 +31,7 @@ console.log(result.stdout); // "42\n"
 ```
 
 ## Getting started
+<!-- #region getting-started -->
 
 **1. Install.** On macOS, get libkrun from Homebrew first: `brew tap slp/krun && brew install slp/krun/libkrun slp/krun/libkrunfw zstd`. Linux needs `/dev/kvm` and `zstd`; the release already carries the patched libkrun.
 
@@ -35,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/in
 export PATH="$HOME/.kumoba/bin:$PATH"     # add this to your shell profile
 ```
 
-This puts the `kumobad` daemon, the `kumoba` CLI, `kumoba-worker` and the `default` image (Debian with Python, Node, Chromium and an xfce desktop) into `~/.kumoba`, checking every download against the release's `SHA256SUMS`. `KUMOBA_IMAGE=test` fetches a 5 MB Alpine image instead, and `KUMOBA_VERSION=0.2.0` pins a release.
+This puts the `kumobad` daemon, the `kumoba` CLI, `kumoba-worker` and the `default` image (Debian with Python, Node, Chromium and an xfce desktop) into `~/.kumoba`, checking every download against the release's `SHA256SUMS`. `KUMOBA_IMAGE=test` fetches a 5 MB Alpine image instead, and `KUMOBA_VERSION=0.2.2` pins a release.
 
 **2. Start the daemon.** No configuration needed:
 
@@ -82,8 +87,10 @@ await sandbox.delete();
 ```
 
 `new Kumoba()` finds the socket and token in `~/.kumoba` by itself. Pass `{ url, token }` or set `KUMOBA_URL` and `KUMOBA_TOKEN` to reach a daemon elsewhere. Agents with a shell can use the CLI directly: `kumoba commands --json` prints every command with its JSON Schema.
+<!-- #endregion getting-started -->
 
 ## Install
+<!-- #region install -->
 
 | What | How |
 | --- | --- |
@@ -106,8 +113,10 @@ codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
 ```
 
 `scripts/check-host.sh` tells you whether a machine qualifies and how many sandboxes fit in its memory. Everything is released together under one version; see [CHANGELOG.md](CHANGELOG.md).
+<!-- #endregion install -->
 
 ## How it works
+<!-- #region how-it-works -->
 
 ```
 your app, the kumoba CLI ──HTTP──▶ kumobad ──spawns──▶ kumoba-worker (one per VM, libkrun)
@@ -118,8 +127,10 @@ your app, the kumoba CLI ──HTTP──▶ kumobad ──spawns──▶ kumob
 ```
 
 `kumobad` keeps sandbox metadata and disks in a state directory, boots VMs through a worker process per sandbox, and talks to a small agent inside each guest over vsock. Guests have no network device; outbound HTTP(S) goes through a proxy in the worker that enforces the sandbox's allowlist and injects secrets only for the hosts they are scoped to. See [docs/architecture.md](docs/architecture.md).
+<!-- #endregion how-it-works -->
 
 ## Building from source
+<!-- #region building -->
 
 | Host | Needs |
 | --- | --- |
@@ -135,6 +146,7 @@ scripts/serve.sh                    # kumobad on a Unix socket and 127.0.0.1:778
 ```
 
 `serve.sh` writes the client settings to `.local/serve/env`; `set -a; source .local/serve/env; set +a` points `new Kumoba()` at it. Without Docker, `scripts/build-test-image.sh` produces the Alpine `test` image. [CONTRIBUTING.md](CONTRIBUTING.md) covers the tests.
+<!-- #endregion building -->
 
 ## CLI
 
@@ -151,6 +163,7 @@ kumoba commands --json                      # JSON Schemas, for agents
 `exec` and `run` exit with the guest command's own status. [docs/cli.md](docs/cli.md) has the argument syntax, output kinds and exit codes.
 
 ## TypeScript SDK
+<!-- #region typescript-sdk -->
 
 The package lives in [`sdk/typescript`](sdk/typescript). It depends only on `zod` and talks to `kumobad` over a Unix socket or loopback TCP.
 
@@ -218,8 +231,10 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 ```
 
 `await using` deletes the sandbox when the scope ends (TypeScript 5.2+, or Node 24+ for plain JavaScript; otherwise call `sandbox.delete()` in a `finally`). Errors are `KumobaError` with `status` and `code`.
+<!-- #endregion typescript-sdk -->
 
 ## Rust
+<!-- #region rust -->
 
 The `kumoba` crate drives VMs directly, without the daemon; it needs a `kumoba-worker` binary from the release or `cargo install kumobad`. [`crates/kumoba/examples/hello.rs`](crates/kumoba/examples/hello.rs) boots an image, runs a command and exits:
 
@@ -228,6 +243,7 @@ cargo run --release -p kumoba --example hello -- ~/.kumoba/bin/kumoba-worker ~/.
 ```
 
 API documentation is on [docs.rs/kumoba](https://docs.rs/kumoba).
+<!-- #endregion rust -->
 
 ## HTTP API
 
@@ -240,6 +256,7 @@ curl --unix-socket ~/.kumoba/kumobad.sock -H "authorization: Bearer $(cat ~/.kum
 ```
 
 ## Running it as a service
+<!-- #region service -->
 
 On a server, give each setting an explicit path rather than relying on `~/.kumoba`. `kumobad` is configured through environment variables (`kumobad --help` lists them). A minimal unit:
 
@@ -264,8 +281,10 @@ ExecStart=/opt/kumoba/bin/kumobad
 ```
 
 The release tarballs (`kumoba-<version>-linux-<arch>.tar.zst`) have exactly this layout: `bin/` with `kumobad`, `kumoba-worker` and `kumoba-guest`, `lib/` with the libraries, `licenses/` and a `manifest.json` of checksums. `KUMOBA_IMAGE=path.raw scripts/package.sh <version>` builds the same tarball with an image under `images/`. Put a reverse proxy in front of `KUMOBAD_PREVIEW_LISTEN` if browsers on other machines need `expose()` links or the desktop live view, and set `KUMOBAD_PREVIEW_URL` to its public address; the preview routes are self-authenticating and need no token.
+<!-- #endregion service -->
 
 ## Security model
+<!-- #region security -->
 
 - Guests run in a hardware-isolated VM with their own kernel; the only channel to the host is the vsock agent and the egress proxy.
 - Private, link-local and metadata addresses are never reachable from a guest, whatever the sandbox's allowlist says. An operator can open specific intranet hosts or CIDRs with `KUMOBAD_ALLOW_PRIVATE_HOSTS`; loopback, link-local and the host's own addresses stay blocked even then.
@@ -273,10 +292,13 @@ The release tarballs (`kumoba-<version>-linux-<arch>.tar.zst`) have exactly this
 - Secret values are stored on the host, scrubbed from proxied responses and injected only into HTTPS request headers for the hosts they are scoped to. The guest only ever holds a placeholder.
 - Preview links are HMAC-signed, bound to one sandbox and port, and expire. Browsers load them from a separate preview listener (`127.0.0.1:7789` by default) that serves nothing else, so a page from a sandbox runs on an origin without access to the API, and redirects it sends stay inside its own preview path. On the API listener the same links are download-only. All sandboxes' previews share that one origin: a page can't load another sandbox's preview without its token, but browser storage such as `localStorage` is shared between them, so don't open untrusted previews in the same browser profile as previews whose storage matters.
 - The Unix socket is created `0600`; the TCP listener accepts loopback addresses only.
+<!-- #endregion security -->
 
 ## Status
+<!-- #region status -->
 
-Experimental. The runtime and SDK are exercised on every push by real VMs in CI (Linux x86_64 with KVM), and every release is installed with `scripts/install.sh` and booted before it is published. Expect the API to change before 1.0; [docs/releasing.md](docs/releasing.md) says what a version bump promises.
+Alpha. The runtime and SDK are exercised on every push by real VMs in CI (Linux x86_64 with KVM), and every release is installed with `scripts/install.sh` and booted before it is published. Expect the API to change before 1.0; [docs/releasing.md](docs/releasing.md) says what a version bump promises.
+<!-- #endregion status -->
 
 ## Layout
 
