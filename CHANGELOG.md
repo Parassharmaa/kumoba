@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
 ### Added
 
 - `kumoba` CLI, built for people and for agents. It has no commands of its own: it reads the daemon's catalog and builds every command, argument check and help page from it. Ships natively with the daemon (`install.sh`, release tarballs, `cargo install kumobad`) and through npm (`npx kumoba`). `exec` and `run` exit with the guest command's status.
@@ -19,6 +21,12 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - The SDK reports an unreachable daemon with the error code `unreachable`.
 - Dependencies: `sha2` 0.11 with `hmac` 0.13, `base64` 0.23, `libloading` 0.9, TypeScript 7, vitest 5, and newer GitHub Actions.
 
+### Fixed
+
+- Previews no longer wait on a guest server that keeps its connection open: responses are read to their declared length, and plain requests reach the guest as one-shot HTTP/1.0. Page loads through a preview dropped from about 5 s per file to milliseconds.
+- Redirects from a preview stay inside that preview: the guest's `location` is resolved with a URL parser and anything leaving the guest origin is dropped.
+- The desktop's accessibility tree retries while the AT-SPI bus is still starting, instead of failing right after `desktop.start()`.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added
@@ -33,5 +41,6 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Parassharmaa/kumoba/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Parassharmaa/kumoba/releases/tag/v0.1.0

@@ -25,7 +25,7 @@ path = "src/bin/kumoba-worker.rs"
 doc = false
 
 [dependencies]
-kumoba = { version = "0.1.0", path = "../kumoba" }
+kumoba = { version = "0.2.0", path = "../kumoba" }
 kumoba-protocol.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 serde.workspace = true
