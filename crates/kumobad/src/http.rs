@@ -326,6 +326,20 @@ async fn desktop(
             .to_string();
         return Err(no_desktop(detail));
     }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match agent.connect(DESKTOP_VNC_PORT).await {
+            Ok(_) => break,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(error) => {
+                return Err(no_desktop(format!(
+                    "the noVNC bridge did not start listening: {error}"
+                )));
+            }
+        }
+    }
     let processes = String::from_utf8_lossy(&stdout)
         .lines()
         .last()
@@ -582,6 +596,16 @@ const PLAIN_RESPONSE_HEADERS: &[&str] = &[];
 
 const GUEST_ORIGIN: &str = "http://guest.invalid";
 
+fn declared_length(head: &str) -> Option<usize> {
+    head.split("\r\n").skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
+}
+
 fn preview_location(token: &str, requested: &str, location: &str) -> Option<String> {
     if location.chars().any(char::is_control) {
         return None;
@@ -667,9 +691,13 @@ async fn preview(
         Some(query) => format!("/{rest}?{query}"),
         None => format!("/{rest}"),
     };
-    let mut head = format!("{} {} HTTP/1.1\r\n", request.method(), target);
+    let upgrading = request.headers().contains_key("upgrade");
+    let version = if upgrading { "HTTP/1.1" } else { "HTTP/1.0" };
+    let mut head = format!("{} {} {version}\r\n", request.method(), target);
     for (name, value) in request.headers() {
-        if !FORWARDED_REQUEST_HEADERS.contains(&name.as_str()) {
+        if !FORWARDED_REQUEST_HEADERS.contains(&name.as_str())
+            || (!upgrading && name.as_str() == "connection")
+        {
             continue;
         }
         if let Ok(value) = value.to_str() {
@@ -716,12 +744,19 @@ async fn preview(
     if status != 101 {
         use tokio::io::AsyncReadExt;
         let mut body = leftover;
-        let remaining = (PREVIEW_BODY_LIMIT + 1).saturating_sub(body.len()) as u64;
+        let expected = declared_length(&text);
+        let wanted = expected.map_or(PREVIEW_BODY_LIMIT + 1, |length| {
+            length.min(PREVIEW_BODY_LIMIT + 1)
+        });
+        let remaining = wanted.saturating_sub(body.len()) as u64;
         let _ = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(30),
             (&mut tunnel).take(remaining).read_to_end(&mut body),
         )
         .await;
+        if expected.is_some_and(|length| length > PREVIEW_BODY_LIMIT) {
+            return Err(ApiError::Status(502, "guest preview body too large".into()));
+        }
         if body.len() > PREVIEW_BODY_LIMIT {
             return Err(ApiError::Status(502, "guest preview body too large".into()));
         }
@@ -748,6 +783,23 @@ async fn preview(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_the_declared_body_length() {
+        use super::declared_length;
+        assert_eq!(
+            declared_length("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: 42\r\n"),
+            Some(42)
+        );
+        assert_eq!(
+            declared_length("HTTP/1.0 200 OK\r\ncontent-length:7"),
+            Some(7)
+        );
+        assert_eq!(
+            declared_length("HTTP/1.0 200 OK\r\nContent-Type: text/html"),
+            None
+        );
+    }
+
     #[test]
     fn preview_redirects_stay_inside_their_preview() {
         use super::preview_location;
