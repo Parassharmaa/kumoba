@@ -364,7 +364,11 @@ pub(crate) fn hash_file(path: &Path) -> Result<String> {
         }
         hash.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 pub(crate) fn remove_trash(path: &Path) -> Result<()> {

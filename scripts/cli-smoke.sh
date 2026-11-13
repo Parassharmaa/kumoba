@@ -23,8 +23,9 @@ check exec-env "$("${cli[@]}" exec "$id" env=GREETING=hi -- sh -c 'echo $GREETIN
 printf 'payload' | "${cli[@]}" write-file "$id" --path /tmp/cli.txt > /dev/null
 check file-roundtrip "$("${cli[@]}" read-file "$id" path=/tmp/cli.txt)" payload
 check list-files "$("${cli[@]}" list-files "$id" --path /tmp --json | grep -c '"cli.txt"')" 1
-check run "$("${cli[@]}" run --image "$image" -- echo one-shot)" one-shot
-check run-cleans-up "$("${cli[@]}" list -q | grep -vc "^$id\$" || true)" 0
+marker="cli-smoke-$$"
+check run "$("${cli[@]}" run --image "$image" --labels "smoke=$marker" -- echo one-shot)" one-shot
+check run-cleans-up "$("${cli[@]}" list --label "smoke:$marker" -q | wc -l | tr -d ' ')" 0
 check usage-error "$(status "${cli[@]}" exec)" 2
 check daemon-error "$(status "${cli[@]}" get no-such-sandbox)" 1
 check unreachable "$(KUMOBA_URL=unix:///nonexistent/kumobad.sock status "${cli[@]}" images)" 3
