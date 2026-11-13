@@ -5,7 +5,7 @@
 # Settings, all optional:
 #   KUMOBA_VERSION       release to install, e.g. 0.1.0 (default: the latest release)
 #   KUMOBA_HOME          install directory (default ~/.kumoba)
-#   KUMOBA_IMAGE         default, test or none (default: default, about a gigabyte download)
+#   KUMOBA_IMAGE         default, test or none (default: default, about a 450 MB download)
 #   KUMOBA_INSTALL_FROM  directory holding the release files instead of downloading them
 set -euo pipefail
 repo=Parassharmaa/kumoba

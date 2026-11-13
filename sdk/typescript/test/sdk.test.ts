@@ -71,6 +71,12 @@ describe("Kumoba", () => {
       const client = new Kumoba({ url: fake.url, env: { KUMOBA_HOME: home } });
       expect(await client.images()).toEqual(await kumoba.images());
       expect(() => new Kumoba({ env: { KUMOBA_HOME: home } })).not.toThrow();
+      const explicit = new Kumoba({
+        url: "unix:///elsewhere/kumobad.sock",
+        token: fake.token,
+        env: { KUMOBA_PUBLIC_URL: "http://other.example" },
+      });
+      expect(explicit).toBeInstanceOf(Kumoba);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
