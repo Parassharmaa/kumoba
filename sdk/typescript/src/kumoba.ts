@@ -20,7 +20,8 @@ export type KumobaOptions = {
   token?: string;
   /**
    * Base URL browsers can reach kumobad through, used to build `expose()` links.
-   * Defaults to `KUMOBA_PUBLIC_URL`, then the `http://` URL when `url` is one, otherwise links carry only a path.
+   * Defaults to `KUMOBA_PUBLIC_URL` when `url` is not passed either, then the `http://` URL when `url` is one,
+   * otherwise links carry only a path.
    */
   publicUrl?: string;
   /** Guest user that commands and file operations act as. Per-sandbox `user` overrides it. Defaults to `KUMOBA_USER`. */
@@ -47,7 +48,8 @@ function resolveOptions(options: KumobaOptions): ResolvedOptions {
       `No kumobad token: pass { token }, set KUMOBA_TOKEN or KUMOBA_TOKEN_FILE, or start kumobad once so it writes ${tokenFile}`,
       { code: "config_invalid" }
     );
-  const publicUrl = options.publicUrl ?? env.KUMOBA_PUBLIC_URL;
+  const publicUrl =
+    options.publicUrl ?? (options.url === undefined ? env.KUMOBA_PUBLIC_URL : undefined);
   const defaultUser = options.defaultUser ?? env.KUMOBA_USER;
   return {
     url,

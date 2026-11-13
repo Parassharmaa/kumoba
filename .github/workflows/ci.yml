@@ -21,7 +21,8 @@ jobs:
           node-version: 22
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,actionlint
+          tool: cargo-deny
+      - run: bash scripts/install-actionlint.sh
       - run: bash scripts/ci-lint.sh
 
   runtime:

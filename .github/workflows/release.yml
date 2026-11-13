@@ -24,7 +24,8 @@ jobs:
           node-version: 22
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,actionlint
+          tool: cargo-deny
+      - run: bash scripts/install-actionlint.sh
       - id: version
         run: echo "version=$(bash scripts/version.sh)" >> "$GITHUB_OUTPUT"
       - run: bash scripts/ci-release.sh "$TAG"
