@@ -74,7 +74,12 @@ if [[ "$image" != none ]]; then
     asset="kumoba-image-$image-$version-$arch.raw.zst"
     say "Downloading the $image image"
     fetch "$asset"
-    zstd -d -q -f --sparse "$work/$asset" -o "$home/images/$image.raw.next"
+    partial="$home/images/$image.raw.next"
+    trap 'rm -rf "$work" "$partial"' EXIT
+    if ! zstd -d -q -f --sparse "$work/$asset" -o "$partial"; then
+      free=$(df -Pk "$home/images" | awk 'NR == 2 { printf "%.1f GB", $4 / 1048576 }')
+      fail "could not unpack the $image image into $home/images ($free free). It needs about 2 GB for default and a few MB for test; free some space and run the installer again"
+    fi
     mv "$home/images/$image.raw.next" "$home/images/$image.raw"
     printf '%s\n' "$version" > "$marker"
   fi
