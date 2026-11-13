@@ -11,11 +11,10 @@ if [[ -n "$tag" ]]; then
   bash scripts/release-check.sh "$tag"
   bash scripts/release-notes.sh "$version" > /dev/null
 fi
-cargo test --workspace --lib --locked
+bash scripts/ci-lint.sh
+cargo test --workspace --lib --bins --locked
 cargo publish --workspace --dry-run --locked
 cd sdk/typescript
-npm ci --no-fund --no-audit
-npm run typecheck
 npm run build
 npm test
 npm pack --dry-run

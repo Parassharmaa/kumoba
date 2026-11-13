@@ -278,7 +278,7 @@ async fn owner_death_releases_worker_and_disk() -> Result<(), Box<dyn std::error
     let pids = String::from_utf8(children.stdout)?
         .split_whitespace()
         .map(str::parse::<i32>)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(pids.len(), 1, "owner should supervise exactly one worker");
     assert!(matches!(
         Runtime::open(RuntimeConfig::new(
@@ -341,7 +341,7 @@ async fn unexpected_worker_exit_releases_capacity() -> Result<(), Box<dyn std::e
     let pids = String::from_utf8(children.stdout)?
         .split_whitespace()
         .map(str::parse::<i32>)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(pids.len(), 1);
     assert_eq!(unsafe { libc::kill(pids[0], libc::SIGKILL) }, 0);
     let deadline = Instant::now() + Duration::from_secs(5);

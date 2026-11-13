@@ -132,13 +132,11 @@ async fn agent_operations_survive_timeouts_aborts_and_run_concurrently()
         .await?;
     assert_eq!(out, b"alive\n");
 
-    let payload: Vec<u8> = (0..3 * 1024 * 1024 + 17).map(|i| (i % 251) as u8).collect();
+    let payload: Vec<u8> = (0..3 * 1024 * 1024 + 17)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
     agent
-        .write_all(
-            "/home/kumoba/deep/dir/data.bin",
-            &payload,
-            Some("kumoba"),
-        )
+        .write_all("/home/kumoba/deep/dir/data.bin", &payload, Some("kumoba"))
         .await?;
     let back = agent
         .read_all(
@@ -148,9 +146,7 @@ async fn agent_operations_survive_timeouts_aborts_and_run_concurrently()
         )
         .await?;
     assert_eq!(back, payload);
-    let entries = agent
-        .list("/home/kumoba/deep", Some("kumoba"))
-        .await?;
+    let entries = agent.list("/home/kumoba/deep", Some("kumoba")).await?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "dir");
 
@@ -158,17 +154,13 @@ async fn agent_operations_survive_timeouts_aborts_and_run_concurrently()
     let mut err = Vec::new();
     let whoami = agent
         .exec_streamed(
-            shell("id -un; echo $HOME; stat -c %U /home/kumoba/deep/dir/data.bin")
-                .user("kumoba"),
+            shell("id -un; echo $HOME; stat -c %U /home/kumoba/deep/dir/data.bin").user("kumoba"),
             &mut out,
             &mut err,
         )
         .await?;
     assert_eq!(whoami.termination, Termination::Exited(0));
-    assert_eq!(
-        String::from_utf8(out)?,
-        "kumoba\n/home/kumoba\nkumoba\n"
-    );
+    assert_eq!(String::from_utf8(out)?, "kumoba\n/home/kumoba\nkumoba\n");
 
     sandbox.delete().await?;
     Ok(())

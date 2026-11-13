@@ -1,7 +1,7 @@
 #[path = "kumoba-worker/confinement.rs"]
 mod confinement;
-use libloading::Library;
 use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, VERSION, WorkerConfig};
+use libloading::Library;
 use std::{
     ffi::{CString, c_char},
     io::{BufRead, Read},
@@ -23,11 +23,8 @@ fn main() {
 }
 
 fn check(call: &str, result: i32) -> Result<u32, Failure> {
-    if result < 0 {
-        Err(format!("{call}: {}", std::io::Error::from_raw_os_error(-result)).into())
-    } else {
-        Ok(result as u32)
-    }
+    u32::try_from(result)
+        .map_err(|_| format!("{call}: {}", std::io::Error::from_raw_os_error(-result)).into())
 }
 
 fn run() -> Result<(), Failure> {

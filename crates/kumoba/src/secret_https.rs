@@ -728,9 +728,9 @@ fn scrub_wire_header_names(bytes: &[u8], secrets: &RequestSecrets) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::net::UnixStream;
     use crate::{HttpConnectPolicy, SecretStore, SecretValue, secrets::LiveBindings};
     use std::collections::BTreeMap;
+    use tokio::net::UnixStream;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,

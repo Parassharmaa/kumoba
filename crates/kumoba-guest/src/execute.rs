@@ -237,10 +237,20 @@ pub(crate) async fn exec(stream: &mut UnixStream, request: ExecRequest) -> io::R
             .await;
         }
     };
-    let mut group = ProcessGroup {
-        pid: child.id().expect("spawned child has PID") as i32,
-        armed: true,
+    let pid = match crate::linux::pid_of(&child) {
+        Ok(pid) => pid,
+        Err(error) => {
+            return terminal(
+                stream,
+                &ExecEvent::Failed {
+                    message: error.to_string(),
+                },
+                &mut wire_idle,
+            )
+            .await;
+        }
     };
+    let mut group = ProcessGroup { pid, armed: true };
     let mut input = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();

@@ -43,12 +43,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:live": "KUMOBA_LIVE=1 vitest run test/live.test.ts",
-    "prepublishOnly": "npm run typecheck && npm run build && npm test"
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build && npm test",
+    "lint": "biome check .",
+    "format": "biome check --write ."
   },
   "dependencies": {
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.4",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

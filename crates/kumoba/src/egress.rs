@@ -203,8 +203,7 @@ impl HttpConnectPolicy {
                 && self.domains.iter().any(|domain| {
                     endpoint.host.len() > domain.len() + 1
                         && endpoint.host.ends_with(domain)
-                        && endpoint.host.as_bytes()[endpoint.host.len() - domain.len() - 1]
-                            == b'.'
+                        && endpoint.host.as_bytes()[endpoint.host.len() - domain.len() - 1] == b'.'
                 }))
     }
 }
@@ -275,12 +274,15 @@ pub struct EgressConfig {
 fn host_matches(pattern: &str, host: &str) -> bool {
     let pattern = pattern.trim_start_matches('.').to_ascii_lowercase();
     let host = host.to_ascii_lowercase();
-    !pattern.is_empty()
-        && (host == pattern || host.ends_with(&format!(".{pattern}")))
+    !pattern.is_empty() && (host == pattern || host.ends_with(&format!(".{pattern}")))
 }
 
 fn cidr_contains(network: Ipv4Addr, prefix: u8, ip: Ipv4Addr) -> bool {
-    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - u32::from(prefix)) };
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix))
+    };
     u32::from(ip) & mask == u32::from(network) & mask
 }
 
@@ -291,7 +293,11 @@ impl EgressConfig {
         no_proxy: &str,
     ) -> Result<Self> {
         let mut allow = Vec::new();
-        for item in private_allow.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+        for item in private_allow
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
             if let Some((network, prefix)) = item.split_once('/') {
                 let network: Ipv4Addr = network
                     .parse()
@@ -327,7 +333,10 @@ impl EgressConfig {
 
     fn proxy_for(&self, host: &str) -> Option<&UpstreamProxy> {
         let proxy = self.upstream_proxy.as_ref()?;
-        let bypass = self.no_proxy.iter().any(|pattern| host_matches(pattern, host))
+        let bypass = self
+            .no_proxy
+            .iter()
+            .any(|pattern| host_matches(pattern, host))
             || self.private_allow.iter().any(|allow| match allow {
                 PrivateAllow::Host(pattern) => host_matches(pattern, host),
                 PrivateAllow::Cidr(..) => false,
@@ -539,7 +548,10 @@ async fn serve(
 
 pub(crate) fn raw_target(authority: &str) -> Option<(String, u16)> {
     let (host, port) = authority.rsplit_once(':')?;
-    let host = host.trim_matches(['[', ']']).trim_end_matches('.').to_ascii_lowercase();
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     let valid = !host.is_empty()
         && host.len() <= 253
         && host
@@ -890,8 +902,9 @@ async fn connect_via_proxy(
 }
 
 #[cfg(test)]
-pub(crate) static TEST_DNS: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<Ipv4Addr>>>> =
-    std::sync::Mutex::new(None);
+pub(crate) static TEST_DNS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, Vec<Ipv4Addr>>>,
+> = std::sync::Mutex::new(None);
 
 fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<SocketAddrV4>> {
     #[cfg(test)]
@@ -915,8 +928,14 @@ fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<S
     hints.ai_socktype = libc::SOCK_STREAM;
     hints.ai_protocol = libc::IPPROTO_TCP;
     let mut addresses = std::ptr::null_mut();
-    let code =
-        unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut addresses) };
+    let code = unsafe {
+        libc::getaddrinfo(
+            host.as_ptr(),
+            std::ptr::null(),
+            &raw const hints,
+            &raw mut addresses,
+        )
+    };
     if code != 0 {
         return Err(io::Error::other(format!("host DNS failed ({code})")));
     }
@@ -936,7 +955,7 @@ fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<S
         let entry = unsafe { &*current };
         if entry.ai_family != libc::AF_INET
             || entry.ai_addr.is_null()
-            || (entry.ai_addrlen as usize) < std::mem::size_of::<libc::sockaddr_in>()
+            || (entry.ai_addrlen as usize) < size_of::<libc::sockaddr_in>()
         {
             return Err(invalid("unexpected DNS address family"));
         }
@@ -955,7 +974,7 @@ fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<S
 
 fn local_addresses() -> io::Result<BTreeSet<Ipv4Addr>> {
     let mut interfaces = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut interfaces) } != 0 {
+    if unsafe { libc::getifaddrs(&raw mut interfaces) } != 0 {
         return Err(io::Error::last_os_error());
     }
     struct Interfaces(*mut libc::ifaddrs);
@@ -1309,14 +1328,19 @@ mod tests {
         )
         .unwrap();
         assert!(wildcard.allows(&EgressEndpoint::new("api.github.com", 443).unwrap()));
-        assert!(wildcard.allows(&EgressEndpoint::new("raw.githubusercontent.github.com", 80).unwrap()));
+        assert!(
+            wildcard.allows(&EgressEndpoint::new("raw.githubusercontent.github.com", 80).unwrap())
+        );
         assert!(!wildcard.allows(&EgressEndpoint::new("github.com", 443).unwrap()));
         assert!(!wildcard.allows(&EgressEndpoint::new("evilgithub.com", 443).unwrap()));
         assert!(!wildcard.allows(&EgressEndpoint::new("api.github.com", 8443).unwrap()));
         assert!(wildcard.allows(&EgressEndpoint::new("pypi.org", 443).unwrap()));
         let serialized = serde_json::to_string(&wildcard).unwrap();
         assert!(serialized.contains(r#""domains":["github.com"]"#));
-        assert_eq!(serde_json::from_str::<HttpConnectPolicy>(&serialized).unwrap(), wildcard);
+        assert_eq!(
+            serde_json::from_str::<HttpConnectPolicy>(&serialized).unwrap(),
+            wildcard
+        );
         assert!(HttpConnectPolicy::with_domains([], ["*.github.com".to_string()]).is_err());
     }
 
@@ -1402,7 +1426,9 @@ mod tests {
         let path = directory.path().join("egress.sock");
         let policy =
             HttpConnectPolicy::new([EgressEndpoint::new("localhost", 443).unwrap()]).unwrap();
-        let mut broker = Broker::bind(&path, policy, None, None, Arc::default()).await.unwrap();
+        let mut broker = Broker::bind(&path, policy, None, None, Arc::default())
+            .await
+            .unwrap();
         for (request, expected) in [
             (
                 "CONNECT denied.invalid:443 HTTP/1.1\r\n\r\n",
@@ -1476,7 +1502,13 @@ mod tests {
 
         let mut client = UnixStream::connect(&path).await.unwrap();
         client
-            .write_all(format!("CONNECT tunnel.example:{} HTTP/1.1\r\n\r\nhello", address.port()).as_bytes())
+            .write_all(
+                format!(
+                    "CONNECT tunnel.example:{} HTTP/1.1\r\n\r\nhello",
+                    address.port()
+                )
+                .as_bytes(),
+            )
             .await
             .unwrap();
         let mut established = [0u8; 39];
@@ -1524,7 +1556,10 @@ mod tests {
             ]
         );
         let proxy = config.upstream_proxy.as_ref().unwrap();
-        assert_eq!((proxy.host.as_str(), proxy.port), ("proxy.corp.example", 8080));
+        assert_eq!(
+            (proxy.host.as_str(), proxy.port),
+            ("proxy.corp.example", 8080)
+        );
         assert_eq!(
             proxy.authorization.as_deref(),
             Some("Basic dXNlcjpwJTQwc3M=")
@@ -1532,10 +1567,7 @@ mod tests {
         assert_eq!(config.no_proxy, ["corp.example", "intranet.local"]);
         assert!(EgressConfig::parse("10.0.0.0/33", None, "").is_err());
         assert!(EgressConfig::parse("", Some("https://proxy"), "").is_err());
-        assert_eq!(
-            UpstreamProxy::parse("http://proxy").unwrap().port,
-            3128
-        );
+        assert_eq!(UpstreamProxy::parse("http://proxy").unwrap().port, 3128);
 
         assert!(config.proxy_for("pypi.org").is_some());
         assert!(config.proxy_for("jira.corp.example").is_none());
@@ -1615,18 +1647,27 @@ mod tests {
         };
         let config = EgressConfig::parse(
             "",
-            Some(&format!("http://agent:secret@127.0.0.1:{}", proxy_address.port())),
+            Some(&format!(
+                "http://agent:secret@127.0.0.1:{}",
+                proxy_address.port()
+            )),
             "direct.example",
         )
         .unwrap();
         let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
         *TEST_DNS.lock().unwrap() = Some(std::collections::HashMap::from([
             ("intranet.example".to_string(), vec![public]),
-            ("rebound.example".to_string(), vec![Ipv4Addr::new(10, 9, 8, 7)]),
+            (
+                "rebound.example".to_string(),
+                vec![Ipv4Addr::new(10, 9, 8, 7)],
+            ),
         ]));
-        let rebound = connect(&EgressEndpoint::new("rebound.example", 443).unwrap(), &config)
-            .await
-            .unwrap_err();
+        let rebound = connect(
+            &EgressEndpoint::new("rebound.example", 443).unwrap(),
+            &config,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(rebound.kind(), io::ErrorKind::PermissionDenied);
         let unresolvable = connect(
             &EgressEndpoint::new("does-not-resolve.invalid", 443).unwrap(),
@@ -1649,7 +1690,9 @@ mod tests {
         assert_eq!(&reply, b"world");
         drop(stream);
         let mut by_name = config.clone();
-        by_name.upstream_proxy = by_name.upstream_proxy.map(|proxy| proxy.connect_by_name(true));
+        by_name.upstream_proxy = by_name
+            .upstream_proxy
+            .map(|proxy| proxy.connect_by_name(true));
         let mut named = connect(&endpoint, &by_name).await.unwrap();
         named.write_all(b"hello").await.unwrap();
         named.read_exact(&mut reply).await.unwrap();
@@ -1657,10 +1700,18 @@ mod tests {
         upstream.await.unwrap();
         proxy_task.abort();
         let heads = seen.lock().unwrap().clone();
-        assert!(heads[0].starts_with("CONNECT 93.184.216.34:8443 HTTP/1.1\r\n"), "{}", heads[0]);
+        assert!(
+            heads[0].starts_with("CONNECT 93.184.216.34:8443 HTTP/1.1\r\n"),
+            "{}",
+            heads[0]
+        );
         assert!(heads[0].contains("Host: 93.184.216.34:8443\r\n"));
         assert!(heads[0].contains("Proxy-Authorization: Basic YWdlbnQ6c2VjcmV0\r\n"));
-        assert!(heads[1].starts_with("CONNECT intranet.example:8443 HTTP/1.1\r\n"), "{}", heads[1]);
+        assert!(
+            heads[1].starts_with("CONNECT intranet.example:8443 HTTP/1.1\r\n"),
+            "{}",
+            heads[1]
+        );
 
         let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused_address = refused.local_addr().unwrap();
@@ -1696,7 +1747,9 @@ mod tests {
         let path = directory.path().join("egress.sock");
         let policy =
             HttpConnectPolicy::new([EgressEndpoint::new("example.org", 443).unwrap()]).unwrap();
-        let mut broker = Broker::bind(&path, policy, None, None, Arc::default()).await.unwrap();
+        let mut broker = Broker::bind(&path, policy, None, None, Arc::default())
+            .await
+            .unwrap();
         let mut client = UnixStream::connect(&path).await.unwrap();
         client.write_all(b"CONNECT ").await.unwrap();
         timeout(Duration::from_secs(1), broker.shutdown())

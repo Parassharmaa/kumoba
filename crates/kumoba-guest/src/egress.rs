@@ -17,17 +17,9 @@ async fn connect() -> io::Result<UnixStream> {
         return Err(io::Error::last_os_error());
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut address: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-    address.svm_family = libc::AF_VSOCK as _;
-    address.svm_cid = libc::VMADDR_CID_HOST;
-    address.svm_port = kumoba_protocol::EGRESS_PORT;
-    let result = unsafe {
-        libc::connect(
-            fd.as_raw_fd(),
-            (&address as *const libc::sockaddr_vm).cast(),
-            std::mem::size_of_val(&address) as _,
-        )
-    };
+    let address =
+        crate::linux::VsockAddress::new(libc::VMADDR_CID_HOST, kumoba_protocol::EGRESS_PORT);
+    let result = unsafe { libc::connect(fd.as_raw_fd(), address.as_ptr(), address.size()) };
     if result < 0 {
         let error = io::Error::last_os_error();
         if !matches!(error.raw_os_error(), Some(libc::EINPROGRESS | libc::EINTR)) {

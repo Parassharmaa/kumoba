@@ -75,9 +75,9 @@ impl AccessEntry {
     }
 }
 
-fn epoch_ms(time: SystemTime) -> u64 {
+pub(crate) fn epoch_ms(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
 
@@ -141,7 +141,10 @@ impl AccessLog {
     pub fn append(&self, entry: &AccessEntry) -> std::io::Result<Appended> {
         let hour = hour_of(entry.completed_at_ms);
         if entry.dropped == 0 {
-            let mut written = self.written.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut written = self
+                .written
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let key = (entry.sandbox_id.clone(), entry.decision.clone(), hour);
             let count = written.entry(key).or_insert(0);
             if *count >= MAX_PER_SANDBOX_HOUR {
@@ -156,7 +159,10 @@ impl AccessLog {
     fn write(&self, hour: u64, entry: &AccessEntry) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(entry).map_err(std::io::Error::other)?;
         line.push(b'\n');
-        let mut current = self.current.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if current.as_ref().is_none_or(|(open, _)| *open != hour) {
             let file = OpenOptions::new()
                 .create(true)
@@ -205,7 +211,10 @@ impl AccessLog {
             let reader = BufReader::new(File::open(self.file_for(hour))?);
             for (index, line) in reader.lines().enumerate() {
                 let line = line?;
-                let position = Cursor { hour, line: index as u64 };
+                let position = Cursor {
+                    hour,
+                    line: index as u64,
+                };
                 if cursor.is_some_and(|cursor| hour == cursor.hour && position.line <= cursor.line)
                 {
                     continue;
@@ -234,7 +243,8 @@ impl AccessLog {
     }
 
     pub fn prune(&self, now_ms: u64, retention: Duration) -> std::io::Result<usize> {
-        let cutoff = now_ms.saturating_sub(retention.as_millis() as u64);
+        let cutoff =
+            now_ms.saturating_sub(u64::try_from(retention.as_millis()).unwrap_or(u64::MAX));
         let mut removed = 0;
         for hour in self.hours()? {
             if hour + HOUR_MS <= cutoff {
@@ -242,12 +252,21 @@ impl AccessLog {
                 removed += 1;
             }
         }
-        let mut current = self.current.lock().unwrap_or_else(|poison| poison.into_inner());
-        if current.as_ref().is_some_and(|(hour, _)| hour + HOUR_MS <= cutoff) {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current
+            .as_ref()
+            .is_some_and(|(hour, _)| hour + HOUR_MS <= cutoff)
+        {
             *current = None;
         }
         drop(current);
-        let mut written = self.written.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut written = self
+            .written
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         written.retain(|(_, _, hour), _| hour + HOUR_MS > cutoff);
         Ok(removed)
     }
@@ -273,7 +292,10 @@ mod tests {
     }
 
     fn hosts(page: &Page) -> Vec<&str> {
-        page.entries.iter().map(|entry| entry.host.as_str()).collect()
+        page.entries
+            .iter()
+            .map(|entry| entry.host.as_str())
+            .collect()
     }
 
     #[test]
@@ -290,7 +312,9 @@ mod tests {
         assert!(!all.truncated);
         assert_eq!(all.next_cursor, None);
 
-        let window = log.query(10 * HOUR_MS + 6, 11 * HOUR_MS, 100, None).unwrap();
+        let window = log
+            .query(10 * HOUR_MS + 6, 11 * HOUR_MS, 100, None)
+            .unwrap();
         assert_eq!(hosts(&window), ["c.example"]);
     }
 
@@ -314,8 +338,21 @@ mod tests {
             assert!(cursor.is_some());
         }
         assert_eq!(seen, ["a", "b", "c", "d", "e"]);
-        let parsed = Cursor::parse(&Cursor { hour: HOUR_MS, line: 1 }.to_string()).unwrap();
-        assert_eq!(parsed, Cursor { hour: HOUR_MS, line: 1 });
+        let parsed = Cursor::parse(
+            &Cursor {
+                hour: HOUR_MS,
+                line: 1,
+            }
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Cursor {
+                hour: HOUR_MS,
+                line: 1
+            }
+        );
         assert_eq!(Cursor::parse("junk"), None);
     }
 
@@ -325,7 +362,8 @@ mod tests {
         let log = AccessLog::open(dir.path().join("access")).unwrap();
         for index in 0..MAX_PER_SANDBOX_HOUR {
             assert!(matches!(
-                log.append(&entry(HOUR_MS + index, "flood.example")).unwrap(),
+                log.append(&entry(HOUR_MS + index, "flood.example"))
+                    .unwrap(),
                 Appended::Written
             ));
         }
@@ -337,7 +375,8 @@ mod tests {
         denied.decision = "denied".into();
         assert!(matches!(log.append(&denied).unwrap(), Appended::Written));
         assert!(matches!(
-            log.append(&entry(2 * HOUR_MS, "next-hour.example")).unwrap(),
+            log.append(&entry(2 * HOUR_MS, "next-hour.example"))
+                .unwrap(),
             Appended::Written
         ));
         let marker = AccessEntry::dropped_marker("sbx".into(), BTreeMap::new(), 3 * HOUR_MS, 42);
@@ -361,8 +400,12 @@ mod tests {
         let removed = log.prune(84 * HOUR_MS, RETENTION).unwrap();
         assert_eq!(removed, 1);
         assert_eq!(log.hours().unwrap(), vec![80 * HOUR_MS]);
-        log.append(&entry(80 * HOUR_MS + 9, "after.example")).unwrap();
-        assert_eq!(log.query(0, 90 * HOUR_MS, 100, None).unwrap().entries.len(), 2);
+        log.append(&entry(80 * HOUR_MS + 9, "after.example"))
+            .unwrap();
+        assert_eq!(
+            log.query(0, 90 * HOUR_MS, 100, None).unwrap().entries.len(),
+            2
+        );
     }
 
     #[test]

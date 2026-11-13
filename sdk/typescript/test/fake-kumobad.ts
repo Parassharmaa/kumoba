@@ -183,7 +183,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         if (patch.autoStopMinutes !== undefined) sandbox.autoStopMinutes = patch.autoStopMinutes;
         if (patch.network) {
           if (sandbox.state === "started") {
-            send(response, 409, { error: "conflict", message: "stop the sandbox before changing its network" });
+            send(response, 409, {
+              error: "conflict",
+              message: "stop the sandbox before changing its network",
+            });
             return;
           }
           sandbox.network = patch.network;

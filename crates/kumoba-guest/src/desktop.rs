@@ -86,7 +86,7 @@ impl Process {
             .process_group(0)
             .kill_on_drop(true);
         let mut child = command.spawn()?;
-        let group = child.id().unwrap() as i32;
+        let group = crate::linux::pid_of(&child)?;
         let (stop, receive_stop) = tokio::sync::oneshot::channel();
         let (exited, receiver) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {

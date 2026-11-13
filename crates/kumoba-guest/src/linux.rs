@@ -13,6 +13,34 @@ use tokio::{
     net::UnixStream,
 };
 
+pub(crate) struct VsockAddress(libc::sockaddr_vm);
+
+impl VsockAddress {
+    pub(crate) fn new(cid: u32, port: u32) -> Self {
+        let mut address: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+        address.svm_family =
+            libc::sa_family_t::try_from(libc::AF_VSOCK).expect("AF_VSOCK fits sa_family_t");
+        address.svm_cid = cid;
+        address.svm_port = port;
+        Self(address)
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const libc::sockaddr {
+        std::ptr::from_ref(&self.0).cast()
+    }
+
+    pub(crate) fn size(&self) -> libc::socklen_t {
+        libc::socklen_t::try_from(size_of_val(&self.0)).expect("sockaddr_vm fits socklen_t")
+    }
+}
+
+pub(crate) fn pid_of(child: &tokio::process::Child) -> io::Result<libc::pid_t> {
+    let id = child
+        .id()
+        .ok_or_else(|| io::Error::other("child exited before its process id was read"))?;
+    libc::pid_t::try_from(id).map_err(io::Error::other)
+}
+
 fn listener() -> io::Result<AsyncFd<OwnedFd>> {
     let fd = unsafe {
         libc::socket(
@@ -25,22 +53,13 @@ fn listener() -> io::Result<AsyncFd<OwnedFd>> {
         return Err(io::Error::last_os_error());
     }
     let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut address: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-    address.svm_family = libc::AF_VSOCK as _;
-    address.svm_port = AGENT_PORT;
-    address.svm_cid = libc::VMADDR_CID_ANY;
-    if unsafe {
-        libc::bind(
-            fd,
-            (&address as *const libc::sockaddr_vm).cast(),
-            std::mem::size_of_val(&address) as _,
-        )
-    } < 0
+    let address = VsockAddress::new(libc::VMADDR_CID_ANY, AGENT_PORT);
+    if unsafe { libc::bind(fd, address.as_ptr(), address.size()) } < 0
         || unsafe { libc::listen(fd, 32) } < 0
     {
         return Err(io::Error::last_os_error());
     }
-    AsyncFd::new(owned)
+    Ok(unsafe { AsyncFd::register(owned) }?)
 }
 
 async fn accept(listener: &AsyncFd<OwnedFd>) -> io::Result<UnixStream> {
@@ -138,7 +157,7 @@ async fn serve(
                         desktop_startup_timeout: true,
                     },
                 )
-                .await?
+                .await?;
             }
             Request::Exec(mut request) => {
                 desktop.lock().await.inherit_environment(&mut request.env);

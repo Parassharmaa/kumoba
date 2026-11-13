@@ -9,7 +9,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     };
     let state = tempfile::tempdir()?;
-    let runtime = Runtime::open(RuntimeConfig::for_host(&worker, state.path().join("runtime"))?).await?;
+    let runtime = Runtime::open(RuntimeConfig::for_host(
+        &worker,
+        state.path().join("runtime"),
+    )?)
+    .await?;
 
     let mut config = SandboxConfig::new(image);
     config.vcpus = 1;

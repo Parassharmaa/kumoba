@@ -191,8 +191,9 @@ impl Agent {
             if chunk.size > max_bytes {
                 return Err(Error::InvalidInput("file exceeds transfer limit".into()));
             }
-            let done =
-                chunk.data.is_empty() || data.len() + chunk.data.len() >= chunk.size as usize;
+            let done = chunk.data.is_empty()
+                || data.len() + chunk.data.len()
+                    >= usize::try_from(chunk.size).unwrap_or(usize::MAX);
             data.extend(chunk.data);
             if done {
                 return Ok(data);

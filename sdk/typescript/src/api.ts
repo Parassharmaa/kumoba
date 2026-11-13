@@ -163,14 +163,21 @@ export class Api {
     untilMs: number;
     limit: number;
     cursor?: string;
-  }): Promise<{ entries: AccessEntrySummary[]; truncated: boolean; nextCursor?: string | null | undefined }> {
+  }): Promise<{
+    entries: AccessEntrySummary[];
+    truncated: boolean;
+    nextCursor?: string | null | undefined;
+  }> {
     const params = new URLSearchParams({
       sinceMs: String(query.sinceMs),
       untilMs: String(query.untilMs),
       limit: String(query.limit),
     });
     if (query.cursor) params.set("cursor", query.cursor);
-    return this.http.json(accessLogSchema, { method: "GET", path: `/v1/access-log?${params.toString()}` });
+    return this.http.json(accessLogSchema, {
+      method: "GET",
+      path: `/v1/access-log?${params.toString()}`,
+    });
   }
 
   async preview(

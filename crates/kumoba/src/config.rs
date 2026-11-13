@@ -210,7 +210,7 @@ impl Command {
             cwd: self.cwd,
             env: self.env,
             stdin: base64::engine::general_purpose::STANDARD.encode(self.stdin),
-            timeout_ms: self.timeout.as_millis() as u64,
+            timeout_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
             output_limit: self.output_limit,
             user: self.user,
         }

@@ -352,7 +352,7 @@ impl Sandbox {
         Ok(())
     }
 
-    pub fn set_network(&mut self, network: crate::Network) -> Result<()> {
+    pub fn set_network(&mut self, network: Network) -> Result<()> {
         self.available()?;
         if self.state()? != State::Stopped {
             return Err(Error::Busy);

@@ -47,7 +47,8 @@ fn processes() -> io::Result<Vec<Process>> {
             Err(error) => return Err(error),
         }
     }
-    if !result.iter().any(|p| p.pid == std::process::id() as i32) {
+    let own = libc::pid_t::try_from(std::process::id()).ok();
+    if !result.iter().any(|p| Some(p.pid) == own) {
         return Err(io::Error::other("proc did not expose the guest agent"));
     }
     Ok(result)
@@ -102,7 +103,8 @@ impl Scope {
     fn signal(&self, signal: i32) -> io::Result<()> {
         use std::os::fd::{AsRawFd, FromRawFd};
         for process in self.workloads()? {
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, process.pid, 0) } as i32;
+            let fd = i32::try_from(unsafe { libc::syscall(libc::SYS_pidfd_open, process.pid, 0) })
+                .unwrap_or(-1);
             if fd < 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::ESRCH) {

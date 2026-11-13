@@ -142,7 +142,7 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
             };
             let since_ms = number("sinceMs", now.saturating_sub(2 * 3_600_000))?;
             let until_ms = number("untilMs", now)?;
-            let limit = number("limit", 10_000)? as usize;
+            let limit = usize::try_from(number("limit", 10_000)?).unwrap_or(usize::MAX);
             let cursor = optional_param(&params, "cursor")
                 .map(|value| {
                     crate::access_log::Cursor::parse(&value)

@@ -12,7 +12,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 use tokio::sync::{Mutex, RwLock};
 
@@ -65,10 +65,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 const RESTART_DELETE_GRACE_MS: u64 = 60 * 60 * 1000;
 
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    crate::access_log::epoch_ms(SystemTime::now())
 }
 
 pub struct Entry {
@@ -172,18 +169,27 @@ pub struct DroppedRecords(Arc<std::sync::Mutex<HashMap<String, u64>>>);
 
 impl DroppedRecords {
     pub fn add(&self, id: &str, count: u64) {
-        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut dropped = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *dropped.entry(id.to_string()).or_insert(0) += count;
     }
 
     fn take_if(&self, id: &str, ready: impl Fn(u64) -> bool) -> Option<u64> {
-        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut dropped = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = *dropped.get(id)?;
         ready(count).then(|| dropped.remove(id)).flatten()
     }
 
     fn take_all(&self) -> Vec<(String, u64)> {
-        let mut dropped = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut dropped = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         dropped.drain().collect()
     }
 }
@@ -262,10 +268,9 @@ impl Service {
                     Ok(crate::access_log::Appended::OverCap) => recorder.dropped.add(&id, 1),
                     Err(error) => log("access_log_failed", &id, Some(ApiError::Io(error))),
                 }
-                if let Some(count) = recorder
-                    .dropped
-                    .take_if(&id, |count| count >= crate::access_log::DROPPED_MARKER_INTERVAL)
-                {
+                if let Some(count) = recorder.dropped.take_if(&id, |count| {
+                    count >= crate::access_log::DROPPED_MARKER_INTERVAL
+                }) {
                     recorder.write_dropped_marker(&id, labels, count);
                 }
             }
@@ -602,11 +607,7 @@ impl Service {
         &self,
         id: &str,
         command: Option<kumoba::Command>,
-    ) -> ApiResult<(
-        Arc<Entry>,
-        kumoba::Agent,
-        Option<kumoba::Command>,
-    )> {
+    ) -> ApiResult<(Arc<Entry>, kumoba::Agent, Option<kumoba::Command>)> {
         let entry = self.entry(id).await?;
         let mut sandbox = entry.sandbox.lock().await;
         if sandbox.state()? != State::Running {
@@ -638,9 +639,8 @@ impl Service {
         let now = now_ms();
         for (id, entry) in entries {
             let meta = entry.meta();
-            let state = match entry.sandbox.lock().await.state() {
-                Ok(state) => state,
-                Err(_) => continue,
+            let Ok(state) = entry.sandbox.lock().await.state() else {
+                continue;
             };
             match reap_action(state, &meta, entry.snapshot(), now) {
                 Some(ReapAction::Stop) => {
@@ -742,24 +742,78 @@ mod tests {
     #[test]
     fn running_sandboxes_stop_only_when_idle_past_their_limit() {
         let m = meta(15, None);
-        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE), Some(ReapAction::Stop));
-        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE - 1), None);
-        assert_eq!(reap_action(State::Running, &m, snapshot(0, 0, 1), 60 * MINUTE), None);
-        assert_eq!(reap_action(State::Running, &meta(0, None), snapshot(0, 0, 0), u64::MAX), None);
-        assert_eq!(reap_action(State::Running, &m, snapshot(10 * MINUTE, 0, 0), 24 * MINUTE), None);
+        assert_eq!(
+            reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE),
+            Some(ReapAction::Stop)
+        );
+        assert_eq!(
+            reap_action(State::Running, &m, snapshot(0, 0, 0), 15 * MINUTE - 1),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Running, &m, snapshot(0, 0, 1), 60 * MINUTE),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Running, &meta(0, None), snapshot(0, 0, 0), u64::MAX),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Running, &m, snapshot(10 * MINUTE, 0, 0), 24 * MINUTE),
+            None
+        );
     }
 
     #[test]
     fn stopped_sandboxes_delete_only_after_a_recorded_stop() {
         let m = meta(15, Some(30));
-        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 31 * MINUTE), Some(ReapAction::Delete));
-        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 30 * MINUTE), None);
-        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, 0, 0), u64::MAX), None);
-        assert_eq!(reap_action(State::Stopped, &meta(15, None), snapshot(0, MINUTE, 0), u64::MAX), None);
-        assert_eq!(reap_action(State::Stopped, &m, snapshot(0, MINUTE, 2), u64::MAX), None);
-        assert_eq!(reap_action(State::Deleted, &m, snapshot(0, MINUTE, 0), u64::MAX), None);
+        assert_eq!(
+            reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 31 * MINUTE),
+            Some(ReapAction::Delete)
+        );
+        assert_eq!(
+            reap_action(State::Stopped, &m, snapshot(0, MINUTE, 0), 30 * MINUTE),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Stopped, &m, snapshot(0, 0, 0), u64::MAX),
+            None
+        );
+        assert_eq!(
+            reap_action(
+                State::Stopped,
+                &meta(15, None),
+                snapshot(0, MINUTE, 0),
+                u64::MAX
+            ),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Stopped, &m, snapshot(0, MINUTE, 2), u64::MAX),
+            None
+        );
+        assert_eq!(
+            reap_action(State::Deleted, &m, snapshot(0, MINUTE, 0), u64::MAX),
+            None
+        );
         let restarted = snapshot(0, 5 * MINUTE + RESTART_DELETE_GRACE_MS, 0);
-        assert_eq!(reap_action(State::Stopped, &m, restarted, 5 * MINUTE + RESTART_DELETE_GRACE_MS + 29 * MINUTE), None);
-        assert_eq!(reap_action(State::Stopped, &m, restarted, 5 * MINUTE + RESTART_DELETE_GRACE_MS + 30 * MINUTE), Some(ReapAction::Delete));
+        assert_eq!(
+            reap_action(
+                State::Stopped,
+                &m,
+                restarted,
+                5 * MINUTE + RESTART_DELETE_GRACE_MS + 29 * MINUTE
+            ),
+            None
+        );
+        assert_eq!(
+            reap_action(
+                State::Stopped,
+                &m,
+                restarted,
+                5 * MINUTE + RESTART_DELETE_GRACE_MS + 30 * MINUTE
+            ),
+            Some(ReapAction::Delete)
+        );
     }
 }

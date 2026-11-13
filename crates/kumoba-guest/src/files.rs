@@ -12,6 +12,7 @@ pub(crate) struct Account {
     pub gid: u32,
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) struct User {
     pub account: Account,
     pub home: String,
@@ -29,6 +30,7 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_string())
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn resolve_user(name: &str) -> io::Result<User> {
     let passwd = std::fs::read_to_string("/etc/passwd")?;
     passwd
@@ -102,7 +104,9 @@ pub(crate) async fn read_at(
             use std::io::{Read, Seek};
             file.seek(io::SeekFrom::Start(offset))?;
             let mut data =
-                Vec::with_capacity(len.min(metadata.len().saturating_sub(offset) as usize));
+                Vec::with_capacity(len.min(
+                    usize::try_from(metadata.len().saturating_sub(offset)).unwrap_or(usize::MAX),
+                ));
             file.take(len as u64).read_to_end(&mut data)?;
             Ok((data, metadata.len()))
         })

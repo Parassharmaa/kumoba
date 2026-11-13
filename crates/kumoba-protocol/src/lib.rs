@@ -165,13 +165,13 @@ pub async fn send<W: AsyncWrite + Unpin, T: Serialize>(
     value: &T,
 ) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if bytes.len() > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "protocol frame exceeds limit",
-        ));
-    }
-    writer.write_u32(bytes.len() as u32).await?;
+    let length = u32::try_from(bytes.len())
+        .ok()
+        .filter(|_| bytes.len() <= MAX_FRAME)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "protocol frame exceeds limit")
+        })?;
+    writer.write_u32(length).await?;
     writer.write_all(&bytes).await?;
     writer.flush().await
 }
@@ -202,7 +202,9 @@ mod tests {
     #[tokio::test]
     async fn reject_oversized_length_without_allocating_body() {
         let (mut a, mut b) = tokio::io::duplex(16);
-        a.write_u32((MAX_FRAME + 1) as u32).await.unwrap();
+        a.write_u32(u32::try_from(MAX_FRAME + 1).unwrap())
+            .await
+            .unwrap();
         assert_eq!(
             receive::<_, Request>(&mut b).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
@@ -212,7 +214,10 @@ mod tests {
     #[tokio::test]
     async fn streaming_limit_rejects_length_before_waiting_for_body() {
         let (mut writer, mut reader) = tokio::io::duplex(4);
-        writer.write_u32((MAX_EXEC_FRAME + 1) as u32).await.unwrap();
+        writer
+            .write_u32(u32::try_from(MAX_EXEC_FRAME + 1).unwrap())
+            .await
+            .unwrap();
         assert_eq!(
             receive_limited::<_, ExecEvent>(&mut reader, MAX_EXEC_FRAME)
                 .await

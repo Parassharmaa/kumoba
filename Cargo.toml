@@ -13,7 +13,7 @@ keywords = ["sandbox", "microvm", "libkrun", "agents", "isolation"]
 categories = ["virtualization", "development-tools"]
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "time", "sync", "fs"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "time", "sync", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
@@ -30,8 +30,30 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
-webpki-roots = "1"
+webpki-roots = "1.0.10"
 aho-corasick = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+uninlined_format_args = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+borrow_as_ptr = "warn"
+match_wildcard_for_single_variants = "warn"

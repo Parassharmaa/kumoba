@@ -9,7 +9,10 @@ cargo test --workspace --lib     # unit tests
 scripts/test-vm.sh               # agent tests against a real VM
 scripts/smoke-daemon.sh          # kumobad end to end with curl
 cd sdk/typescript && npm install && npm test
+scripts/ci-lint.sh               # everything the lint CI job checks
 ```
+
+`scripts/ci-lint.sh` runs `cargo fmt --check`, clippy with warnings denied (the lint set is in the workspace `Cargo.toml`), rustdoc, `cargo deny check` for licenses, advisories and sources, shellcheck, actionlint, and Biome plus `tsc` for the SDK. It needs `cargo install cargo-deny`, shellcheck and actionlint. `cargo fmt --all` and `npm run format` in `sdk/typescript` fix most of what it reports. On macOS it skips the Linux-only guest code, which CI covers.
 
 To run the SDK against a real daemon: `scripts/serve.sh` in one terminal, then in another `set -a; source .local/serve/env; set +a; cd sdk/typescript && npm run test:live`.
 

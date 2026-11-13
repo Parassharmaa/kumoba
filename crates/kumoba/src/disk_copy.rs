@@ -32,10 +32,15 @@ mod linux {
         Ok(length)
     }
 
+    fn file_offset(offset: u64) -> io::Result<libc::off_t> {
+        libc::off_t::try_from(offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "disk offset exceeds off_t"))
+    }
+
     fn seek(file: &File, offset: u64, whence: libc::c_int) -> io::Result<Option<u64>> {
-        let position = unsafe { libc::lseek(file.as_raw_fd(), offset as libc::off_t, whence) };
-        if position >= 0 {
-            return Ok(Some(position as u64));
+        let position = unsafe { libc::lseek(file.as_raw_fd(), file_offset(offset)?, whence) };
+        if let Ok(position) = u64::try_from(position) {
+            return Ok(Some(position));
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ENXIO) {
@@ -53,28 +58,29 @@ mod linux {
             let data_end = seek(input, data_start, libc::SEEK_HOLE)?.unwrap_or(length);
             let mut cursor = data_start;
             while cursor < data_end {
-                let mut from = cursor as libc::loff_t;
-                let mut to = cursor as libc::loff_t;
+                let mut from = file_offset(cursor)?;
+                let mut to = from;
                 let copied = unsafe {
                     libc::copy_file_range(
                         input.as_raw_fd(),
-                        &mut from,
+                        &raw mut from,
                         output.as_raw_fd(),
-                        &mut to,
-                        (data_end - cursor) as usize,
+                        &raw mut to,
+                        usize::try_from(data_end - cursor).unwrap_or(usize::MAX),
                         0,
                     )
                 };
-                if copied < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if copied == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "disk image shrank while copying",
-                    ));
-                }
-                cursor += copied as u64;
+                let copied = match u64::try_from(copied) {
+                    Ok(0) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "disk image shrank while copying",
+                        ));
+                    }
+                    Ok(copied) => copied,
+                    Err(_) => return Err(io::Error::last_os_error()),
+                };
+                cursor += copied;
             }
             offset = data_end;
         }
@@ -110,7 +116,10 @@ mod tests {
         {
             use std::os::unix::fs::MetadataExt;
             let blocks = std::fs::metadata(&target).unwrap().blocks();
-            assert!(blocks * 512 < 8 << 20, "copy is not sparse: {blocks} blocks");
+            assert!(
+                blocks * 512 < 8 << 20,
+                "copy is not sparse: {blocks} blocks"
+            );
         }
     }
 }

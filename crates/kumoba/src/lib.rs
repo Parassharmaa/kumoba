@@ -2,8 +2,8 @@ mod agent;
 pub use agent::Agent;
 mod config;
 mod mounts;
-pub use mounts::validate_host_mounts;
 pub use kumoba_protocol::HostMount;
+pub use mounts::validate_host_mounts;
 mod platform;
 pub use platform::HostPlatform;
 mod desktop;
@@ -21,8 +21,8 @@ mod snapshot_image;
 pub use snapshot_image::{SnapshotImage, SnapshotImageInfo};
 
 pub use config::{
-    AccessSink, Command, ExecOutput, ExecSummary, GuestPath, Network, RuntimeConfig, SandboxConfig, SandboxId,
-    State, StopOutcome, Termination,
+    AccessSink, Command, ExecOutput, ExecSummary, GuestPath, Network, RuntimeConfig, SandboxConfig,
+    SandboxId, State, StopOutcome, Termination,
 };
 pub use runtime::{Runtime, Snapshot};
 pub use session::{Sandbox, Tunnel};

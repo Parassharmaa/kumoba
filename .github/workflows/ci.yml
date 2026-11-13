@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: lint (rustfmt, clippy, rustdoc, cargo-deny, shellcheck, actionlint, biome)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,actionlint
+      - run: bash scripts/ci-lint.sh
+
   runtime:
     name: runtime and sdk (linux x86_64, KVM)
     runs-on: ubuntu-24.04

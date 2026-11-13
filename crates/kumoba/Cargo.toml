@@ -36,3 +36,6 @@ aho-corasick.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["signal", "io-std"] }
+
+[lints]
+workspace = true

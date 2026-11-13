@@ -40,10 +40,10 @@ pub(crate) async fn drive<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin>(
                 }
                 match kind {
                     OutputKind::Stdout => {
-                        write_counted(stdout, &data, &mut progress.stdout, limit).await?
+                        write_counted(stdout, &data, &mut progress.stdout, limit).await?;
                     }
                     OutputKind::Stderr => {
-                        write_counted(stderr, &data, &mut progress.stderr, limit).await?
+                        write_counted(stderr, &data, &mut progress.stderr, limit).await?;
                     }
                 }
                 stream.write_u8(1).await.map_err(unknown)?;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:/opt/homebrew/opt/e2fsprogs/sbin:/usr/sbin:$PATH"
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) image_arch=arm64; alpine_arch=aarch64; host_os=macos ;;

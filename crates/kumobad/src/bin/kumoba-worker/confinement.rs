@@ -9,7 +9,7 @@ pub fn apply(config: &WorkerConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
     let profile = CString::new(profile(config)?)?;
     let mut error = std::ptr::null_mut();
-    if unsafe { sandbox_init(profile.as_ptr(), 0, &mut error) } != 0 {
+    if unsafe { sandbox_init(profile.as_ptr(), 0, &raw mut error) } != 0 {
         let message = if error.is_null() {
             "sandbox_init failed".into()
         } else {

@@ -146,7 +146,12 @@ export type AccessibilityNode = {
   name?: string | undefined;
   states?: string[] | undefined;
   bounds?:
-    | { x?: number | undefined; y?: number | undefined; width?: number | undefined; height?: number | undefined }
+    | {
+        x?: number | undefined;
+        y?: number | undefined;
+        width?: number | undefined;
+        height?: number | undefined;
+      }
     | undefined;
   children?: AccessibilityNode[] | undefined;
 };

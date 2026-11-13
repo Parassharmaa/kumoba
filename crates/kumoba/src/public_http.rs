@@ -120,9 +120,8 @@ async fn forward(
         Err(status) => {
             if status == StatusCode::FORBIDDEN
                 && let Some((host, port)) = request.uri().authority().and_then(|authority| {
-                    crate::egress::raw_target(authority.as_str()).or_else(|| {
-                        crate::egress::raw_target(&format!("{}:80", authority.host()))
-                    })
+                    crate::egress::raw_target(authority.as_str())
+                        .or_else(|| crate::egress::raw_target(&format!("{}:80", authority.host())))
                 })
             {
                 scope.record(&host, port, false);
@@ -134,7 +133,7 @@ async fn forward(
     parts.uri = parts
         .uri
         .path_and_query()
-        .map(|path| path.as_str())
+        .map(hyper::http::uri::PathAndQuery::as_str)
         .unwrap_or("/")
         .parse()
         .map_err(|_| StatusCode::BAD_REQUEST)?;

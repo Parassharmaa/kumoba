@@ -37,3 +37,6 @@ url = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true
