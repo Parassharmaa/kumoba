@@ -4,7 +4,7 @@
 [![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml)
 [![License](https://img.shields.io/npm/l/kumoba)](https://github.com/Parassharmaa/kumoba/blob/main/LICENSE)
 
-TypeScript SDK for [kumoba](https://github.com/Parassharmaa/kumoba): local microVM sandboxes for AI agents and untrusted code. Talks to a `kumobad` daemon over a Unix socket or loopback TCP. Depends only on `zod`; needs Node 20 or later.
+TypeScript SDK and CLI for [kumoba](https://github.com/Parassharmaa/kumoba): local microVM sandboxes for AI agents and untrusted code. Talks to a `kumobad` daemon over a Unix socket or loopback TCP. Depends only on `zod`; needs Node 20 or later.
 
 ```sh
 npm install kumoba
@@ -30,9 +30,24 @@ await using sandbox = await kumoba.create({
 const result = await sandbox.run("python3 -c 'print(21 * 2)'");
 console.log(result.stdout); // "42\n"
 
+const once = await kumoba.run("uname -a"); // a fresh VM, deleted when the command ends
+
 await sandbox.files.write("/workspace/notes.md", "# hello");
 const link = await sandbox.expose(8080);
 ```
+
+## CLI
+
+The package also installs the `kumoba` command, the same CLI as the native one that ships with the daemon. It builds its commands from the daemon's catalog, so `kumoba` lists exactly what your daemon supports:
+
+```sh
+npx kumoba run -- python3 -c 'print(1)'
+npx kumoba create --image default -q
+npx kumoba exec <id> -- ls /workspace
+npx kumoba desktop <id> --user kumoba --open
+```
+
+See [docs/cli.md](https://github.com/Parassharmaa/kumoba/blob/main/docs/cli.md).
 
 ## Connecting
 

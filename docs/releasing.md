@@ -39,12 +39,8 @@ Every publish step skips a version the registry already has, so rerunning a fail
 - A broken tarball with good packages: fix the script, rerun the workflow. `publish-release.sh` replaces assets on an existing release.
 - A tag on the wrong commit that has not been pushed: `git tag -d vX.Y.Z` and `git reset --hard HEAD~1`, then start again.
 
-## One-time setup
+## Registry setup
 
-Both registries authenticate the workflow with GitHub's OIDC token instead of a stored secret, and both configure that per package, so the first version of each package is published by hand and the workflow's publish jobs run for real from the second release on.
+Done for kumoba 0.1.0: the four crates and the npm package trust `release.yml` in this repository through OIDC, so releases publish without stored tokens, npm attaches provenance, and nothing needs a manual publish. Repository rulesets stop `v*` tags from being moved or deleted and stop force pushes to or deletion of `main`.
 
-1. Cut the first release as usual with `scripts/release.sh` and push the tag. The workflow builds and smoke-tests everything, then the crates.io job fails because no trusted publisher exists yet. Nothing has been published at that point.
-2. From the tagged commit, publish by hand: `cargo login`, then `cargo publish --workspace`; `cd sdk/typescript && npm login && npm publish`.
-3. Re-run the failed jobs from the Actions tab. The publish jobs find the versions on their registries and skip without requesting a token, and the release job creates the GitHub release.
-4. crates.io: for each of the four crates, Settings, Trusted Publishing, add GitHub with owner `Parassharmaa`, repository `kumoba`, workflow `release.yml`. npm: package `kumoba`, Settings, Trusted publisher, GitHub Actions with the same owner, repository and workflow filename, then require two-factor authentication and disallow tokens for publishing. npm expires a trusted publisher that has not published within two days, so do this right before the second release. Revoke the token used in step 2.
-5. Done already: repository rulesets stop `v*` tags from being moved or deleted and stop force pushes to or deletion of `main`. A pushed tag is a release, so these stay on.
+A new crate or npm package added to the release needs the same setup once: publish its first version by hand from the tagged commit, then add the trusted publisher (crates.io: the crate's Settings, Trusted Publishing, GitHub, owner `Parassharmaa`, repository `kumoba`, workflow `release.yml`; npm: `npm trust github <package> --file release.yml --repo Parassharmaa/kumoba --allow-publish`). npm drops a trusted publisher that has not published within two days of being added, so add it right before a release.

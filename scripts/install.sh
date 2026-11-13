@@ -93,10 +93,17 @@ if [[ "$platform" == linux-* && ! -w /dev/kvm ]]; then
   say "  sudo usermod -aG kvm $(id -un)"
 fi
 say ""
-say "Start the daemon:"
-say "  $home/bin/kumobad"
+case ":$PATH:" in
+  *":$home/bin:"*) ;;
+  *)
+    say "Add kumoba to your PATH, in your shell profile too:"
+    say "  export PATH=\"$home/bin:\$PATH\""
+    say ""
+    ;;
+esac
+say "Start the daemon, then try it from another terminal:"
+say "  kumobad"
+say "  kumoba run -- python3 -c 'print(21 * 2)'"
+say "  kumoba          # every command"
 say ""
-say "Then, from Node:"
-say "  npm install kumoba"
-say "  const sandbox = await new Kumoba().create();"
-say "  console.log((await sandbox.run(\"python3 --version\")).stdout);"
+say "From code: npm install kumoba, then new Kumoba().run(\"python3 --version\")"

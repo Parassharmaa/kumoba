@@ -4,7 +4,7 @@
 [![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/kumobad)](https://github.com/Parassharmaa/kumoba/blob/main/LICENSE)
 
-The [kumoba](https://github.com/Parassharmaa/kumoba) daemon. Serves microVM sandboxes over an HTTP API on a Unix socket or loopback TCP, and ships `kumoba-worker`, the per-VM process that loads libkrun and boots one sandbox.
+The [kumoba](https://github.com/Parassharmaa/kumoba) daemon. Serves microVM sandboxes over an HTTP API on a Unix socket or loopback TCP, and ships two more binaries: `kumoba`, the command-line client, and `kumoba-worker`, the per-VM process that loads libkrun and boots one sandbox.
 
 The quickest route is the installer, which also fetches a guest image and the libraries:
 
@@ -18,6 +18,7 @@ From crates.io:
 ```sh
 cargo install kumobad
 kumobad --help
+kumoba run -- echo hello        # once kumobad is running
 ```
 
 With no configuration `kumobad` uses `~/.kumoba`: it boots every `images/<name>.raw`, creates a token and listens on `kumobad.sock`. Hosts need libkrun and libkrunfw, from Homebrew `slp/krun` on Apple silicon or `scripts/prepare-linux-host.sh` on Linux with `/dev/kvm`. On macOS a `cargo install`ed `kumoba-worker` must also be signed with the `com.apple.security.hypervisor` entitlement; the [install section](https://github.com/Parassharmaa/kumoba#install) has the commands.

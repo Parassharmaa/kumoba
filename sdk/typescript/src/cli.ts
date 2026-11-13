@@ -274,7 +274,7 @@ async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): 
     if (typeof url !== "string") {
       throw new Exit(
         1,
-        "kumobad returned no browser URL; start it with KUMOBAD_LISTEN or KUMOBAD_PUBLIC_URL set"
+        "kumobad returned no browser URL; start it with KUMOBAD_PREVIEW_LISTEN or KUMOBAD_PREVIEW_URL set"
       );
     }
     io.open(url);

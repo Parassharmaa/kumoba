@@ -4,6 +4,21 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- `kumoba` CLI, built for people and for agents. It has no commands of its own: it reads the daemon's catalog and builds every command, argument check and help page from it. Ships natively with the daemon (`install.sh`, release tarballs, `cargo install kumobad`) and through npm (`npx kumoba`). `exec` and `run` exit with the guest command's status.
+- `GET /v1/commands`: every route with a JSON Schema for its input, so clients and agents can discover the API.
+- `POST /v1/run` and `Kumoba.run()`: one command in a fresh sandbox that is deleted when it ends.
+- `POST /v1/sandboxes/{id}/desktop`: starts the desktop and returns a link to a live noVNC view.
+- Browser previews on a separate loopback listener (`KUMOBAD_PREVIEW_LISTEN`, default `127.0.0.1:7789`), so exposed web apps and the desktop render in a browser while staying off the API's origin. Preview and desktop responses carry a full `url`.
+
+### Changed
+
+- With no configuration `kumobad` also listens on `127.0.0.1:7788`, and on `127.0.0.1:7789` for previews; either is skipped if its port is taken.
+- A bare program name in `exec` or `run` (`python3`) is looked up on the guest's `PATH` instead of being rejected.
+- The SDK reports an unreachable daemon with the error code `unreachable`.
+- Dependencies: `sha2` 0.11 with `hmac` 0.13, `base64` 0.23, `libloading` 0.9, TypeScript 7, vitest 5, and newer GitHub Actions.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added

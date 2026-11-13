@@ -104,18 +104,31 @@ pub fn authorized(request: &Request<Incoming>, token: &[u8]) -> bool {
         .is_some_and(|presented| presented.as_bytes().ct_eq(token).into())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Listener {
+    Api,
+    Browser,
+}
+
 pub async fn handle(
     request: Request<Incoming>,
     service: Arc<Service>,
     token: Arc<Vec<u8>>,
+    listener: Listener,
 ) -> Result<Response<Body>, Infallible> {
     if request.uri().path() == "/healthz" {
         return Ok(json_response(200, json!({"ok": true})));
     }
     if request.uri().path().starts_with("/v1/preview/") {
-        return Ok(preview(request, service)
+        return Ok(preview(request, service, listener == Listener::Browser)
             .await
             .unwrap_or_else(error_response));
+    }
+    if listener == Listener::Browser {
+        return Ok(json_response(
+            404,
+            json!({"error": "not_found", "message": "this listener serves previews only"}),
+        ));
     }
     if !authorized(&request, &token) {
         return Ok(json_response(401, json!({"error": "unauthorized"})));
@@ -566,6 +579,12 @@ const UPGRADE_RESPONSE_HEADERS: &[&str] = &[
     "upgrade",
 ];
 const PLAIN_RESPONSE_HEADERS: &[&str] = &[];
+const BROWSER_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "content-encoding",
+    "content-language",
+    "location",
+];
 
 async fn read_head(stream: &mut tokio::net::UnixStream) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     use tokio::io::AsyncReadExt;
@@ -598,6 +617,7 @@ async fn read_head(stream: &mut tokio::net::UnixStream) -> ApiResult<(Vec<u8>, V
 async fn preview(
     mut request: Request<Incoming>,
     service: Arc<Service>,
+    browse: bool,
 ) -> ApiResult<Response<Body>> {
     use tokio::io::AsyncWriteExt;
     let path = request
@@ -635,16 +655,16 @@ async fn preview(
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse().ok())
         .ok_or_else(|| ApiError::Status(502, "guest preview sent an invalid status".into()))?;
-    let allowed: &[&str] = if status == 101 {
-        UPGRADE_RESPONSE_HEADERS
-    } else {
-        PLAIN_RESPONSE_HEADERS
+    let allowed: &[&str] = match (status, browse) {
+        (101, _) => UPGRADE_RESPONSE_HEADERS,
+        (_, true) => BROWSER_RESPONSE_HEADERS,
+        (_, false) => PLAIN_RESPONSE_HEADERS,
     };
     let mut builder = Response::builder()
         .status(status)
         .header("cache-control", "no-store")
         .header("x-content-type-options", "nosniff");
-    if status != 101 {
+    if status != 101 && !browse {
         builder = builder
             .header("content-type", "application/octet-stream")
             .header("content-security-policy", "sandbox")

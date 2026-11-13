@@ -380,7 +380,7 @@ async fn invoke(connection: &Connection, spec: &Value, tokens: &[String]) -> Res
 fn open_url(value: &Value) -> Result<(), Failure> {
     let Some(url) = value.get("url").and_then(Value::as_str) else {
         return Err(Failure::Api(
-            "kumobad returned no browser URL; start it with KUMOBAD_LISTEN or KUMOBAD_PUBLIC_URL set"
+            "kumobad returned no browser URL; start it with KUMOBAD_PREVIEW_LISTEN or KUMOBAD_PREVIEW_URL set"
                 .into(),
         ));
     };

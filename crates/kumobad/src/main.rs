@@ -19,6 +19,7 @@ use std::{
 use tokio::net::{TcpListener, UnixListener};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7788";
+const DEFAULT_PREVIEW_LISTEN: &str = "127.0.0.1:7789";
 
 struct Options {
     egress: kumoba::EgressConfig,
@@ -30,7 +31,8 @@ struct Options {
     token: Vec<u8>,
     token_file: PathBuf,
     listen_is_default: bool,
-    public_url: Option<String>,
+    preview_listen: Option<String>,
+    preview_url: Option<String>,
     max_running: usize,
 }
 
@@ -115,6 +117,16 @@ fn default_worker() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("kumoba-worker"))
 }
 
+fn loopback(address: &str, variable: &str) -> Result<String, String> {
+    let parsed: std::net::SocketAddr = address
+        .parse()
+        .map_err(|_| format!("invalid {variable} {address}"))?;
+    if !parsed.ip().is_loopback() {
+        return Err(format!("{variable} must be a loopback address"));
+    }
+    Ok(address.to_string())
+}
+
 fn options() -> Result<Options, String> {
     let home = home()?;
     let images = match std::env::var("KUMOBAD_IMAGES") {
@@ -143,15 +155,10 @@ fn options() -> Result<Options, String> {
             worker.display()
         ));
     }
-    let listen = std::env::var("KUMOBAD_LISTEN").ok();
-    if let Some(address) = &listen {
-        let parsed: std::net::SocketAddr = address
-            .parse()
-            .map_err(|_| format!("invalid KUMOBAD_LISTEN {address}"))?;
-        if !parsed.ip().is_loopback() {
-            return Err("KUMOBAD_LISTEN must be a loopback address".into());
-        }
-    }
+    let listen = std::env::var("KUMOBAD_LISTEN")
+        .ok()
+        .map(|address| loopback(&address, "KUMOBAD_LISTEN"))
+        .transpose()?;
     let mut egress = kumoba::EgressConfig::parse(
         &std::env::var("KUMOBAD_ALLOW_PRIVATE_HOSTS").unwrap_or_default(),
         std::env::var("KUMOBAD_UPSTREAM_PROXY").ok().as_deref(),
@@ -172,6 +179,10 @@ fn options() -> Result<Options, String> {
     } else {
         listen
     };
+    let preview_listen = match std::env::var("KUMOBAD_PREVIEW_LISTEN") {
+        Ok(address) => Some(loopback(&address, "KUMOBAD_PREVIEW_LISTEN")?),
+        Err(_) => listen_is_default.then(|| DEFAULT_PREVIEW_LISTEN.to_string()),
+    };
     Ok(Options {
         egress,
         state_dir: env_path_or("KUMOBAD_STATE_DIR", || home.join("state")),
@@ -182,7 +193,8 @@ fn options() -> Result<Options, String> {
         token,
         token_file: token_file.unwrap_or_else(|| home.join("token")),
         listen_is_default,
-        public_url: std::env::var("KUMOBAD_PUBLIC_URL").ok(),
+        preview_listen,
+        preview_url: std::env::var("KUMOBAD_PREVIEW_URL").ok(),
         max_running: std::env::var("KUMOBAD_MAX_RUNNING")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -190,13 +202,14 @@ fn options() -> Result<Options, String> {
     })
 }
 
-fn serve<S>(stream: S, service: Arc<Service>, token: Arc<Vec<u8>>)
+fn serve<S>(stream: S, service: Arc<Service>, token: Arc<Vec<u8>>, listener: http::Listener)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let handler =
-            service_fn(move |request| http::handle(request, service.clone(), token.clone()));
+        let handler = service_fn(move |request| {
+            http::handle(request, service.clone(), token.clone(), listener)
+        });
         let _ = hyper::server::conn::http1::Builder::new()
             .serve_connection(TokioIo::new(stream), handler)
             .with_upgrades()
@@ -221,8 +234,10 @@ Environment, all optional:
                         (default $KUMOBA_HOME/kumobad.sock unless KUMOBAD_LISTEN is set)
   KUMOBAD_LISTEN        loopback host:port to listen on (default 127.0.0.1:7788 when neither
                         it nor KUMOBAD_SOCKET is set; skipped if that port is taken)
-  KUMOBAD_PUBLIC_URL    base URL browsers reach kumobad at, for preview and desktop links
-                        (default http://<listen address>)
+  KUMOBAD_PREVIEW_LISTEN  loopback host:port that serves previews to browsers, on an origin
+                        apart from the API (default 127.0.0.1:7789 when nothing else is set)
+  KUMOBAD_PREVIEW_URL   base URL browsers reach that listener at, for expose and desktop
+                        links (default http://<preview listen address>)
   KUMOBAD_MAX_RUNNING   concurrently running sandboxes (default 4)
   KUMOBAD_ALLOW_PRIVATE_HOSTS  intranet destinations sandboxes may reach: host names (with
                         subdomains) and IPv4 CIDRs, comma separated. Loopback, link-local
@@ -318,12 +333,29 @@ async fn run() -> Result<(), String> {
         None => None,
     };
     let listening = tcp.as_ref().and_then(|_| options.listen.clone());
-    let public_url = options.public_url.clone().or_else(|| {
-        listening
+    let browser = match &options.preview_listen {
+        Some(address) => match TcpListener::bind(address).await {
+            Ok(listener) => Some(listener),
+            Err(error) if options.listen_is_default => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"type": "kumobad", "event": "preview_listen_skipped", "listen": address, "error": error.to_string()})
+                );
+                None
+            }
+            Err(error) => return Err(format!("cannot listen on {address}: {error}")),
+        },
+        None => None,
+    };
+    let previewing = browser
+        .as_ref()
+        .and_then(|_| options.preview_listen.clone());
+    let preview_url = options.preview_url.clone().or_else(|| {
+        previewing
             .as_ref()
             .map(|address| format!("http://{address}"))
     });
-    service.set_public_url(public_url.clone());
+    service.set_public_url(preview_url.clone());
     eprintln!(
         "{}",
         serde_json::json!({
@@ -332,7 +364,8 @@ async fn run() -> Result<(), String> {
             "version": env!("CARGO_PKG_VERSION"),
             "socket": options.socket,
             "listen": listening,
-            "publicUrl": public_url,
+            "previewListen": previewing,
+            "previewUrl": preview_url,
             "tokenFile": options.token_file,
             "images": image_names,
         })
@@ -352,10 +385,13 @@ async fn run() -> Result<(), String> {
     loop {
         tokio::select! {
             accepted = async { unix.as_ref().unwrap().accept().await }, if unix.is_some() => {
-                if let Ok((stream, _)) = accepted { serve(stream, service.clone(), token.clone()); }
+                if let Ok((stream, _)) = accepted { serve(stream, service.clone(), token.clone(), http::Listener::Api); }
             }
             accepted = async { tcp.as_ref().unwrap().accept().await }, if tcp.is_some() => {
-                if let Ok((stream, _)) = accepted { serve(stream, service.clone(), token.clone()); }
+                if let Ok((stream, _)) = accepted { serve(stream, service.clone(), token.clone(), http::Listener::Api); }
+            }
+            accepted = async { browser.as_ref().unwrap().accept().await }, if browser.is_some() => {
+                if let Ok((stream, _)) = accepted { serve(stream, service.clone(), token.clone(), http::Listener::Browser); }
             }
             _ = tokio::signal::ctrl_c() => break,
             _ = terminate.recv() => break,

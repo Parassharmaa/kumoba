@@ -1,6 +1,10 @@
 # kumobad HTTP API
 
-`kumobad` speaks HTTP/1.1 over a Unix socket (`KUMOBAD_SOCKET`) and/or loopback TCP (`KUMOBAD_LISTEN`). Every route except `/healthz` and `/v1/preview/...` requires `authorization: Bearer <token>`, where the token is the content of `KUMOBAD_TOKEN_FILE`.
+`kumobad` speaks HTTP/1.1 over a Unix socket (`KUMOBAD_SOCKET`) and/or loopback TCP (`KUMOBAD_LISTEN`). Every route except `/healthz` and `/v1/preview/...` requires `authorization: Bearer <token>`, where the token is the content of `KUMOBAD_TOKEN_FILE`. With no configuration the daemon listens on `~/.kumoba/kumobad.sock` and `127.0.0.1:7788`, and serves browser previews on `127.0.0.1:7789`.
+
+## Commands
+
+`GET /v1/commands` → `{"version": "0.2.0", "commands": [...]}` describes every route below in machine-readable form: `name`, `summary`, `method`, `path`, the `positional` path arguments, the `rest` argument that takes a trailing list, `input` (`none`, `json` or `bytes`), `output` (`json`, `events` or `bytes`), `in` (whether each argument goes in the path, query, JSON body or raw body) and `inputSchema`, a JSON Schema covering all of them. The `kumoba` CLI is built on this route alone, and the schemas can be handed to a model as tool definitions.
 
 Errors are JSON: `{"error": "<code>", "message": "<detail>"}` with an HTTP status. Codes include `unauthorized` (401), `not_found` (404), `invalid_request` (400), `capacity` (429, `KUMOBAD_MAX_RUNNING` reached) and `guest_error` (422, the command or file operation failed inside the VM).
 
@@ -60,7 +64,7 @@ The new sandbox is **stopped**. Returns a summary:
 
 Every exec, file or preview call counts as activity for auto-stop.
 
-## Commands
+## Running commands
 
 `POST /v1/sandboxes/{id}/exec`
 
@@ -74,7 +78,7 @@ Every exec, file or preview call counts as activity for auto-stop.
 }
 ```
 
-`argv[0]` must be an absolute path. `user` defaults to root; `cwd` defaults to the user's home. The response is `application/x-ndjson`, one event per line, streamed as the process runs:
+A bare `argv[0]` such as `python3` is looked up on the guest's `PATH` through `/usr/bin/env`; an absolute path runs as is. `user` defaults to root; `cwd` defaults to the user's home. The response is `application/x-ndjson`, one event per line, streamed as the process runs:
 
 ```
 {"type":"stdout","data":"aGVsbG8K"}
@@ -83,6 +87,10 @@ Every exec, file or preview call counts as activity for auto-stop.
 ```
 
 `data` is base64. The final event is either `exit` (`exitCode` is `null` and `timedOut` is `true` when the timeout hit; `signal` is set when a signal ended the process) or `{"type":"error","message":"..."}` when the command could not be started. Closing the connection kills the process group inside the guest.
+
+### One-shot
+
+`POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects. The stream starts with `{"type":"sandbox","id":"..."}`.
 
 ## Files
 
@@ -110,7 +118,13 @@ Replaces the sandbox's secret set. Returns `{"mountedEnvVars": ["GITHUB_TOKEN"]}
 
 ## Port previews
 
-`POST /v1/sandboxes/{id}/preview` with `{"port": 8080, "ttlSeconds": 600}` → `{"path": "/v1/preview/<token>/", "expiresAtMs": ...}`.
+`POST /v1/sandboxes/{id}/preview` with `{"port": 8080, "ttlSeconds": 600}` → `{"url": "http://127.0.0.1:7789/v1/preview/<token>/", "path": "/v1/preview/<token>/", "expiresAtMs": ...}`. `url` is set when the daemon has a preview listener (`KUMOBAD_PREVIEW_LISTEN`, or `KUMOBAD_PREVIEW_URL` behind a proxy), and is `null` otherwise.
+
+Previews on the preview listener render in a browser: the guest's `content-type`, `content-encoding` and `location` pass through. That listener is a separate origin from the API and answers nothing but previews, so a page from a sandbox cannot reach the API. The same preview path on the API listener is download-only: `content-disposition: attachment`, `content-security-policy: sandbox` and `application/octet-stream`.
+
+## Desktop
+
+`POST /v1/sandboxes/{id}/desktop` with `{"user": "kumoba", "ttlSeconds": 3600}` (both optional) starts Xvfb, xfce, x11vnc and the noVNC bridge in an image that has them, and → `{"url": "http://127.0.0.1:7789/v1/preview/<token>/vnc.html?autoconnect=1&resize=remote&path=...", "path": "...", "expiresAtMs": ..., "processes": {"xvfb": true, ...}}`. Opening `url` shows the desktop live, with keyboard and mouse. An image without a desktop answers 422.
 
 Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that port inside the guest, including WebSocket upgrades, without a bearer token. The token is an HMAC over the sandbox id, port and expiry, so it cannot be reused for another sandbox or after it expires. Hop-by-hop and host-identifying headers are stripped in both directions, and responses carry `content-disposition: attachment` for types a browser would otherwise render, so a page served from a sandbox cannot script against the daemon's origin.
 
