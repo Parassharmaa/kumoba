@@ -43,7 +43,7 @@ This puts the `kumobad` daemon, the `kumoba` CLI, `kumoba-worker` and the `defau
 kumobad
 ```
 
-It boots every image in `~/.kumoba/images`, writes a bearer token to `~/.kumoba/token`, and listens on `~/.kumoba/kumobad.sock` and on `127.0.0.1:7788` for browser links. `kumobad --help` lists the environment variables that override each default.
+It boots every image in `~/.kumoba/images`, writes a bearer token to `~/.kumoba/token`, listens on `~/.kumoba/kumobad.sock` and `127.0.0.1:7788` for the API, and serves browser links such as the desktop live view on `127.0.0.1:7789`. `kumobad --help` lists the environment variables that override each default. Stop it with Ctrl-C, or `pkill -x kumobad` from another terminal: running sandboxes stop and keep their disks, so `kumoba start <id>` picks them up again later.
 
 **3. Run something.** In another terminal:
 
