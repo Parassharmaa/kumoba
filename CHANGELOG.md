@@ -4,6 +4,14 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed
+
+- The `kumoba` CLI no longer panics when its output is piped into a command that exits early, such as `kumoba | head`. Help and JSON output stop quietly with status 0, and a streamed `exec` or `run` that is cut off exits 141, like a Unix process ended by a closed pipe. The npm CLI behaves the same.
+
+### Added
+
+- A README walkthrough (`scripts/walkthrough.sh`) runs on a fresh runner after every release, installing from the public installer and npm the way a new user does.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added

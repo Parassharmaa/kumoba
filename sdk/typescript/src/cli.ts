@@ -54,6 +54,9 @@ export type Io = {
   open: (url: string) => void;
 };
 
+const CUT_OFF = 141;
+let closedPipeStatus = 0;
+
 class Exit extends Error {
   constructor(
     readonly code: number,
@@ -195,6 +198,7 @@ function ids(value: unknown): string[] {
 }
 
 async function streamEvents(io: Io, response: IncomingMessage): Promise<number> {
+  closedPipeStatus = CUT_OFF;
   let buffer = "";
   for await (const chunk of response) {
     buffer += (chunk as Buffer).toString("utf8");
@@ -355,6 +359,10 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") process.exit(closedPipeStatus);
+    throw error;
+  });
   const io: Io = {
     env: process.env,
     stdout: (chunk) => process.stdout.write(chunk),

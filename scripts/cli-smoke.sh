@@ -29,6 +29,12 @@ check run-cleans-up "$("${cli[@]}" list --label "smoke:$marker" -q | wc -l | tr 
 check usage-error "$(status "${cli[@]}" exec)" 2
 check daemon-error "$(status "${cli[@]}" get no-such-sandbox)" 1
 check unreachable "$(KUMOBA_URL=unix:///nonexistent/kumobad.sock status "${cli[@]}" images)" 3
+piped=0
+for _ in $(seq 20); do
+  (set -o pipefail; "${cli[@]}" | head -1 > /dev/null) || piped=$((piped + 1))
+done
+check piped-help "$piped" 0
+check piped-exec "$(set +e; set -o pipefail; "${cli[@]}" exec "$id" -- sh -c 'yes | head -100000' | head -1 > /dev/null; echo $?)" 141
 check delete "$("${cli[@]}" delete "$id" --json)" '{"deleted":true}'
 id=""
 echo CLI_SMOKE_PASS

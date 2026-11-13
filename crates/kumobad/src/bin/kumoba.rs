@@ -10,6 +10,20 @@ use serde_json::Value;
 use std::io::{IsTerminal, Write};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const CUT_OFF: i32 = 141;
+
+macro_rules! say {
+    ($($arg:tt)*) => {
+        emit(&format!($($arg)*))
+    };
+}
+
+fn emit(line: &str) {
+    let mut out = std::io::stdout().lock();
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        std::process::exit(0);
+    }
+}
 
 const LOCAL_HELP: &str = "\
 Local commands:
@@ -72,11 +86,11 @@ fn find<'a>(catalog: &'a Value, name: &str) -> Option<&'a Value> {
 async fn run(tokens: Vec<String>) -> Result<i32, Failure> {
     let first = tokens.first().map(String::as_str);
     if matches!(first, Some("version" | "--version" | "-V")) {
-        println!("kumoba {VERSION}");
+        say!("kumoba {VERSION}");
         if let Ok(connection) = Connection::from_env()
             && let Ok(catalog) = catalog(&connection).await
         {
-            println!(
+            say!(
                 "kumobad {}",
                 catalog["version"].as_str().unwrap_or("unknown")
             );
@@ -125,10 +139,10 @@ async fn run(tokens: Vec<String>) -> Result<i32, Failure> {
         },
         Some("commands") if find(&catalog, "commands").is_some() => {
             if tokens.iter().any(|token| token == "--json") {
-                println!("{}", serde_json::to_string_pretty(&catalog).expect("json"));
+                say!("{}", serde_json::to_string_pretty(&catalog).expect("json"));
             } else {
                 for command in catalog["commands"].as_array().into_iter().flatten() {
-                    println!(
+                    say!(
                         "{:<16} {}",
                         command["name"].as_str().unwrap_or(""),
                         command["summary"].as_str().unwrap_or("")
@@ -147,11 +161,11 @@ async fn run(tokens: Vec<String>) -> Result<i32, Failure> {
 }
 
 fn print_overview(found: Option<(&Value, &Connection)>, failure: &Failure) {
-    println!("kumoba {VERSION}: command line for a kumobad sandbox daemon\n");
-    println!("Usage: kumoba <command> [arguments]   kumoba <command> --help\n");
+    say!("kumoba {VERSION}: command line for a kumobad sandbox daemon\n");
+    say!("Usage: kumoba <command> [arguments]   kumoba <command> --help\n");
     match found {
         Some((catalog, connection)) => {
-            println!(
+            say!(
                 "Commands served by kumobad {} at {}:",
                 catalog["version"].as_str().unwrap_or("unknown"),
                 connection.display
@@ -161,19 +175,19 @@ fn print_overview(found: Option<(&Value, &Connection)>, failure: &Failure) {
                 if name == "commands" {
                     continue;
                 }
-                println!(
+                say!(
                     "  {:<16} {}",
                     name,
                     command["summary"].as_str().unwrap_or("")
                 );
             }
         }
-        None => println!(
+        None => say!(
             "The command list comes from the daemon, which is not reachable now:\n  {}\n",
             failure.message()
         ),
     }
-    println!("\n{LOCAL_HELP}");
+    say!("\n{LOCAL_HELP}");
 }
 
 fn type_label(schema: &Value) -> String {
@@ -237,7 +251,7 @@ fn rows(
 
 fn print_command(spec: &Value) {
     let name = spec["name"].as_str().unwrap_or("");
-    println!(
+    say!(
         "kumoba {name}: {}\n",
         spec["summary"].as_str().unwrap_or("")
     );
@@ -249,7 +263,7 @@ fn print_command(spec: &Value) {
     if let Some(rest) = spec["rest"].as_str() {
         usage.push_str(&format!(" -- <{}...>", args::kebab(rest)));
     }
-    println!("Usage\n  {usage}\n");
+    say!("Usage\n  {usage}\n");
     let required: Vec<&str> = spec["inputSchema"]["required"]
         .as_array()
         .map(|names| names.iter().filter_map(Value::as_str).collect())
@@ -264,9 +278,9 @@ fn print_command(spec: &Value) {
     );
     if !table.is_empty() {
         let width = table.iter().map(|row| row.0.len()).max().unwrap_or(0);
-        println!("Arguments");
+        say!("Arguments");
         for (flag, status, note) in table {
-            println!("  {flag:<width$}  {status:<8}  {note}");
+            say!("  {flag:<width$}  {status:<8}  {note}");
         }
     }
     let output = match spec["output"].as_str() {
@@ -274,7 +288,7 @@ fn print_command(spec: &Value) {
         Some("bytes") => "the raw bytes, on stdout or into -o FILE",
         _ => "JSON",
     };
-    println!(
+    say!(
         "\nPrints {output}. {} {}",
         spec["method"].as_str().unwrap_or(""),
         spec["path"].as_str().unwrap_or("")
@@ -359,9 +373,12 @@ async fn invoke(connection: &Connection, spec: &Value, tokens: &[String]) -> Res
             match &parsed.output {
                 Some(file) => std::fs::write(file, &bytes)
                     .map_err(|error| Failure::Usage(format!("cannot write {file}: {error}")))?,
-                None => std::io::stdout()
-                    .write_all(&bytes)
-                    .map_err(|error| Failure::Api(error.to_string()))?,
+                None => {
+                    let mut out = std::io::stdout().lock();
+                    if out.write_all(&bytes).and_then(|()| out.flush()).is_err() {
+                        return Ok(0);
+                    }
+                }
             }
             Ok(0)
         }
@@ -413,12 +430,12 @@ fn ids(value: &Value) -> Vec<String> {
 fn print_json(value: &Value, parsed: &args::Parsed) {
     if parsed.quiet {
         for id in ids(value) {
-            println!("{id}");
+            say!("{id}");
         }
     } else if parsed.json || !std::io::stdout().is_terminal() {
-        println!("{value}");
+        say!("{value}");
     } else {
-        println!("{}", serde_json::to_string_pretty(value).expect("json"));
+        say!("{}", serde_json::to_string_pretty(value).expect("json"));
     }
 }
 
@@ -448,8 +465,13 @@ async fn stream_events(response: hyper::Response<hyper::body::Incoming>) -> Resu
                     } else {
                         &mut stderr
                     };
-                    let _ = target.write_all(&data);
-                    let _ = target.flush();
+                    if target
+                        .write_all(&data)
+                        .and_then(|()| target.flush())
+                        .is_err()
+                    {
+                        return Ok(CUT_OFF);
+                    }
                 }
                 Some("exit") => {
                     if event["timedOut"] == true {
