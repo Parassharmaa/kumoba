@@ -43,7 +43,7 @@ expect "one-shot run" "$(run kumoba run -- python3 -c 'import platform; print(pl
 id=$(run kumoba create --image default -q)
 expect "create" "$id" "-"
 run kumoba start "$id" -q
-expect "pip install" "$(run kumoba exec "$id" -- pip install --user --break-system-packages requests 2>&1)" "requests"
+expect "pip install" "$(run kumoba exec "$id" -- pip install requests 2>&1)" "requests"
 echo 'import requests; print("requests", requests.__version__)' | run kumoba write-file "$id" --path /workspace/hi.py
 expect "exec script" "$(run kumoba exec "$id" --cwd /workspace -- python3 hi.py)" "requests "
 expect "exit status" "$(set +e; kumoba exec "$id" -- sh -c 'exit 7'; echo "status=$?")" "status=7"

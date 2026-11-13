@@ -4,6 +4,14 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- The default image lets `pip install` write to the system Python (`/etc/pip.conf`), as the README shows. A sandbox is a disposable VM, so Debian's protection against mixing pip and apt packages only got in the way; non-root users fall back to a user install.
+
+### Fixed
+
+- `scripts/install.sh` says why an image could not be unpacked, with the free space it found, instead of exiting silently, and removes the partial image.
+
 ## [0.2.1] - 2026-11-13
 
 ### Fixed
