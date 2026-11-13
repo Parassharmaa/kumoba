@@ -21,7 +21,7 @@ function siteLink(href: string): string {
 
 export default defineConfig({
   title: "kumoba",
-  description: "Local microVM sandboxes for AI agents and untrusted code",
+  description: "Fast sandboxes for AI agents: real VMs that boot in under a second",
   base: "/kumoba/",
   cleanUrls: true,
   lastUpdated: true,
@@ -63,7 +63,10 @@ export default defineConfig({
         sidebar: [
           {
             text: "Tutorial",
-            items: [{ text: "Getting started", link: "/getting-started" }],
+            items: [
+              { text: "Getting started", link: "/getting-started" },
+              { text: "Install options", link: "/install" },
+            ],
           },
           {
             text: "How-to guides",
@@ -118,7 +121,7 @@ export default defineConfig({
       label: "日本語",
       lang: "ja",
       link: "/ja/",
-      description: "AIエージェントのためのローカルmicroVMサンドボックス",
+      description: "AIエージェントのための高速サンドボックス",
       themeConfig: {
         nav: [
           { text: "ガイド", link: "/ja/getting-started" },

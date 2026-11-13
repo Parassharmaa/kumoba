@@ -1,6 +1,6 @@
-# Secrets
+# How secrets work
 
-Agents need API keys, but code running inside a sandbox should not be able to read or leak them. kumoba keeps secret values on the host and lets the guest use them without seeing them.
+Agents need API keys, but code in a sandbox shouldn't be able to read or leak them. kumoba keeps the values on the host and lets the guest use them without seeing them. To set one up, see [Use a secret token](/guide/secrets).
 
 ## How a secret is used
 

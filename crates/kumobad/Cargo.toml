@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "HTTP daemon and per-VM worker serving kumoba microVM sandboxes"
+description = "Daemon, CLI and VM worker for kumoba: fast sandboxes for AI agents"
 readme = "README.md"
 
 [[bin]]

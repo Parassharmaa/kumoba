@@ -1,12 +1,12 @@
 ---
 layout: home
 title: kumoba
-titleTemplate: Local microVM sandboxes for AI agents
+titleTemplate: Fast sandboxes for AI agents
 
 hero:
   name: kumoba
-  text: Local microVM sandboxes for AI agents
-  tagline: Real VMs with their own kernel, a zero-config daemon, a CLI and SDKs. Self-hosted, open source, alpha.
+  text: Fast sandboxes for AI agents
+  tagline: Real VMs that boot in under a second. Run them on your laptop, your servers or your cloud.
   image:
     src: /hero-terminal.svg
     alt: A terminal running kumoba run, create, exec and desktop
@@ -22,18 +22,18 @@ hero:
       link: https://github.com/Parassharmaa/kumoba
 
 features:
-  - title: Real VMs, not containers
-    details: Every sandbox is a libkrun microVM with its own kernel. KVM on Linux, Hypervisor.framework on Apple silicon. Boot, run and delete in under a second.
-  - title: One command to start
-    details: The installer fetches the daemon, the CLI and a ready image. kumobad needs no configuration, and the CLI and SDK find it on their own.
-  - title: Made for agents
-    details: The CLI builds its commands from the daemon's catalog, every command has a JSON Schema, and exec returns the guest's exit status.
+  - title: Fast
+    details: Create, boot, run and delete in about half a second.
+  - title: Real VMs
+    details: Each sandbox has its own kernel, not a shared one.
+  - title: Built for agents
+    details: A CLI and SDKs where every command has a JSON Schema.
   - title: Safe by default
-    details: Egress allowlists, secrets that never enter the guest, signed expiring previews and a log of every connection.
-  - title: A desktop you can watch
-    details: The default image ships xfce, Chromium and screenshots and input for computer-use agents, with a live view in your browser.
-  - title: Self-hosted
-    details: Your laptop or your server. No account, no cloud, no telemetry. Apache-2.0.
+    details: Egress allowlists, hidden secrets, a log of every connection.
+  - title: Live desktop
+    details: Watch and drive a full desktop from your browser.
+  - title: Runs anywhere
+    details: Your laptop, your servers, your cloud. Apache-2.0.
 ---
 
 <div class="quick-start">

@@ -1,8 +1,8 @@
-# kumoba CLI
+# CLI
 
-`kumoba` drives a `kumobad` daemon from a shell, for people and for agents. It has no command list of its own: it asks the daemon (`GET /v1/commands`) which commands exist, what arguments each takes, and what it prints. A newer daemon's commands show up in an older CLI without an upgrade, and the help is always the daemon's.
+`kumoba` runs sandboxes from your shell, for people and for agents. It builds its commands from the daemon it talks to (`GET /v1/commands`), so its help always matches that daemon, and new daemon commands work without a CLI upgrade.
 
-There are two builds with the same behaviour:
+Two builds behave the same:
 
 | Build | Install |
 | --- | --- |

@@ -1,5 +1,36 @@
 # Contributing
 
+## Build from source
+
+| Host | Needs |
+| --- | --- |
+| macOS 14 or later, Apple silicon | `brew tap slp/krun && brew install slp/krun/libkrun slp/krun/libkrunfw e2fsprogs rustup` |
+| Linux, x86_64 or arm64 | `/dev/kvm`, Rust 1.99, and `scripts/prepare-linux-host.sh`, which builds the patched libkrun |
+
+```sh
+git clone https://github.com/Parassharmaa/kumoba
+cd kumoba
+scripts/build.sh                 # binaries into .local/bin
+scripts/build-image.sh default   # the default image; needs Docker
+scripts/serve.sh                 # kumobad with the built images
+```
+
+`scripts/build-test-image.sh` builds the small Alpine `test` image without Docker.
+
+## Repository layout
+
+| Path | What |
+| --- | --- |
+| `crates/kumoba` | Runtime library |
+| `crates/kumobad` | Daemon, HTTP API, `kumoba` CLI and `kumoba-worker` |
+| `crates/kumoba-guest` | Agent inside every VM |
+| `crates/kumoba-protocol` | Host-guest wire protocol |
+| `sdk/typescript` | `kumoba` npm package: SDK and CLI |
+| `images/` | Guest image recipes |
+| `docs/` | This site |
+| `patches/` | libkrun patches |
+| `scripts/` | Build, test, release and CI entry points |
+
 ## Build and test locally
 
 ```sh

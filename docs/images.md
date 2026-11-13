@@ -1,13 +1,13 @@
-# Guest images
+# Images
 
-An image is a raw ext4 disk. `kumobad` boots whatever `KUMOBAD_IMAGES` points at, so you can ship your own.
+An image is a raw ext4 disk. kumobad boots every image in `~/.kumoba/images`, or the ones `KUMOBAD_IMAGES` lists, so you can build your own.
 
 ## The default image
 
 `images/default/Dockerfile` builds a Debian 13 system with:
 
 - `bash`, `git`, `curl`, `jq`, `sudo` (passwordless for the `kumoba` user)
-- Python 3 with `pip` and `venv`, Node.js with `npm`. `pip install` works directly, as root or as `kumoba`: `/etc/pip.conf` lifts Debian's externally-managed guard, which protects nothing in a throwaway VM
+- Python 3 with `pip` and `venv`, and Node.js with `npm`. `pip install` works directly, as root or as `kumoba`
 - Chromium, fonts for Latin and CJK text
 - An xfce desktop on Xvfb with x11vnc and noVNC, plus `scrot`, `xdotool` and AT-SPI for the `desktop` API
 - The `kumoba` user (uid 1000) and a `/workspace` it owns
@@ -19,11 +19,11 @@ scripts/build-image.sh default          # → .local/images/default.raw (16 GB s
 DISK_SIZE=32G scripts/build-image.sh default
 ```
 
-The script builds the Dockerfile for the host architecture, exports the container filesystem and writes it into an ext4 image with `mkfs.ext4 -d` inside a helper container (`images/mkfs`), so no root privileges are needed on the host.
+The script builds for the host's architecture and needs no root privileges.
 
 ## The test image
 
-`scripts/build-test-image.sh` produces a 512 MB Alpine image without Docker. It has `kumoba-guest`, a `kumoba` user and a tiny HTTP server fixture, and is what the test suites use.
+`scripts/build-test-image.sh` builds a small Alpine image without Docker. The test suites use it, and the installer offers it as `KUMOBA_IMAGE=test`.
 
 ## Writing your own image
 
@@ -38,4 +38,4 @@ Put your Dockerfile and any `rootfs/` overlay in `images/<name>/` and run `scrip
 
 ## Sizing
 
-The `.raw` file is sparse; its apparent size is the guest's disk size and its actual size is what the image uses. Sandbox disks are reflink copies on APFS, XFS and Btrfs, so each new sandbox costs only what it writes. On ext4 the runtime copies only the allocated extents of the image (holes stay holes), so a sandbox costs the image's used size, which `scripts/check-host.sh` warns about.
+An image file is sparse: it shows the guest's full disk size but uses only what the image contains, about 1.5 GB for `default`. On APFS, XFS and Btrfs each new sandbox costs only what it writes. On ext4 each sandbox costs the image's used size.

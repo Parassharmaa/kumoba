@@ -1,10 +1,14 @@
 # kumobad HTTP API
 
-`kumobad` speaks HTTP/1.1 over a Unix socket (`KUMOBAD_SOCKET`) and/or loopback TCP (`KUMOBAD_LISTEN`). Every route except `/healthz` and `/v1/preview/...` requires `authorization: Bearer <token>`, where the token is the content of `KUMOBAD_TOKEN_FILE`. With no configuration the daemon listens on `~/.kumoba/kumobad.sock` and `127.0.0.1:7788`, and serves browser previews on `127.0.0.1:7789`.
+kumobad speaks HTTP/1.1 on `~/.kumoba/kumobad.sock` and `127.0.0.1:7788`, and serves browser previews on `127.0.0.1:7789` ([Configuration](/configuration) changes these). Every route except `/healthz` and `/v1/preview/...` needs `authorization: Bearer <token>`, where the token is the content of `~/.kumoba/token`.
+
+```sh
+curl --unix-socket ~/.kumoba/kumobad.sock -H "authorization: Bearer $(cat ~/.kumoba/token)" http://kumobad/v1/images
+```
 
 ## Commands
 
-`GET /v1/commands` → `{"version": "0.2.0", "commands": [...]}` describes every route below in machine-readable form: `name`, `summary`, `method`, `path`, the `positional` path arguments, the `rest` argument that takes a trailing list, `input` (`none`, `json` or `bytes`), `output` (`json`, `events` or `bytes`), `in` (whether each argument goes in the path, query, JSON body or raw body) and `inputSchema`, a JSON Schema covering all of them. The `kumoba` CLI is built on this route alone, and the schemas can be handed to a model as tool definitions.
+`GET /v1/commands` → `{"version": "0.2.2", "commands": [...]}` describes every route below in machine-readable form: `name`, `summary`, `method`, `path`, the `positional` path arguments, the `rest` argument that takes a trailing list, `input` (`none`, `json` or `bytes`), `output` (`json`, `events` or `bytes`), `in` (whether each argument goes in the path, query, JSON body or raw body) and `inputSchema`, a JSON Schema covering all of them. The `kumoba` CLI is built on this route alone, and the schemas can be handed to a model as tool definitions.
 
 Errors are JSON: `{"error": "<code>", "message": "<detail>"}` with an HTTP status. Codes include `unauthorized` (401), `not_found` (404), `invalid_request` (400), `capacity` (429, `KUMOBAD_MAX_RUNNING` reached) and `guest_error` (422, the command or file operation failed inside the VM).
 

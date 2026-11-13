@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Local libkrun microVM sandboxes for Rust applications"
+description = "Fast VM sandboxes for AI agents, as a Rust library"
 readme = "../../README.md"
 
 [dependencies]

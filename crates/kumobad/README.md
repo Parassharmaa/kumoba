@@ -4,7 +4,7 @@
 [![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/kumobad)](https://github.com/Parassharmaa/kumoba/blob/main/LICENSE)
 
-The [kumoba](https://github.com/Parassharmaa/kumoba) daemon. Serves microVM sandboxes over an HTTP API on a Unix socket or loopback TCP, and ships two more binaries: `kumoba`, the command-line client, and `kumoba-worker`, the per-VM process that loads libkrun and boots one sandbox.
+The [kumoba](https://github.com/Parassharmaa/kumoba) daemon. Serves fast VM sandboxes for AI agents over an HTTP API on a Unix socket or loopback TCP, and ships two more binaries: `kumoba`, the command-line client, and `kumoba-worker`, the per-VM process that loads libkrun and boots one sandbox.
 
 > **Alpha.** APIs and formats may change between 0.x releases. Docs: [parassharmaa.github.io/kumoba](https://parassharmaa.github.io/kumoba/).
 
