@@ -35,6 +35,7 @@ const execEventSchema = z.discriminatedUnion("type", [
     signal: z.number().optional(),
   }),
   z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({ type: z.literal("sandbox"), id: z.string() }),
 ]);
 
 const entriesSchema = z.object({
@@ -90,6 +91,14 @@ export type ExecRequest = {
   env?: Record<string, string>;
   timeoutMs: number;
   user?: string;
+};
+
+export type RunRequest = ExecRequest & {
+  image?: string;
+  cpu?: number;
+  memoryMib?: number;
+  labels?: Record<string, string>;
+  network?: Network;
 };
 
 const MAX_EXEC_LINE = 1024 * 1024;
@@ -216,9 +225,26 @@ export class Api {
     onEvent: (event: ExecEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
+    await this.events(sandboxPath(id, "/exec"), request, onEvent, signal);
+  }
+
+  async run(
+    request: RunRequest,
+    onEvent: (event: ExecEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await this.events("/v1/run", request, onEvent, signal);
+  }
+
+  private async events(
+    path: string,
+    request: ExecRequest | RunRequest,
+    onEvent: (event: ExecEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
     const response = await this.http.open({
       method: "POST",
-      path: sandboxPath(id, "/exec"),
+      path,
       json: request,
       ...(signal ? { signal } : {}),
     });

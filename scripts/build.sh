@@ -12,3 +12,5 @@ cp "target/$guest_target/release/http-fixture" .local/bin/http-fixture.next
 mv .local/bin/http-fixture.next .local/bin/http-fixture
 cp target/release/kumobad .local/bin/kumobad.next
 mv .local/bin/kumobad.next .local/bin/kumobad
+cp target/release/kumoba .local/bin/kumoba.next
+mv .local/bin/kumoba.next .local/bin/kumoba

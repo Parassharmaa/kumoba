@@ -4,8 +4,18 @@ import { join } from "node:path";
 import { Api, toInfo } from "./api.js";
 import { KumobaError } from "./errors.js";
 import { toNetwork } from "./network.js";
-import { Sandbox, type SandboxContext } from "./sandbox.js";
-import type { AccessEntry, AccessLogOptions, CreateOptions, ListOptions } from "./types.js";
+import { collectRun, execRequest, Sandbox, type SandboxContext } from "./sandbox.js";
+import type {
+  AccessEntry,
+  AccessLogOptions,
+  CreateOptions,
+  ListOptions,
+  RunOptions,
+  RunResult,
+} from "./types.js";
+
+export type OneShotOptions = RunOptions &
+  Pick<CreateOptions, "image" | "cpu" | "memoryMib" | "labels" | "network">;
 
 export type KumobaOptions = {
   /**
@@ -36,7 +46,7 @@ function kumobaHome(env: NodeJS.ProcessEnv): string {
   return env.KUMOBA_HOME ?? join(homedir(), ".kumoba");
 }
 
-function resolveOptions(options: KumobaOptions): ResolvedOptions {
+export function resolveOptions(options: KumobaOptions): ResolvedOptions {
   const env = options.env ?? process.env;
   const home = kumobaHome(env);
   const url = options.url ?? env.KUMOBA_URL ?? `unix://${join(home, "kumobad.sock")}`;
@@ -83,6 +93,22 @@ export class Kumoba {
 
   private context(user: string | undefined): SandboxContext {
     return { api: this.api, defaultUser: user ?? this.defaultUser, baseUrl: this.baseUrl };
+  }
+
+  /**
+   * Run one command in a fresh sandbox that kumobad deletes as soon as the command ends.
+   * A string runs through `/bin/sh -c`; an array is the program and its arguments.
+   */
+  async run(command: string | readonly string[], options: OneShotOptions = {}): Promise<RunResult> {
+    const request = {
+      ...execRequest(command, options, options.user ?? this.defaultUser),
+      ...(options.image !== undefined ? { image: options.image } : {}),
+      ...(options.cpu !== undefined ? { cpu: options.cpu } : {}),
+      ...(options.memoryMib !== undefined ? { memoryMib: options.memoryMib } : {}),
+      ...(options.labels !== undefined ? { labels: options.labels } : {}),
+      ...(options.network !== undefined ? { network: toNetwork(options.network) } : {}),
+    };
+    return collectRun((onEvent) => this.api.run(request, onEvent, options.signal), options);
   }
 
   /** Names of the images kumobad can boot. */

@@ -1,12 +1,15 @@
 use crate::{
-    model::{CreateRequest, DeleteSecretsRequest, ExecRequest, SecretsRequest, UpdateRequest},
+    catalog::Operation,
+    model::{
+        CreateRequest, DeleteSecretsRequest, ExecRequest, RunRequest, SecretsRequest, UpdateRequest,
+    },
     service::{ApiError, ApiResult, Service},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::BoxBody};
 use hyper::{
-    Method, Request, Response,
+    Request, Response,
     body::{Frame, Incoming},
 };
 use kumoba::{Command, Termination};
@@ -121,14 +124,14 @@ pub async fn handle(
 }
 
 async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<Response<Body>> {
-    let path = request.uri().path().to_owned();
-    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
-    let method = request.method().clone();
-    match (method, segments.as_slice()) {
-        (Method::GET, ["v1", "images"]) => {
-            Ok(json_response(200, json!({"images": service.image_names()})))
-        }
-        (Method::GET, ["v1", "access-log"]) => {
+    let Some(resolved) = crate::catalog::resolve(request.method(), request.uri().path()) else {
+        return Err(ApiError::Status(404, "route not found".into()));
+    };
+    let id = resolved.id.unwrap_or_default();
+    match resolved.operation {
+        Operation::Commands => Ok(json_response(200, crate::catalog::catalog())),
+        Operation::Images => Ok(json_response(200, json!({"images": service.image_names()}))),
+        Operation::AccessLog => {
             let params = query(&request);
             let now = crate::service::now_ms();
             let number = |name: &str, default: u64| -> ApiResult<u64> {
@@ -161,14 +164,14 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
                 }),
             ))
         }
-        (Method::POST, ["v1", "sandboxes"]) => {
+        Operation::Create => {
             let body: CreateRequest = read_json(request.into_body()).await?;
             Ok(json_response(
                 200,
                 serde_json::to_value(service.create(body).await?).unwrap(),
             ))
         }
-        (Method::GET, ["v1", "sandboxes"]) => {
+        Operation::List => {
             let params = query(&request);
             let limit = optional_param(&params, "limit")
                 .and_then(|value| value.parse().ok())
@@ -188,46 +191,43 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
                 json!({"sandboxes": sandboxes, "truncated": truncated}),
             ))
         }
-        (Method::GET, ["v1", "sandboxes", id]) => {
-            let entry = service.entry(id).await?;
+        Operation::Get => {
+            let entry = service.entry(&id).await?;
             Ok(json_response(
                 200,
                 serde_json::to_value(service.summary(&entry).await?).unwrap(),
             ))
         }
-        (Method::PATCH, ["v1", "sandboxes", id]) => {
-            let id = id.to_string();
+        Operation::Update => {
             let body: UpdateRequest = read_json(request.into_body()).await?;
             Ok(json_response(
                 200,
                 serde_json::to_value(service.update(&id, body).await?).unwrap(),
             ))
         }
-        (Method::DELETE, ["v1", "sandboxes", id]) => {
-            service.delete(id).await?;
+        Operation::Delete => {
+            service.delete(&id).await?;
             Ok(json_response(200, json!({"deleted": true})))
         }
-        (Method::POST, ["v1", "sandboxes", id, "start"]) => Ok(json_response(
+        Operation::Start => Ok(json_response(
             200,
-            serde_json::to_value(service.start(id).await?).unwrap(),
+            serde_json::to_value(service.start(&id).await?).unwrap(),
         )),
-        (Method::POST, ["v1", "sandboxes", id, "stop"]) => Ok(json_response(
+        Operation::Stop => Ok(json_response(
             200,
-            serde_json::to_value(service.stop(id).await?).unwrap(),
+            serde_json::to_value(service.stop(&id).await?).unwrap(),
         )),
-        (Method::PUT, ["v1", "sandboxes", id, "secrets"]) => {
-            let id = id.to_string();
+        Operation::SetSecrets => {
             let body: SecretsRequest = read_json(request.into_body()).await?;
             let mounted = service.put_secrets(&id, body.secrets).await?;
             Ok(json_response(200, json!({"mountedEnvVars": mounted})))
         }
-        (Method::POST, ["v1", "secrets", "delete"]) => {
+        Operation::DeleteSecrets => {
             let body: DeleteSecretsRequest = read_json(request.into_body()).await?;
             let deleted = service.delete_secrets(&body.names).await?;
             Ok(json_response(200, json!({"deletedNames": deleted})))
         }
-        (Method::POST, ["v1", "sandboxes", id, "preview"]) => {
-            let id = id.to_string();
+        Operation::Expose => {
             let body: crate::model::PreviewRequest = read_json(request.into_body()).await?;
             service.entry(&id).await?;
             let exp_ms =
@@ -237,39 +237,121 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
                 port: body.port,
                 exp_ms,
             });
+            let path = format!("/v1/preview/{token}/");
             Ok(json_response(
                 200,
-                json!({"path": format!("/v1/preview/{token}/"), "expiresAtMs": exp_ms}),
+                json!({"url": service.public_link(&path), "path": path, "expiresAtMs": exp_ms}),
             ))
         }
-        (Method::POST, ["v1", "sandboxes", id, "exec"]) => {
-            let id = id.to_string();
-            let body: ExecRequest = read_json(request.into_body()).await?;
-            exec(service, &id, body).await
+        Operation::Desktop => {
+            let body: crate::model::DesktopRequest = read_json(request.into_body()).await?;
+            desktop(&service, id, body).await
         }
-        (Method::GET, ["v1", "sandboxes", id, "files"]) => {
+        Operation::Exec => {
+            let body: ExecRequest = read_json(request.into_body()).await?;
+            exec(service, &id, body, false).await
+        }
+        Operation::Run => {
+            let body: RunRequest = read_json(request.into_body()).await?;
+            run(service, body).await
+        }
+        Operation::ReadFile => {
             let params = query(&request);
             let user = optional_param(&params, "user");
-            download(service, id, &required_param(&params, "path")?, user).await
+            download(service, &id, &required_param(&params, "path")?, user).await
         }
-        (Method::PUT, ["v1", "sandboxes", id, "files"]) => {
+        Operation::WriteFile => {
             let params = query(&request);
-            let id = id.to_string();
             let path = required_param(&params, "path")?;
             let user = optional_param(&params, "user");
             upload(service, &id, &path, user.as_deref(), request.into_body()).await
         }
-        (Method::GET, ["v1", "sandboxes", id, "files", "list"]) => {
+        Operation::ListFiles => {
             let params = query(&request);
-            let (_entry, agent, _) = service.running_agent(id, None).await?;
+            let (_entry, agent, _) = service.running_agent(&id, None).await?;
             let user = optional_param(&params, "user");
             let entries = agent
                 .list(&required_param(&params, "path")?, user.as_deref())
                 .await?;
             Ok(json_response(200, json!({"entries": entries})))
         }
-        _ => Err(ApiError::Status(404, "route not found".into())),
     }
+}
+
+const PATH_LOOKUP: &str = "/usr/bin/env";
+const DESKTOP_HELPER: &str = "/usr/local/bin/kumoba-desktop";
+const DESKTOP_VNC_PORT: u16 = 6080;
+
+async fn desktop(
+    service: &Service,
+    id: String,
+    body: crate::model::DesktopRequest,
+) -> ApiResult<Response<Body>> {
+    let mut command = Command::new(DESKTOP_HELPER)
+        .arg("start")
+        .timeout(Duration::from_secs(90))
+        .output_limit(64 * 1024);
+    if let Some(user) = body.user {
+        command = command.user(user);
+    }
+    let (entry, agent, command) = service.running_agent(&id, Some(command)).await?;
+    let _operation = entry.begin();
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let no_desktop = |detail: String| {
+        ApiError::Status(
+            422,
+            format!("the desktop did not start; this image may not include one ({detail})"),
+        )
+    };
+    let summary = agent
+        .exec_streamed(command.expect("prepared command"), &mut stdout, &mut stderr)
+        .await
+        .map_err(|error| no_desktop(error.to_string()))?;
+    if !matches!(summary.termination, Termination::Exited(0)) {
+        let detail = String::from_utf8_lossy(if stderr.is_empty() { &stdout } else { &stderr })
+            .trim()
+            .to_string();
+        return Err(no_desktop(detail));
+    }
+    let processes = String::from_utf8_lossy(&stdout)
+        .lines()
+        .last()
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .unwrap_or(Value::Null);
+    let exp_ms = crate::service::now_ms() + u64::from(body.ttl_seconds.clamp(1, 3600)) * 1000;
+    let token = service.preview_key.sign(&crate::preview::PreviewClaims {
+        sandbox_id: id,
+        port: DESKTOP_VNC_PORT,
+        exp_ms,
+    });
+    let base = format!("/v1/preview/{token}/");
+    let viewer = format!(
+        "{base}vnc.html?autoconnect=1&resize=remote&path={}",
+        url::form_urlencoded::byte_serialize(base.trim_start_matches('/').as_bytes())
+            .collect::<String>()
+    );
+    Ok(json_response(
+        200,
+        json!({
+            "url": service.public_link(&viewer),
+            "path": viewer,
+            "expiresAtMs": exp_ms,
+            "processes": processes,
+        }),
+    ))
+}
+
+async fn run(service: Arc<Service>, body: RunRequest) -> ApiResult<Response<Body>> {
+    let (create, exec_request) = body.split();
+    let id = service.create(create).await?.meta.id;
+    let started = match service.start(&id).await {
+        Ok(_) => exec(service.clone(), &id, exec_request, true).await,
+        Err(error) => Err(error),
+    };
+    if started.is_err() {
+        let _ = service.delete(&id).await;
+    }
+    started
 }
 
 struct EventWriter {
@@ -313,12 +395,22 @@ impl AsyncWrite for EventWriter {
     }
 }
 
-async fn exec(service: Arc<Service>, id: &str, body: ExecRequest) -> ApiResult<Response<Body>> {
+async fn exec(
+    service: Arc<Service>,
+    id: &str,
+    body: ExecRequest,
+    ephemeral: bool,
+) -> ApiResult<Response<Body>> {
     let Some((program, args)) = body.argv.split_first() else {
         return Err(ApiError::bad_request("argv must not be empty"));
     };
-    let mut command = Command::new(program.clone())
-        .args(args.iter().cloned())
+    let (program, args) = if program.starts_with('/') {
+        (program.clone(), args.to_vec())
+    } else {
+        (PATH_LOOKUP.to_string(), body.argv.clone())
+    };
+    let mut command = Command::new(program)
+        .args(args)
         .timeout(Duration::from_millis(body.timeout_ms))
         .output_limit(kumoba_protocol::MAX_OUTPUT_LIMIT);
     for (name, value) in body.env {
@@ -333,8 +425,14 @@ async fn exec(service: Arc<Service>, id: &str, body: ExecRequest) -> ApiResult<R
     let (entry, agent, command) = service.running_agent(id, Some(command)).await?;
     let command = command.expect("prepared command");
     let (sender, receiver) = mpsc::channel::<Bytes>(32);
+    let id = id.to_string();
+    if ephemeral {
+        let mut line = json!({"type": "sandbox", "id": id}).to_string();
+        line.push('\n');
+        let _ = sender.try_send(Bytes::from(line));
+    }
     tokio::spawn(async move {
-        let _operation = entry.begin();
+        let operation = entry.begin();
         let mut stdout = EventWriter {
             sender: PollSender::new(sender.clone()),
             kind: "stdout",
@@ -344,10 +442,11 @@ async fn exec(service: Arc<Service>, id: &str, body: ExecRequest) -> ApiResult<R
             kind: "stderr",
         };
         let result = tokio::select! {
-            result = agent.exec_streamed(command, &mut stdout, &mut stderr) => result,
-            () = sender.closed() => return,
+            result = agent.exec_streamed(command, &mut stdout, &mut stderr) => Some(result),
+            () = sender.closed() => None,
         };
-        let event = match result {
+        drop(operation);
+        let event = result.map(|result| match result {
             Ok(summary) => match summary.termination {
                 Termination::Exited(code) => {
                     json!({"type": "exit", "exitCode": code, "timedOut": false})
@@ -360,10 +459,15 @@ async fn exec(service: Arc<Service>, id: &str, body: ExecRequest) -> ApiResult<R
                 }
             },
             Err(error) => json!({"type": "error", "message": error.to_string()}),
-        };
-        let mut line = event.to_string();
-        line.push('\n');
-        let _ = sender.send(Bytes::from(line)).await;
+        });
+        if ephemeral && let Err(error) = service.delete(&id).await {
+            crate::service::log("run_delete_failed", &id, Some(error));
+        }
+        if let Some(event) = event {
+            let mut line = event.to_string();
+            line.push('\n');
+            let _ = sender.send(Bytes::from(line)).await;
+        }
     });
     Ok(stream_response("application/x-ndjson", receiver))
 }

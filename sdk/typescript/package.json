@@ -1,7 +1,7 @@
 {
   "name": "kumoba",
   "version": "0.1.0",
-  "description": "TypeScript SDK for kumoba: local microVM sandboxes for AI agents",
+  "description": "TypeScript SDK and CLI for kumoba: local microVM sandboxes for AI agents",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Parassharmaa/kumoba/tree/main/sdk/typescript",
   "bugs": "https://github.com/Parassharmaa/kumoba/issues",
@@ -22,6 +22,9 @@
   "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "kumoba": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -37,4 +37,14 @@ KUMOBA_HOME="$home" node --input-type=module -e '
     }
   }
 '
+cli="$home/bin/kumoba"
+[[ "$(KUMOBA_HOME="$home" "$cli" run --image test -- echo from-cli)" == from-cli ]] || { echo 'FAIL cli run' >&2; exit 1; }
+echo "ok   cli run"
+id=$(KUMOBA_HOME="$home" "$cli" create --image default -q)
+KUMOBA_HOME="$home" "$cli" start "$id" -q > /dev/null
+view=$(KUMOBA_HOME="$home" "$cli" desktop "$id" --user kumoba --json)
+url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
+curl -fsS "$url" | grep -qi novnc || { echo "FAIL desktop live view: $view" >&2; exit 1; }
+echo "ok   desktop live view"
+KUMOBA_HOME="$home" "$cli" delete "$id" -q > /dev/null
 echo RELEASE_SMOKE_PASS

@@ -1,7 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+const catalogFixture = JSON.parse(
+  readFileSync(new URL("./fixtures/commands.json", import.meta.url), "utf8")
+) as { commands: unknown[] };
 
 export type FakeSandbox = {
   id: string;
@@ -119,6 +123,33 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           truncated,
           nextCursor: truncated ? String(page.at(-1)?.index) : null,
         });
+        return;
+      }
+      if (method === "GET" && url.pathname === "/v1/commands") {
+        send(response, 200, { version: "fake", ...catalogFixture });
+        return;
+      }
+      if (method === "POST" && url.pathname === "/v1/run") {
+        const call = JSON.parse((await body(request)).toString()) as Omit<
+          FakeExecCall,
+          "sandboxId"
+        >;
+        const exec = { sandboxId: "run", ...call };
+        fake.execs.push(exec);
+        const reply = fake.onExec(exec);
+        response.writeHead(200, { "content-type": "application/x-ndjson" });
+        const lines = [
+          { type: "sandbox", id: "run" },
+          ...("error" in reply
+            ? [{ type: "error", message: reply.error }]
+            : [
+                ...(reply.stdout
+                  ? [{ type: "stdout", data: Buffer.from(reply.stdout).toString("base64") }]
+                  : []),
+                { type: "exit", exitCode: reply.exitCode ?? 0, timedOut: false },
+              ]),
+        ];
+        response.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
         return;
       }
       if (method === "GET" && url.pathname === "/v1/images") {

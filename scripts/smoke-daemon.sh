@@ -68,6 +68,7 @@ api -X POST "http://d/v1/sandboxes/$keep_id/start" >/dev/null
 api -X POST "http://d/v1/sandboxes/$keep_id/exec" -H 'content-type: application/json' \
   -d '{"argv":["/bin/sh","-c","echo survived > /workspace/restart.txt"],"timeoutMs":10000}' >/dev/null
 check network-while-running "$(curl -sS --unix-socket "$socket" -H "authorization: Bearer $token" -X PATCH "http://d/v1/sandboxes/$keep_id" -H 'content-type: application/json' -d '{"network":{"mode":"allowlist","hosts":["pypi.org","*.github.com"]}}')" "stop the sandbox"
+KUMOBA_URL="unix://$socket" KUMOBA_TOKEN="$token" bash scripts/cli-smoke.sh .local/bin/kumoba
 kill "$daemon"; wait "$daemon" 2>/dev/null || true
 KUMOBAD_STATE_DIR="$work/state" KUMOBAD_WORKER="$PWD/.local/bin/kumoba-worker" \
   KUMOBAD_IMAGES="test=$image" KUMOBAD_SOCKET="$socket" KUMOBAD_TOKEN_FILE="$work/token" \

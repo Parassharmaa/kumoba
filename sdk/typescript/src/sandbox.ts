@@ -1,4 +1,4 @@
-import { type Api, type ExecEvent, toInfo } from "./api.js";
+import { type Api, type ExecEvent, type ExecRequest, toInfo } from "./api.js";
 import { Desktop } from "./desktop.js";
 import { Files } from "./files.js";
 import { toNetwork } from "./network.js";
@@ -98,49 +98,11 @@ export class Sandbox implements AsyncDisposable {
    * A string runs through `/bin/sh -c`; an array is an argv.
    */
   async run(command: string | readonly string[], options: RunOptions = {}): Promise<RunResult> {
-    const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const stdout = new OutputBuffer(maxBytes, options.onStdout);
-    const stderr = new OutputBuffer(maxBytes, options.onStderr);
-    let exit: Extract<ExecEvent, { type: "exit" }> | undefined;
-    let failure: string | undefined;
-    const user = options.user ?? this.defaultUser;
-    await this.context.api.exec(
-      this.id,
-      {
-        argv: toArgv(command),
-        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-        ...(options.env !== undefined ? { env: options.env } : {}),
-        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        ...(user !== undefined ? { user } : {}),
-      },
-      (event) => {
-        switch (event.type) {
-          case "stdout":
-            stdout.push(event.data);
-            break;
-          case "stderr":
-            stderr.push(event.data);
-            break;
-          case "exit":
-            exit = event;
-            break;
-          case "error":
-            failure = event.message;
-        }
-      },
-      options.signal
+    const request = execRequest(command, options, options.user ?? this.defaultUser);
+    return collectRun(
+      (onEvent) => this.context.api.exec(this.id, request, onEvent, options.signal),
+      options
     );
-    if (failure !== undefined) throw new Error(`kumobad could not run the command: ${failure}`);
-    const exitCode = exit?.exitCode ?? null;
-    return {
-      exitCode,
-      stdout: stdout.text(),
-      stderr: stderr.text(),
-      timedOut: exit?.timedOut ?? false,
-      ...(exit?.signal !== undefined ? { signal: exit.signal } : {}),
-      ok: exitCode === 0,
-      truncated: stdout.truncated || stderr.truncated,
-    };
   }
 
   /**
@@ -170,6 +132,60 @@ export class Sandbox implements AsyncDisposable {
     if (this.current.state === "destroyed") return;
     await this.delete();
   }
+}
+
+export function execRequest(
+  command: string | readonly string[],
+  options: RunOptions,
+  user: string | undefined
+): ExecRequest {
+  return {
+    argv: toArgv(command),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    ...(user !== undefined ? { user } : {}),
+  };
+}
+
+export async function collectRun(
+  stream: (onEvent: (event: ExecEvent) => void) => Promise<void>,
+  options: RunOptions
+): Promise<RunResult> {
+  const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const stdout = new OutputBuffer(maxBytes, options.onStdout);
+  const stderr = new OutputBuffer(maxBytes, options.onStderr);
+  let exit: Extract<ExecEvent, { type: "exit" }> | undefined;
+  let failure: string | undefined;
+  await stream((event) => {
+    switch (event.type) {
+      case "stdout":
+        stdout.push(event.data);
+        break;
+      case "stderr":
+        stderr.push(event.data);
+        break;
+      case "exit":
+        exit = event;
+        break;
+      case "error":
+        failure = event.message;
+        break;
+      case "sandbox":
+        break;
+    }
+  });
+  if (failure !== undefined) throw new Error(`kumobad could not run the command: ${failure}`);
+  const exitCode = exit?.exitCode ?? null;
+  return {
+    exitCode,
+    stdout: stdout.text(),
+    stderr: stderr.text(),
+    timedOut: exit?.timedOut ?? false,
+    ...(exit?.signal !== undefined ? { signal: exit.signal } : {}),
+    ok: exitCode === 0,
+    truncated: stdout.truncated || stderr.truncated,
+  };
 }
 
 class OutputBuffer {

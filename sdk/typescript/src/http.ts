@@ -138,7 +138,7 @@ function wrapTransportError(cause: unknown, endpoint: Endpoint): KumobaError {
   const detail = cause instanceof Error ? cause.message : String(cause);
   return new KumobaError(`Cannot reach kumobad at ${where}: ${detail}`, {
     status: 503,
-    code: "daemon_error",
+    code: "unreachable",
     retryable: true,
     cause,
   });

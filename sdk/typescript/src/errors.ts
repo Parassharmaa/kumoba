@@ -9,6 +9,7 @@ export type KumobaErrorCode =
   | "response_too_large"
   | "command_failed"
   | "daemon_error"
+  | "unreachable"
   | string;
 
 /**

@@ -201,6 +201,7 @@ pub struct Service {
     dropped: DroppedRecords,
     store: SecretStore,
     config: ServiceConfig,
+    public_url: std::sync::RwLock<Option<String>>,
     entries: RwLock<HashMap<String, Arc<Entry>>>,
 }
 
@@ -254,6 +255,7 @@ impl Service {
             dropped,
             store,
             config,
+            public_url: std::sync::RwLock::new(None),
             entries: RwLock::new(HashMap::new()),
         });
         service.reconcile().await?;
@@ -357,6 +359,19 @@ impl Service {
             );
         }
         Ok(())
+    }
+
+    pub fn set_public_url(&self, url: Option<String>) {
+        *self.public_url.write().expect("public url lock") =
+            url.map(|url| url.trim_end_matches('/').to_string());
+    }
+
+    pub fn public_link(&self, path: &str) -> Option<String> {
+        self.public_url
+            .read()
+            .expect("public url lock")
+            .as_ref()
+            .map(|base| format!("{base}{path}"))
     }
 
     pub fn image_names(&self) -> Vec<String> {
@@ -701,7 +716,7 @@ fn unique_suffix() -> String {
     format!("{:x}{:x}", now_ms(), COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
-fn log(event: &str, id: &str, error: Option<ApiError>) {
+pub(crate) fn log(event: &str, id: &str, error: Option<ApiError>) {
     let line = serde_json::json!({
         "type": "kumobad",
         "event": event,

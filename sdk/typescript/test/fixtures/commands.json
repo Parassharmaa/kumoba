@@ -1,0 +1,794 @@
+{
+  "commands": [
+    {
+      "in": {},
+      "input": "none",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "commands",
+      "output": "json",
+      "path": "/v1/commands",
+      "positional": [],
+      "rest": null,
+      "summary": "Describe every command this daemon serves"
+    },
+    {
+      "in": {},
+      "input": "none",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "images",
+      "output": "json",
+      "path": "/v1/images",
+      "positional": [],
+      "rest": null,
+      "summary": "List the images sandboxes can boot"
+    },
+    {
+      "in": {
+        "argv": "body",
+        "cpu": "body",
+        "cwd": "body",
+        "env": "body",
+        "image": "body",
+        "labels": "body",
+        "memoryMib": "body",
+        "network": "body",
+        "timeoutMs": "body",
+        "user": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "argv": {
+            "description": "Program and arguments, run without a shell",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cpu": {
+            "default": 2,
+            "description": "Virtual CPUs",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cwd": {
+            "default": null,
+            "description": "Working directory inside the guest",
+            "type": ["string", "null"]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Extra environment variables",
+            "type": "object"
+          },
+          "image": {
+            "default": "default",
+            "description": "Image to boot, one of the names `images` lists",
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Free-form key=value labels for the temporary sandbox",
+            "type": "object"
+          },
+          "memoryMib": {
+            "default": 4096,
+            "description": "Memory in MiB",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "network": {
+            "additionalProperties": false,
+            "default": {
+              "hosts": [],
+              "mode": "open"
+            },
+            "description": "Outbound network policy",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "description": "Hosts an allowlist permits; *.example.com matches subdomains",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "mode": {
+                "default": "open",
+                "description": "open reaches the public internet, allowlist only the listed hosts, blocked nothing",
+                "enum": ["open", "allowlist", "blocked"],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "timeoutMs": {
+            "default": 600000,
+            "description": "Kill the command after this many milliseconds",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "default": null,
+            "description": "Guest user to run as",
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["argv"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "run",
+      "output": "events",
+      "path": "/v1/run",
+      "positional": [],
+      "rest": "argv",
+      "summary": "Run one command in a fresh sandbox and delete it afterwards"
+    },
+    {
+      "in": {
+        "autoDeleteMinutes": "body",
+        "autoStopMinutes": "body",
+        "cpu": "body",
+        "image": "body",
+        "labels": "body",
+        "memoryMib": "body",
+        "network": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "autoDeleteMinutes": {
+            "default": null,
+            "description": "Delete this many minutes after stopping",
+            "format": "uint32",
+            "minimum": 0,
+            "type": ["integer", "null"]
+          },
+          "autoStopMinutes": {
+            "default": 0,
+            "description": "Stop after this many idle minutes; 0 never stops",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cpu": {
+            "default": 2,
+            "description": "Virtual CPUs",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image": {
+            "description": "Image to boot, one of the names `images` lists",
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Free-form key=value labels to find the sandbox by later",
+            "type": "object"
+          },
+          "memoryMib": {
+            "default": 4096,
+            "description": "Memory in MiB",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "network": {
+            "additionalProperties": false,
+            "default": {
+              "hosts": [],
+              "mode": "open"
+            },
+            "description": "Outbound network policy",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "description": "Hosts an allowlist permits; *.example.com matches subdomains",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "mode": {
+                "default": "open",
+                "description": "open reaches the public internet, allowlist only the listed hosts, blocked nothing",
+                "enum": ["open", "allowlist", "blocked"],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": ["image"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "create",
+      "output": "json",
+      "path": "/v1/sandboxes",
+      "positional": [],
+      "rest": null,
+      "summary": "Create a sandbox; it starts stopped"
+    },
+    {
+      "in": {
+        "label": "query",
+        "limit": "query"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "label": {
+            "description": "Only sandboxes with this key:value label; repeat to require several",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Maximum sandboxes to return",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "list",
+      "output": "json",
+      "path": "/v1/sandboxes",
+      "positional": [],
+      "rest": null,
+      "summary": "List sandboxes, newest first"
+    },
+    {
+      "in": {
+        "id": "path"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "get",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Show one sandbox"
+    },
+    {
+      "in": {
+        "autoDeleteMinutes": "body",
+        "autoStopMinutes": "body",
+        "id": "path",
+        "labels": "body",
+        "network": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "autoDeleteMinutes": {
+            "default": null,
+            "description": "Delete this many minutes after stopping; null keeps it",
+            "format": "uint32",
+            "minimum": 0,
+            "type": ["integer", "null"]
+          },
+          "autoStopMinutes": {
+            "default": null,
+            "description": "Stop after this many idle minutes; 0 never stops",
+            "format": "uint32",
+            "minimum": 0,
+            "type": ["integer", "null"]
+          },
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Replace the labels",
+            "type": ["object", "null"]
+          },
+          "network": {
+            "additionalProperties": false,
+            "default": null,
+            "description": "Replace the network policy; the sandbox must be stopped",
+            "properties": {
+              "hosts": {
+                "default": [],
+                "description": "Hosts an allowlist permits; *.example.com matches subdomains",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "mode": {
+                "default": "open",
+                "description": "open reaches the public internet, allowlist only the listed hosts, blocked nothing",
+                "enum": ["open", "allowlist", "blocked"],
+                "type": "string"
+              }
+            },
+            "type": ["object", "null"]
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "PATCH",
+      "name": "update",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Change a sandbox's labels, timers or network policy"
+    },
+    {
+      "in": {
+        "id": "path"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "DELETE",
+      "name": "delete",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Delete a sandbox and its disk"
+    },
+    {
+      "in": {
+        "id": "path"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "start",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/start",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Boot a stopped sandbox"
+    },
+    {
+      "in": {
+        "id": "path"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "stop",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/stop",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Shut a sandbox down, keeping its disk"
+    },
+    {
+      "in": {
+        "argv": "body",
+        "cwd": "body",
+        "env": "body",
+        "id": "path",
+        "timeoutMs": "body",
+        "user": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "argv": {
+            "description": "Program and arguments, run without a shell",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "default": null,
+            "description": "Working directory inside the guest",
+            "type": ["string", "null"]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Extra environment variables",
+            "type": "object"
+          },
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "timeoutMs": {
+            "default": 600000,
+            "description": "Kill the command after this many milliseconds",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "default": null,
+            "description": "Guest user to run as",
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id", "argv"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "exec",
+      "output": "events",
+      "path": "/v1/sandboxes/{id}/exec",
+      "positional": ["id"],
+      "rest": "argv",
+      "summary": "Run a command in a started sandbox and stream its output"
+    },
+    {
+      "in": {
+        "id": "path",
+        "path": "query",
+        "user": "query"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path inside the guest",
+            "type": "string"
+          },
+          "user": {
+            "description": "Guest user to act as",
+            "type": "string"
+          }
+        },
+        "required": ["id", "path"],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "read-file",
+      "output": "bytes",
+      "path": "/v1/sandboxes/{id}/files",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Print a file from the guest"
+    },
+    {
+      "in": {
+        "content": "bytes",
+        "id": "path",
+        "path": "query",
+        "user": "query"
+      },
+      "input": "bytes",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "description": "File content; @path reads a local file, @- reads stdin",
+            "type": "string"
+          },
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path inside the guest",
+            "type": "string"
+          },
+          "user": {
+            "description": "Guest user to act as",
+            "type": "string"
+          }
+        },
+        "required": ["id", "path", "content"],
+        "type": "object"
+      },
+      "method": "PUT",
+      "name": "write-file",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/files",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Write a file into the guest"
+    },
+    {
+      "in": {
+        "id": "path",
+        "path": "query",
+        "user": "query"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path inside the guest",
+            "type": "string"
+          },
+          "user": {
+            "description": "Guest user to act as",
+            "type": "string"
+          }
+        },
+        "required": ["id", "path"],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "list-files",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/files/list",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "List a directory in the guest"
+    },
+    {
+      "in": {
+        "id": "path",
+        "port": "body",
+        "ttlSeconds": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "port": {
+            "description": "Port inside the guest",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ttlSeconds": {
+            "description": "Seconds the link stays valid, up to 3600",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["id", "port", "ttlSeconds"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "expose",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/preview",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Create a signed, expiring link to a port inside the sandbox"
+    },
+    {
+      "in": {
+        "id": "path",
+        "ttlSeconds": "body",
+        "user": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "default": 3600,
+            "description": "Seconds the live view link stays valid, up to 3600",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "default": null,
+            "description": "Guest user that owns the desktop session",
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "desktop",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/desktop",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Start the desktop and link to a live view; --open opens it in the browser"
+    },
+    {
+      "in": {
+        "id": "path",
+        "secrets": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "secrets": {
+            "description": "The full set of secrets for this sandbox, as a JSON array",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "envVars": {
+                  "description": "Guest environment variables that hold a placeholder",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "hosts": {
+                  "description": "HTTPS hosts the value is injected into",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "name": {
+                  "description": "Name to refer to the secret by",
+                  "type": "string"
+                },
+                "value": {
+                  "description": "Secret value; never enters the guest",
+                  "type": "string"
+                }
+              },
+              "required": ["name", "value", "hosts", "envVars"],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["id", "secrets"],
+        "type": "object"
+      },
+      "method": "PUT",
+      "name": "set-secrets",
+      "output": "json",
+      "path": "/v1/sandboxes/{id}/secrets",
+      "positional": ["id"],
+      "rest": null,
+      "summary": "Replace a sandbox's secrets"
+    },
+    {
+      "in": {
+        "names": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "names": {
+            "description": "Secret names to remove from every sandbox",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["names"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "delete-secrets",
+      "output": "json",
+      "path": "/v1/secrets/delete",
+      "positional": [],
+      "rest": null,
+      "summary": "Remove secrets by name from every sandbox"
+    },
+    {
+      "in": {
+        "cursor": "query",
+        "limit": "query",
+        "sinceMs": "query",
+        "untilMs": "query"
+      },
+      "input": "none",
+      "inputSchema": {
+        "properties": {
+          "cursor": {
+            "description": "nextCursor from the previous page",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum entries in this page",
+            "type": "integer"
+          },
+          "sinceMs": {
+            "description": "Start of the window, epoch milliseconds (default two hours ago)",
+            "type": "integer"
+          },
+          "untilMs": {
+            "description": "End of the window, epoch milliseconds (default now)",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "method": "GET",
+      "name": "access-log",
+      "output": "json",
+      "path": "/v1/access-log",
+      "positional": [],
+      "rest": null,
+      "summary": "Show proxied network connections, allowed and denied"
+    }
+  ]
+}

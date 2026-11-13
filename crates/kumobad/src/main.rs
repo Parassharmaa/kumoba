@@ -1,4 +1,5 @@
 mod access_log;
+mod catalog;
 mod http;
 mod model;
 mod preview;
@@ -17,6 +18,8 @@ use std::{
 };
 use tokio::net::{TcpListener, UnixListener};
 
+const DEFAULT_LISTEN: &str = "127.0.0.1:7788";
+
 struct Options {
     egress: kumoba::EgressConfig,
     state_dir: PathBuf,
@@ -26,6 +29,8 @@ struct Options {
     listen: Option<String>,
     token: Vec<u8>,
     token_file: PathBuf,
+    listen_is_default: bool,
+    public_url: Option<String>,
     max_running: usize,
 }
 
@@ -159,9 +164,14 @@ fn options() -> Result<Options, String> {
         (proxy, "host") => proxy.map(|proxy| proxy.connect_by_name(true)),
         _ => return Err("KUMOBAD_UPSTREAM_PROXY_CONNECT must be address or host".into()),
     };
-    let socket = std::env::var_os("KUMOBAD_SOCKET")
-        .map(PathBuf::from)
-        .or_else(|| listen.is_none().then(|| home.join("kumobad.sock")));
+    let explicit_socket = std::env::var_os("KUMOBAD_SOCKET").map(PathBuf::from);
+    let listen_is_default = listen.is_none() && explicit_socket.is_none();
+    let socket = explicit_socket.or_else(|| listen.is_none().then(|| home.join("kumobad.sock")));
+    let listen = if listen_is_default {
+        Some(DEFAULT_LISTEN.to_string())
+    } else {
+        listen
+    };
     Ok(Options {
         egress,
         state_dir: env_path_or("KUMOBAD_STATE_DIR", || home.join("state")),
@@ -171,6 +181,8 @@ fn options() -> Result<Options, String> {
         listen,
         token,
         token_file: token_file.unwrap_or_else(|| home.join("token")),
+        listen_is_default,
+        public_url: std::env::var("KUMOBAD_PUBLIC_URL").ok(),
         max_running: std::env::var("KUMOBAD_MAX_RUNNING")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -207,7 +219,10 @@ Environment, all optional:
   KUMOBAD_WORKER        kumoba-worker binary (default: next to kumobad)
   KUMOBAD_SOCKET        Unix socket to listen on, mode 0600
                         (default $KUMOBA_HOME/kumobad.sock unless KUMOBAD_LISTEN is set)
-  KUMOBAD_LISTEN        loopback host:port to listen on, e.g. 127.0.0.1:7788
+  KUMOBAD_LISTEN        loopback host:port to listen on (default 127.0.0.1:7788 when neither
+                        it nor KUMOBAD_SOCKET is set; skipped if that port is taken)
+  KUMOBAD_PUBLIC_URL    base URL browsers reach kumobad at, for preview and desktop links
+                        (default http://<listen address>)
   KUMOBAD_MAX_RUNNING   concurrently running sandboxes (default 4)
   KUMOBAD_ALLOW_PRIVATE_HOSTS  intranet destinations sandboxes may reach: host names (with
                         subdomains) and IPv4 CIDRs, comma separated. Loopback, link-local
@@ -289,13 +304,26 @@ async fn run() -> Result<(), String> {
         None => None,
     };
     let tcp = match &options.listen {
-        Some(address) => Some(
-            TcpListener::bind(address)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
+        Some(address) => match TcpListener::bind(address).await {
+            Ok(listener) => Some(listener),
+            Err(error) if options.listen_is_default => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"type": "kumobad", "event": "listen_skipped", "listen": address, "error": error.to_string()})
+                );
+                None
+            }
+            Err(error) => return Err(format!("cannot listen on {address}: {error}")),
+        },
         None => None,
     };
+    let listening = tcp.as_ref().and_then(|_| options.listen.clone());
+    let public_url = options.public_url.clone().or_else(|| {
+        listening
+            .as_ref()
+            .map(|address| format!("http://{address}"))
+    });
+    service.set_public_url(public_url.clone());
     eprintln!(
         "{}",
         serde_json::json!({
@@ -303,7 +331,8 @@ async fn run() -> Result<(), String> {
             "event": "ready",
             "version": env!("CARGO_PKG_VERSION"),
             "socket": options.socket,
-            "listen": options.listen,
+            "listen": listening,
+            "publicUrl": public_url,
             "tokenFile": options.token_file,
             "images": image_names,
         })

@@ -18,4 +18,5 @@ npm ci --no-fund --no-audit
 npm run typecheck
 npm run build
 npm test
+bash ../../scripts/cli-smoke.sh node dist/cli.js
 KUMOBA_LIVE=1 npx vitest run test/live.test.ts
