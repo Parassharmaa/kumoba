@@ -18,8 +18,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - uses: taiki-e/install-action@v2
@@ -39,8 +39,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         if: runner.os == 'Linux'
         with:
           path: |
@@ -49,7 +49,7 @@ jobs:
             .local/downloads
           key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('patches/**', 'scripts/build-libkrun-closefix.sh', 'scripts/prepare-linux-host.sh') }}
       - run: bash scripts/release-assets.sh "${{ needs.check.outputs.version }}" dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tarball-${{ matrix.os }}
           path: dist/kumoba-*.tar.zst
@@ -65,8 +65,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: |
             .local/libkrun-closefix
@@ -75,7 +75,7 @@ jobs:
           key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('patches/**', 'scripts/build-libkrun-closefix.sh', 'scripts/prepare-linux-host.sh') }}
       - run: bash scripts/ci-free-disk.sh --android
       - run: bash scripts/release-images.sh "${{ needs.check.outputs.version }}" dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: images-${{ matrix.os }}
           path: dist/kumoba-image-*.raw.zst
@@ -88,11 +88,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: "*-ubuntu-24.04"
           path: dist
@@ -108,7 +108,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: pending
         run: echo "pending=$(bash scripts/crates-pending.sh)" >> "$GITHUB_OUTPUT"
       - id: auth
@@ -128,8 +128,8 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -144,8 +144,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
