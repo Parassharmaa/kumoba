@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-13
+
 ### Changed
 
 - The default image lets `pip install` write to the system Python (`/etc/pip.conf`), as the README shows. A sandbox is a disposable VM, so Debian's protection against mixing pip and apt packages only got in the way; non-root users fall back to a user install.
@@ -59,7 +61,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Parassharmaa/kumoba/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Parassharmaa/kumoba/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Parassharmaa/kumoba/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Parassharmaa/kumoba/releases/tag/v0.1.0
