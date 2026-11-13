@@ -1,5 +1,7 @@
 # kumoba
 
+[![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/kumobad.svg?label=kumobad)](https://crates.io/crates/kumobad) [![npm](https://img.shields.io/npm/v/kumoba.svg?label=npm%20kumoba)](https://www.npmjs.com/package/kumoba)
+
 Local microVM sandboxes for AI agents and untrusted code. One small daemon, an HTTP API, and SDKs for TypeScript and Rust.
 
 - **Real VMs, not containers.** Every sandbox is a [libkrun](https://github.com/containers/libkrun) microVM with its own kernel. KVM on Linux, Hypervisor.framework on Apple silicon.
@@ -45,6 +47,17 @@ your app ──HTTP──▶ kumobad ──spawns──▶ kumoba-worker (one pe
 `scripts/check-host.sh` tells you whether a machine qualifies and how many sandboxes fit in its memory.
 
 Docker is needed only to build the default guest image.
+
+## Install
+
+| What | How |
+| --- | --- |
+| `kumobad` and `kumoba-worker` | `cargo install kumobad`, or a tarball from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest). Linux tarballs include the patched libkrun and libkrunfw. |
+| `kumoba-guest` for your own images | in the same tarball under `bin/`, or `RUSTFLAGS='-C linker=rust-lld' cargo install kumoba-guest --target x86_64-unknown-linux-musl` |
+| TypeScript SDK | `npm install kumoba` |
+| Rust library | `cargo add kumoba` |
+
+Everything is released together under one version; see [CHANGELOG.md](CHANGELOG.md) and [docs/releasing.md](docs/releasing.md).
 
 ## Quickstart
 
@@ -178,7 +191,7 @@ Environment=KUMOBAD_LIBKRUNFW=/opt/kumoba/lib/libkrunfw.so.5
 ExecStart=/opt/kumoba/bin/kumobad
 ```
 
-`scripts/package.sh <version>` produces a `kumoba-<version>-linux-<arch>.tar.zst` with the binaries, libraries, an image and a manifest of checksums for exactly this layout. Put a reverse proxy in front of `KUMOBAD_LISTEN` if browsers need to reach `expose()` links; the preview routes are self-authenticating and need no token.
+The release tarballs (`kumoba-<version>-linux-<arch>.tar.zst`) have exactly this layout: `bin/` with `kumobad`, `kumoba-worker` and `kumoba-guest`, `lib/` with the libraries, `licenses/` and a `manifest.json` of checksums. `KUMOBA_IMAGE=path.raw scripts/package.sh <version>` builds the same tarball with an image under `images/`. Put a reverse proxy in front of `KUMOBAD_LISTEN` if browsers need to reach `expose()` links; the preview routes are self-authenticating and need no token.
 
 ## Security model
 

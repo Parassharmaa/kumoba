@@ -22,3 +22,5 @@ Bump `VERSION` in `crates/kumoba-protocol/src/lib.rs` and rebuild images: the wo
 ## Pull requests
 
 CI boots real VMs on a KVM runner for every push, including building the default image and taking a desktop screenshot. Keep that green, add a test next to the code you touch, and keep commits focused.
+
+A change users can notice gets a line under `## [Unreleased]` in `CHANGELOG.md`; it becomes the release notes. Releases are cut from `main` with `scripts/release.sh`, see [docs/releasing.md](docs/releasing.md).

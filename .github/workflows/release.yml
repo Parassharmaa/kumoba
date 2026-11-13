@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+jobs:
+  check:
+    name: verify version, tests and registry dry runs
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: version
+        run: echo "version=$(bash scripts/version.sh)" >> "$GITHUB_OUTPUT"
+      - run: bash scripts/ci-release.sh "$TAG"
+
+  assets:
+    name: tarball (${{ matrix.os }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
+        with:
+          path: |
+            .local/libkrun-closefix
+            .local/libkrunfw
+            .local/downloads
+          key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('patches/**', 'scripts/build-libkrun-closefix.sh', 'scripts/prepare-linux-host.sh') }}
+      - run: bash scripts/release-assets.sh "${{ needs.check.outputs.version }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.os }}
+          path: dist/kumoba-*.tar.zst
+          if-no-files-found: error
+
+  publish-crates:
+    name: publish to crates.io
+    needs: [check, assets]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - run: bash scripts/publish-crates.sh
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  publish-npm:
+    name: publish to npm
+    needs: publish-crates
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - run: bash scripts/publish-npm.sh
+
+  release:
+    name: GitHub release
+    needs: [check, publish-npm]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          path: dist
+          merge-multiple: true
+      - run: bash scripts/publish-release.sh "$TAG" dist
+        env:
+          GH_TOKEN: ${{ github.token }}
