@@ -3,12 +3,23 @@
   "version": "0.1.0",
   "description": "TypeScript SDK for kumoba: local microVM sandboxes for AI agents",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/Parassharmaa/kumoba/tree/main/sdk/typescript",
+  "bugs": "https://github.com/Parassharmaa/kumoba/issues",
   "repository": {
     "type": "git",
     "url": "https://github.com/Parassharmaa/kumoba.git",
     "directory": "sdk/typescript"
   },
+  "keywords": [
+    "sandbox",
+    "microvm",
+    "libkrun",
+    "ai-agents",
+    "code-execution",
+    "isolation"
+  ],
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -17,15 +28,22 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:live": "KUMOBA_LIVE=1 vitest run test/live.test.ts"
+    "test:live": "KUMOBA_LIVE=1 vitest run test/live.test.ts",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "zod": "^4.1.0"
