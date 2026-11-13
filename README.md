@@ -1,6 +1,11 @@
 # kumoba
 
-[![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/kumobad.svg?label=kumobad)](https://crates.io/crates/kumobad) [![npm](https://img.shields.io/npm/v/kumoba.svg?label=npm%20kumoba)](https://www.npmjs.com/package/kumoba)
+[![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Parassharmaa/kumoba?sort=semver)](https://github.com/Parassharmaa/kumoba/releases/latest)
+[![npm](https://img.shields.io/npm/v/kumoba?label=npm%20kumoba)](https://www.npmjs.com/package/kumoba)
+[![kumobad](https://img.shields.io/crates/v/kumobad?label=crates.io%20kumobad)](https://crates.io/crates/kumobad)
+[![docs.rs](https://img.shields.io/docsrs/kumoba?label=docs.rs%20kumoba)](https://docs.rs/kumoba)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Local microVM sandboxes for AI agents and untrusted code. One small daemon, an HTTP API, and SDKs for TypeScript and Rust.
 
@@ -12,8 +17,7 @@ Local microVM sandboxes for AI agents and untrusted code. One small daemon, an H
 ```ts
 import { Kumoba } from "kumoba";
 
-const kumoba = Kumoba.fromEnv();
-await using sandbox = await kumoba.create({ image: "default", user: "kumoba" });
+await using sandbox = await new Kumoba().create();
 
 const result = await sandbox.run("python3 -c 'print(21 * 2)'");
 console.log(result.stdout); // "42\n"
@@ -24,6 +28,64 @@ console.log(await sandbox.files.list("/workspace"));
 const link = await sandbox.expose(8080);
 console.log(link.url);
 ```
+
+## Quickstart
+
+**1. Install the daemon and an image.** On macOS, get libkrun from Homebrew first: `brew tap slp/krun && brew install slp/krun/libkrun slp/krun/libkrunfw zstd`. Linux needs `/dev/kvm` and `zstd`; the release already carries the patched libkrun.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/install.sh | bash
+```
+
+This puts `kumobad`, `kumoba-worker` and the `default` image (Debian with Python, Node, Chromium and an xfce desktop) into `~/.kumoba`, checking every download against the release's `SHA256SUMS`. `KUMOBA_IMAGE=test` fetches a 5 MB Alpine image instead, and `KUMOBA_VERSION=0.1.0` pins a release.
+
+**2. Start it.** No configuration needed:
+
+```sh
+~/.kumoba/bin/kumobad
+```
+
+It boots every image in `~/.kumoba/images`, creates a bearer token in `~/.kumoba/token` and listens on `~/.kumoba/kumobad.sock`. `kumobad --help` lists the environment variables that override each default.
+
+**3. Use it.**
+
+```sh
+npm install kumoba
+```
+
+```ts
+import { Kumoba } from "kumoba";
+
+const kumoba = new Kumoba();
+const sandbox = await kumoba.create();
+console.log((await sandbox.run("python3 --version")).stdout);
+await sandbox.delete();
+```
+
+`new Kumoba()` finds the socket and token in `~/.kumoba` by itself. Pass `{ url, token }` or set `KUMOBA_URL` and `KUMOBA_TOKEN` to reach a daemon elsewhere.
+
+## Install
+
+| What | How |
+| --- | --- |
+| Daemon, worker and images | `scripts/install.sh` as above, or a tarball and image from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest). Linux tarballs include the patched libkrun and libkrunfw; the macOS worker is signed for Hypervisor.framework. |
+| Daemon from source | `cargo install kumobad` installs `kumobad` and `kumoba-worker` side by side. On macOS sign the worker as below. |
+| TypeScript SDK | `npm install kumoba` |
+| Rust library | `cargo add kumoba` |
+| Guest agent for your own images | `bin/kumoba-guest` in the release tarball, or `cargo install kumoba-guest --target x86_64-unknown-linux-musl` with `RUSTFLAGS='-C linker=rust-lld'` |
+
+On macOS a `cargo install`ed worker cannot use Hypervisor.framework until it carries the entitlement. The release worker already does:
+
+```sh
+cat > hvf.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+EOF
+codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
+```
+
+`scripts/check-host.sh` tells you whether a machine qualifies and how many sandboxes fit in its memory. Everything is released together under one version; see [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
@@ -37,63 +99,22 @@ your app ──HTTP──▶ kumobad ──spawns──▶ kumoba-worker (one pe
 
 `kumobad` keeps sandbox metadata and disks in a state directory, boots VMs through a worker process per sandbox, and talks to a small agent inside each guest over vsock. Guests have no network device; outbound HTTP(S) goes through a proxy in the worker that enforces the sandbox's allowlist and injects secrets only for the hosts they are scoped to. See [docs/architecture.md](docs/architecture.md).
 
-## Requirements
+## Building from source
 
 | Host | Needs |
 | --- | --- |
 | macOS 14+ on Apple silicon | `brew tap slp/krun && brew install slp/krun/libkrun slp/krun/libkrunfw e2fsprogs rustup` |
 | Linux x86_64 or arm64 | `/dev/kvm` (bare metal, or a VM with nested virtualization), Rust 1.99, `scripts/prepare-linux-host.sh` builds the patched libkrun and fetches libkrunfw |
 
-`scripts/check-host.sh` tells you whether a machine qualifies and how many sandboxes fit in its memory.
-
-Docker is needed only to build the default guest image.
-
-## Install
-
-| What | How |
-| --- | --- |
-| `kumobad` and `kumoba-worker` | A tarball from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest): Linux ones include the patched libkrun and libkrunfw, the macOS one is signed for Hypervisor.framework. Or `cargo install kumobad`; on macOS then sign the worker as below. |
-| `kumoba-guest` for your own images | in the same tarball under `bin/`, or `RUSTFLAGS='-C linker=rust-lld' cargo install kumoba-guest --target x86_64-unknown-linux-musl` |
-| TypeScript SDK | `npm install kumoba` |
-| Rust library | `cargo add kumoba` |
-
-On macOS a `cargo install`ed worker cannot use Hypervisor.framework until it carries the entitlement (the tarball's worker already does):
-
-```sh
-cat > hvf.plist <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
-EOF
-codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
-```
-
-Everything is released together under one version; see [CHANGELOG.md](CHANGELOG.md) and [docs/releasing.md](docs/releasing.md).
-
-## Quickstart
-
 ```sh
 git clone https://github.com/Parassharmaa/kumoba
 cd kumoba
 scripts/build.sh                    # kumobad, kumoba-worker, kumoba-guest into .local/bin
-scripts/build-image.sh default      # Debian + Python + Node + Chromium + xfce, into .local/images/default.raw
+scripts/build-image.sh default      # needs Docker; into .local/images/default.raw
 scripts/serve.sh                    # kumobad on a Unix socket and 127.0.0.1:7788
 ```
 
-`serve.sh` writes the client settings to `.local/serve/env`:
-
-```sh
-set -a; source .local/serve/env; set +a
-cd sdk/typescript && npm install && npm run build
-node --input-type=module -e '
-  import { Kumoba } from "./dist/index.js";
-  const sandbox = await Kumoba.fromEnv().create({ user: "kumoba" });
-  console.log((await sandbox.run("uname -a")).stdout);
-  await sandbox.delete();
-'
-```
-
-Without Docker, `scripts/build-test-image.sh` produces a 512 MB Alpine image named `test` that is enough to try the API.
+`serve.sh` writes the client settings to `.local/serve/env`; `set -a; source .local/serve/env; set +a` points `new Kumoba()` at it. Without Docker, `scripts/build-test-image.sh` produces the Alpine `test` image. [CONTRIBUTING.md](CONTRIBUTING.md) covers the tests.
 
 ## TypeScript SDK
 
@@ -101,8 +122,8 @@ The package lives in [`sdk/typescript`](sdk/typescript). It depends only on `zod
 
 ```ts
 const kumoba = new Kumoba({
-  url: "unix:///path/to/kumobad.sock",   // or http://127.0.0.1:7788
-  token: "...",                           // contents of KUMOBAD_TOKEN_FILE
+  url: "unix:///path/to/kumobad.sock",   // default: KUMOBA_URL, then ~/.kumoba/kumobad.sock
+  token: "...",                           // default: KUMOBA_TOKEN, KUMOBA_TOKEN_FILE, then ~/.kumoba/token
   publicUrl: "https://sandboxes.example.com", // optional, makes expose() return full URLs
 });
 
@@ -163,26 +184,27 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 
 ## Rust
 
-The `kumoba` crate drives VMs directly, without the daemon. [`crates/kumoba/examples/hello.rs`](crates/kumoba/examples/hello.rs) boots an image, runs a command and exits:
+The `kumoba` crate drives VMs directly, without the daemon; it needs a `kumoba-worker` binary from the release or `cargo install kumobad`. [`crates/kumoba/examples/hello.rs`](crates/kumoba/examples/hello.rs) boots an image, runs a command and exits:
 
 ```sh
-scripts/build.sh && scripts/build-test-image.sh
-cargo run --release -p kumoba --example hello -- .local/bin/kumoba-worker .local/test-arm64.raw
+cargo run --release -p kumoba --example hello -- ~/.kumoba/bin/kumoba-worker ~/.kumoba/images/default.raw
 ```
+
+API documentation is on [docs.rs/kumoba](https://docs.rs/kumoba).
 
 ## HTTP API
 
 Everything the SDK does is a plain HTTP call with a bearer token; see [docs/http-api.md](docs/http-api.md).
 
 ```sh
-curl --unix-socket .local/serve/kumobad.sock -H "authorization: Bearer $(cat .local/serve/token)" \
+curl --unix-socket ~/.kumoba/kumobad.sock -H "authorization: Bearer $(cat ~/.kumoba/token)" \
   -X POST http://kumobad/v1/sandboxes -H 'content-type: application/json' \
   -d '{"image":"default","cpu":2,"memoryMib":2048,"network":{"mode":"blocked"}}'
 ```
 
 ## Running it as a service
 
-`kumobad` is configured through environment variables (`kumobad --help` lists them). A minimal unit:
+On a server, give each setting an explicit path rather than relying on `~/.kumoba`. `kumobad` is configured through environment variables (`kumobad --help` lists them). A minimal unit:
 
 ```ini
 [Service]
@@ -215,20 +237,20 @@ The release tarballs (`kumoba-<version>-linux-<arch>.tar.zst`) have exactly this
 
 ## Status
 
-Experimental. The runtime and SDK are exercised on every push by real VMs in CI (Linux x86_64 with KVM) and by hand on macOS. Expect the API to change before 1.0.
+Experimental. The runtime and SDK are exercised on every push by real VMs in CI (Linux x86_64 with KVM), and every release is installed with `scripts/install.sh` and booted before it is published. Expect the API to change before 1.0; [docs/releasing.md](docs/releasing.md) says what a version bump promises.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `crates/kumoba` | Host runtime library and the `kumoba-worker` VMM process |
-| `crates/kumoba-guest` | Agent that runs inside every VM |
-| `crates/kumoba-protocol` | Host-guest wire protocol |
-| `crates/kumobad` | The daemon and HTTP API |
-| `sdk/typescript` | `kumoba` npm package |
+| `crates/kumoba` | Host runtime library ([crates.io](https://crates.io/crates/kumoba)) |
+| `crates/kumoba-guest` | Agent that runs inside every VM ([crates.io](https://crates.io/crates/kumoba-guest)) |
+| `crates/kumoba-protocol` | Host-guest wire protocol ([crates.io](https://crates.io/crates/kumoba-protocol)) |
+| `crates/kumobad` | The daemon, its HTTP API and the `kumoba-worker` VMM process ([crates.io](https://crates.io/crates/kumobad)) |
+| `sdk/typescript` | `kumoba` npm package ([npm](https://www.npmjs.com/package/kumoba)) |
 | `images/` | Guest image recipes (`default`, plus the `mkfs` helper) |
 | `patches/` | libkrun patches this project needs |
-| `scripts/` | Build, test, image, package and CI entry points |
+| `scripts/` | Build, test, image, package, install, release and CI entry points |
 
 ## License
 

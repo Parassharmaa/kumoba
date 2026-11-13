@@ -15,5 +15,6 @@ notes=$(awk -v v="$version" '
 [[ -n "$notes" ]] || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
 printf '%s\n' "$notes"
 printf '\n## Install\n\n'
-printf '```sh\ncargo install kumobad@%s        # kumobad + kumoba-worker\nnpm install kumoba@%s\n```\n\n' "$version" "$version"
-printf 'Linux tarballs below bundle the binaries with the patched libkrun and libkrunfw. The macOS tarball has a worker signed for Hypervisor.framework and needs `brew install slp/krun/libkrun slp/krun/libkrunfw`; a `cargo install`ed worker on macOS must be signed by hand, see the README. Guest images built for an earlier release must be rebuilt when the protocol version changes.\n'
+printf '```sh\ncurl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/install.sh | KUMOBA_VERSION=%s bash\nnpm install kumoba@%s\n```\n\n' "$version" "$version"
+printf 'The installer puts `kumobad`, `kumoba-worker` and the `default` image into `~/.kumoba`; on macOS install libkrun first with `brew tap slp/krun && brew install slp/krun/libkrun slp/krun/libkrunfw zstd`. `cargo install kumobad@%s` builds the daemon and worker from crates.io instead, and the Rust library is `cargo add kumoba@%s`.\n\n' "$version" "$version"
+printf 'The files below are the host tarballs (Linux ones bundle the patched libkrun and libkrunfw; the macOS worker is signed for Hypervisor.framework), the `default` and `test` guest images for each architecture, and `SHA256SUMS`. Guest images from an earlier release must be replaced when the protocol version changes.\n'

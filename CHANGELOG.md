@@ -12,5 +12,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - TypeScript SDK (`kumoba` on npm): `Kumoba`, `Sandbox`, `Files`, `Desktop`, `accessLog()` async iterator and `await using` disposal.
 - Default Debian guest image with Python, Node, Chromium and the desktop, plus an Alpine test image that needs no Docker.
 - Sparse disk copies with reflinks where the filesystem supports them.
+- Zero-config start: with no environment `kumobad` uses `~/.kumoba` (or `KUMOBA_HOME`) for images, state, a generated token and its socket, finds `kumoba-worker` next to itself and libkrun in `../lib`, and `new Kumoba()` connects to it with no options.
+- `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
+- Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
 [Unreleased]: https://github.com/Parassharmaa/kumoba/compare/main...HEAD
