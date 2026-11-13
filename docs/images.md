@@ -7,7 +7,7 @@ An image is a raw ext4 disk. `kumobad` boots whatever `KUMOBAD_IMAGES` points at
 `images/default/Dockerfile` builds a Debian 13 system with:
 
 - `bash`, `git`, `curl`, `jq`, `sudo` (passwordless for the `kumoba` user)
-- Python 3 with `pip` and `venv`, Node.js with `npm`
+- Python 3 with `pip` and `venv`, Node.js with `npm`. `pip install` works directly, as root or as `kumoba`: `/etc/pip.conf` lifts Debian's externally-managed guard, which protects nothing in a throwaway VM
 - Chromium, fonts for Latin and CJK text
 - An xfce desktop on Xvfb with x11vnc and noVNC, plus `scrot`, `xdotool` and AT-SPI for the `desktop` API
 - The `kumoba` user (uid 1000) and a `/workspace` it owns
