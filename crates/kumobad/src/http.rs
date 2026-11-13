@@ -579,6 +579,16 @@ const UPGRADE_RESPONSE_HEADERS: &[&str] = &[
     "upgrade",
 ];
 const PLAIN_RESPONSE_HEADERS: &[&str] = &[];
+
+fn preview_location(token: &str, location: &str) -> Option<String> {
+    if location.starts_with("//") || location.contains("://") || location.contains('\\') {
+        return None;
+    }
+    match location.strip_prefix('/') {
+        Some(path) => Some(format!("/v1/preview/{token}/{path}")),
+        None => Some(location.to_string()),
+    }
+}
 const BROWSER_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
     "content-encoding",
@@ -673,7 +683,11 @@ async fn preview(
     for line in lines.filter(|line| !line.is_empty()) {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim().to_ascii_lowercase();
-            if allowed.contains(&name.as_str()) {
+            if name == "location" && allowed.contains(&"location") {
+                if let Some(target) = preview_location(token, value.trim()) {
+                    builder = builder.header(name, target);
+                }
+            } else if allowed.contains(&name.as_str()) {
                 builder = builder.header(name, value.trim());
             }
         }
@@ -709,4 +723,20 @@ async fn preview(
     builder
         .body(Full::new(Bytes::new()).boxed())
         .map_err(|error| ApiError::Status(502, error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn preview_redirects_stay_inside_their_preview() {
+        use super::preview_location;
+        assert_eq!(
+            preview_location("tok", "/login?next=1").as_deref(),
+            Some("/v1/preview/tok/login?next=1")
+        );
+        assert_eq!(preview_location("tok", "step2").as_deref(), Some("step2"));
+        assert_eq!(preview_location("tok", "https://evil.example/"), None);
+        assert_eq!(preview_location("tok", "//evil.example/"), None);
+        assert_eq!(preview_location("tok", "/\\evil.example"), None);
+    }
 }

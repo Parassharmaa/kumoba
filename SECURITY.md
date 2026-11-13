@@ -12,6 +12,8 @@ Include what an attacker controls (guest code, an HTTP client of `kumobad`, a ne
 
 In scope: escaping a guest to the host, reaching another sandbox, bypassing the egress allowlist or the private-address blocks, reading a secret's value from inside a guest, forging or reusing preview links, and authentication bypass on the `kumobad` API.
 
+Known limitation: browser previews from all sandboxes share one origin (`127.0.0.1:7789` by default), so web storage written by one sandbox's page is readable by another's. Per-sandbox origins are planned.
+
 Out of scope: denial of service by a client that holds the bearer token, and attacks that need the host's root account. libkrun and libkrunfw issues belong upstream at [containers/libkrun](https://github.com/containers/libkrun), though a heads-up here is welcome.
 
 ## Supported versions
