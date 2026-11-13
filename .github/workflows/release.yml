@@ -62,9 +62,13 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - id: pending
+        run: echo "pending=$(bash scripts/crates-pending.sh)" >> "$GITHUB_OUTPUT"
       - id: auth
+        if: steps.pending.outputs.pending == 'true'
         uses: rust-lang/crates-io-auth-action@v1
-      - run: bash scripts/publish-crates.sh
+      - if: steps.pending.outputs.pending == 'true'
+        run: bash scripts/publish-crates.sh
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 

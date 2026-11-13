@@ -13,6 +13,8 @@ lock_version=$(node -p 'require("./sdk/typescript/package-lock.json").version')
 status=0
 check() { if [[ "$2" != "$version" ]]; then printf 'MISMATCH %s: %s (tag says %s)\n' "$1" "$2" "$version" >&2; status=1; else printf 'ok   %s %s\n' "$1" "$2"; fi; }
 check Cargo.toml "$cargo_version"
+check "kumoba-protocol requirement" "$(perl -ne 'print $1 if /^kumoba-protocol = \{ version = "([^"]+)"/' Cargo.toml)"
+check "kumoba requirement" "$(perl -ne 'print $1 if /^kumoba = \{ version = "([^"]+)"/' crates/kumobad/Cargo.toml)"
 check package.json "$npm_version"
 check package-lock.json "$lock_version"
 if grep -q "^## \[$version\] - [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$" CHANGELOG.md; then

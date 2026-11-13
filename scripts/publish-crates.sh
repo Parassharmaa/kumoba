@@ -6,9 +6,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 version=$(bash scripts/version.sh)
+source scripts/crates-pending.sh --lib
 for crate in kumoba-protocol kumoba-guest kumoba kumobad; do
-  status=$(curl -sS -o /dev/null -w '%{http_code}' -A 'kumoba-release (https://github.com/Parassharmaa/kumoba)' "https://crates.io/api/v1/crates/$crate/$version")
-  if [[ "$status" == 200 ]]; then
+  if crate_published "$crate" "$version"; then
     printf 'skip %s@%s: already on crates.io\n' "$crate" "$version"
     continue
   fi

@@ -16,6 +16,8 @@ previous=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
 today=$(date -u +%Y-%m-%d)
 
 perl -0pi -e "s/^(\[workspace\.package\]\n(?:.*\n)*?)version = \"[^\"]+\"/\$1version = \"$version\"/m" Cargo.toml
+perl -pi -e "s/^(kumoba-protocol = \{ version = )\"[^\"]+\"/\$1\"$version\"/" Cargo.toml
+perl -pi -e "s/^(kumoba = \{ version = )\"[^\"]+\"/\$1\"$version\"/" crates/kumobad/Cargo.toml
 cargo update --workspace --offline --quiet
 (cd sdk/typescript && npm version "$version" --no-git-tag-version --allow-same-version >/dev/null)
 
@@ -27,7 +29,7 @@ else
 fi
 
 scripts/release-check.sh "v$version"
-git add Cargo.toml Cargo.lock CHANGELOG.md sdk/typescript/package.json sdk/typescript/package-lock.json
+git add Cargo.toml Cargo.lock crates/kumobad/Cargo.toml CHANGELOG.md sdk/typescript/package.json sdk/typescript/package-lock.json
 git commit --quiet -m "Release v$version"
 git tag -a "v$version" -m "kumoba v$version"
 printf 'Tagged v%s. Publish with:\n  git push origin main v%s\n' "$version" "$version"

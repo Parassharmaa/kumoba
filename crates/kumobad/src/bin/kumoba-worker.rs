@@ -13,6 +13,11 @@ type Failure = Box<dyn std::error::Error>;
 fn main() {
     if let Err(error) = run() {
         eprintln!("kumoba-worker: {error}");
+        if cfg!(target_os = "macos") {
+            eprintln!(
+                "kumoba-worker: on macOS this binary needs the com.apple.security.hypervisor entitlement; sign it as described at https://github.com/Parassharmaa/kumoba#install"
+            );
+        }
         std::process::exit(125);
     }
 }

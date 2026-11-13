@@ -16,4 +16,4 @@ notes=$(awk -v v="$version" '
 printf '%s\n' "$notes"
 printf '\n## Install\n\n'
 printf '```sh\ncargo install kumobad@%s        # kumobad + kumoba-worker\nnpm install kumoba@%s\n```\n\n' "$version" "$version"
-printf 'Linux tarballs below bundle the binaries with the patched libkrun and libkrunfw; the macOS tarball needs `brew install slp/krun/libkrun slp/krun/libkrunfw`. Guest images built for an earlier release must be rebuilt when the protocol version changes.\n'
+printf 'Linux tarballs below bundle the binaries with the patched libkrun and libkrunfw. The macOS tarball has a worker signed for Hypervisor.framework and needs `brew install slp/krun/libkrun slp/krun/libkrunfw`; a `cargo install`ed worker on macOS must be signed by hand, see the README. Guest images built for an earlier release must be rebuilt when the protocol version changes.\n'

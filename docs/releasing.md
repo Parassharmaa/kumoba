@@ -39,9 +39,10 @@ Every publish step skips a version the registry already has, so rerunning a fail
 
 ## One-time setup
 
-Both registries authenticate the workflow with GitHub's OIDC token instead of a stored secret, and both configure that per package, so the first version of each package is published by hand.
+Both registries authenticate the workflow with GitHub's OIDC token instead of a stored secret, and both configure that per package, so the first version of each package is published by hand and the workflow's publish jobs run for real from the second release on.
 
-1. First release only, from the tagged commit: `cargo login`, then `cargo publish --workspace`; `cd sdk/typescript && npm login && npm publish`. Then push the tag; the workflow sees the versions exist, skips publishing and still builds the tarballs and the GitHub release.
-2. crates.io: for each of the four crates, Settings, Trusted Publishing, add GitHub with owner `Parassharmaa`, repository `kumoba`, workflow `release.yml`.
-3. npm: package `kumoba`, Settings, Trusted publisher, GitHub Actions with the same owner, repository and workflow filename. Then set publishing access to require two-factor authentication and disallow tokens; trusted publishers are unaffected. npm expires a trusted publisher that has not published within two days of being configured, so do this right before the next release.
-4. Protect the `v*` tags and `main` in the repository settings so only maintainers can push them. A tag push is a release.
+1. First release only, from the tagged commit before pushing the tag: `cargo login`, then `cargo publish --workspace`; `cd sdk/typescript && npm login && npm publish`.
+2. crates.io: for each of the four crates, Settings, Trusted Publishing, add GitHub with owner `Parassharmaa`, repository `kumoba`, workflow `release.yml`. The crates.io documentation at https://crates.io/docs/trusted-publishing is the reference for the exact fields.
+3. npm: package `kumoba`, Settings, Trusted publisher, GitHub Actions with the same owner, repository and workflow filename. Then set publishing access to require two-factor authentication and disallow tokens; trusted publishers are unaffected. npm expires a trusted publisher that has not published within two days of being configured, so do this right before the second release rather than after the first.
+4. Push the tag. The workflow finds every version already on its registry, skips the crates.io and npm jobs without requesting a token, and still builds the tarballs and the GitHub release.
+5. Protect the `v*` tags and `main` in the repository settings so only maintainers can push them. A tag push is a release.

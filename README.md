@@ -52,10 +52,21 @@ Docker is needed only to build the default guest image.
 
 | What | How |
 | --- | --- |
-| `kumobad` and `kumoba-worker` | `cargo install kumobad`, or a tarball from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest). Linux tarballs include the patched libkrun and libkrunfw. |
+| `kumobad` and `kumoba-worker` | A tarball from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest): Linux ones include the patched libkrun and libkrunfw, the macOS one is signed for Hypervisor.framework. Or `cargo install kumobad`; on macOS then sign the worker as below. |
 | `kumoba-guest` for your own images | in the same tarball under `bin/`, or `RUSTFLAGS='-C linker=rust-lld' cargo install kumoba-guest --target x86_64-unknown-linux-musl` |
 | TypeScript SDK | `npm install kumoba` |
 | Rust library | `cargo add kumoba` |
+
+On macOS a `cargo install`ed worker cannot use Hypervisor.framework until it carries the entitlement (the tarball's worker already does):
+
+```sh
+cat > hvf.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+EOF
+codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
+```
 
 Everything is released together under one version; see [CHANGELOG.md](CHANGELOG.md) and [docs/releasing.md](docs/releasing.md).
 
