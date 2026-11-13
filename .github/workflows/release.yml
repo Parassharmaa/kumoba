@@ -153,3 +153,16 @@ jobs:
       - run: bash scripts/publish-release.sh "$TAG" dist
         env:
           GH_TOKEN: ${{ github.token }}
+
+  walkthrough:
+    name: README walkthrough of the published release (linux x86_64, KVM)
+    needs: [check, release]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: bash scripts/ci-walkthrough.sh "${{ needs.check.outputs.version }}"
