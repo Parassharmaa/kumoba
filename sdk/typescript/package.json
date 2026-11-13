@@ -1,6 +1,6 @@
 {
   "name": "kumoba",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "TypeScript SDK and CLI for kumoba: fast sandboxes for AI agents",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Parassharmaa/kumoba/tree/main/sdk/typescript",

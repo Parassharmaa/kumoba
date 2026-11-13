@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
 ### Added
 
 - `kumoba shell <id>`: an interactive terminal inside a sandbox, with arrow keys, tab completion, Ctrl-C, full-screen programs and window resizing. Both the native and the npm CLI support it, and it exits with the shell's status. Piped input works too.
@@ -70,7 +72,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Parassharmaa/kumoba/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Parassharmaa/kumoba/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Parassharmaa/kumoba/compare/v0.1.0...v0.2.0
