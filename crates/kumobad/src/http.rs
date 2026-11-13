@@ -580,14 +580,35 @@ const UPGRADE_RESPONSE_HEADERS: &[&str] = &[
 ];
 const PLAIN_RESPONSE_HEADERS: &[&str] = &[];
 
-fn preview_location(token: &str, location: &str) -> Option<String> {
-    if location.starts_with("//") || location.contains("://") || location.contains('\\') {
+const GUEST_ORIGIN: &str = "http://guest.invalid";
+
+fn preview_location(token: &str, requested: &str, location: &str) -> Option<String> {
+    if location.chars().any(char::is_control) {
         return None;
     }
-    match location.strip_prefix('/') {
-        Some(path) => Some(format!("/v1/preview/{token}/{path}")),
-        None => Some(location.to_string()),
+    let base = url::Url::parse(&format!("{GUEST_ORIGIN}{requested}")).ok()?;
+    let resolved = base.join(location).ok()?;
+    if resolved.scheme() != "http"
+        || resolved.host_str() != Some("guest.invalid")
+        || resolved.port().is_some()
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+    {
+        return None;
     }
+    let mut target = format!(
+        "/v1/preview/{token}/{}",
+        resolved.path().trim_start_matches('/')
+    );
+    if let Some(query) = resolved.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    if let Some(fragment) = resolved.fragment() {
+        target.push('#');
+        target.push_str(fragment);
+    }
+    Some(target)
 }
 const BROWSER_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
@@ -684,7 +705,7 @@ async fn preview(
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim().to_ascii_lowercase();
             if name == "location" && allowed.contains(&"location") {
-                if let Some(target) = preview_location(token, value.trim()) {
+                if let Some(target) = preview_location(token, &target, value.trim()) {
                     builder = builder.header(name, target);
                 }
             } else if allowed.contains(&name.as_str()) {
@@ -730,13 +751,24 @@ mod tests {
     #[test]
     fn preview_redirects_stay_inside_their_preview() {
         use super::preview_location;
+        let at = |location: &str| preview_location("tok", "/app/page?x=1", location);
         assert_eq!(
-            preview_location("tok", "/login?next=1").as_deref(),
+            at("/login?next=1").as_deref(),
             Some("/v1/preview/tok/login?next=1")
         );
-        assert_eq!(preview_location("tok", "step2").as_deref(), Some("step2"));
-        assert_eq!(preview_location("tok", "https://evil.example/"), None);
-        assert_eq!(preview_location("tok", "//evil.example/"), None);
-        assert_eq!(preview_location("tok", "/\\evil.example"), None);
+        assert_eq!(at("step2").as_deref(), Some("/v1/preview/tok/app/step2"));
+        assert_eq!(at("../up#top").as_deref(), Some("/v1/preview/tok/up#top"));
+        for hostile in [
+            "https://evil.example/",
+            "//evil.example/",
+            "/\\evil.example",
+            "/\t/evil.example",
+            "javascript:alert(1)",
+            "http://guest.invalid:81/",
+            "http://user@guest.invalid/",
+            "data:text/html,hi",
+        ] {
+            assert_eq!(at(hostile), None, "{hostile}");
+        }
     }
 }
