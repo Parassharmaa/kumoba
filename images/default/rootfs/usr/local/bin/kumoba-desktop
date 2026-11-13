@@ -156,6 +156,18 @@ def keysym(key):
     return key
 
 
+def accessibility_with_retry(args, attempts=5):
+    for attempt in range(attempts):
+        result = subprocess.run([sys.executable, __file__, "a11y-once", *args], capture_output=True, text=True)
+        if result.returncode == 0:
+            sys.stdout.write(result.stdout)
+            return
+        if attempt + 1 < attempts:
+            time.sleep(1 + attempt)
+    sys.stderr.write(result.stderr)
+    raise SystemExit(result.returncode or 1)
+
+
 def accessibility(max_depth, output=None):
     os.environ.update(env())
     import pyatspi
@@ -243,10 +255,10 @@ def main():
         xdotool("key", "--", "+".join([keysym(modifier) for modifier in modifiers] + [keysym(key)]))
     elif command == "hotkey":
         xdotool("key", "--", "+".join(keysym(part) for part in args[0].split("+")))
-    elif command == "a11y":
-        accessibility(int(args[0]))
-    elif command == "a11y-file":
-        accessibility(int(args[0]), args[1])
+    elif command == "a11y-once":
+        accessibility(int(args[0]), args[1] if len(args) > 1 else None)
+    elif command in ("a11y", "a11y-file"):
+        accessibility_with_retry(args)
     else:
         raise SystemExit(f"unknown command {command}")
 
