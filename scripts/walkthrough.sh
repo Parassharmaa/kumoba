@@ -17,7 +17,7 @@ cleanup() {
 }
 trap cleanup EXIT
 step() { printf '\n== %s\n' "$*"; }
-run() { printf '$ %s\n' "$*"; "$@"; }
+run() { printf '$ %s\n' "$*" >&2; "$@"; }
 expect() { if [[ "$2" != *"$3"* ]]; then printf 'FAIL %s: expected to contain [%s], got [%s]\n' "$1" "$3" "$2" >&2; exit 1; fi; printf 'ok   %s\n' "$1"; }
 
 step "1. Install"
