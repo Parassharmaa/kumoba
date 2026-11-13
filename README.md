@@ -180,7 +180,7 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 }
 ```
 
-`await using` deletes the sandbox when the scope ends. Errors are `KumobaError` with `status` and `code`.
+`await using` deletes the sandbox when the scope ends (TypeScript 5.2+, or Node 24+ for plain JavaScript; otherwise call `sandbox.delete()` in a `finally`). Errors are `KumobaError` with `status` and `code`.
 
 ## Rust
 
