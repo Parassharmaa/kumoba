@@ -3,7 +3,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/host-env.sh
 rustup target add "$guest_target"
-cargo build --release --locked -p kumoba --bin kumoba-worker
 cargo build --release --locked -p kumobad
 RUSTFLAGS='-C linker=rust-lld' cargo build --release --locked -p kumoba-guest --target "$guest_target"
 stage_worker

@@ -3,14 +3,19 @@ name = "kumobad"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "HTTP daemon and per-VM worker serving kumoba microVM sandboxes"
+readme = "README.md"
 
 [[bin]]
 name = "kumobad"
 path = "src/main.rs"
 
 [dependencies]
-kumoba = { path = "../kumoba" }
+kumoba = { version = "0.1.0", path = "../kumoba" }
 kumoba-protocol.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 serde.workspace = true
@@ -22,6 +27,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+libloading.workspace = true
 subtle = "2"
 hmac = "0.12"
 sha2.workspace = true

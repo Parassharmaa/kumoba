@@ -3,7 +3,12 @@ name = "kumoba-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Host-guest wire protocol shared by kumoba, kumoba-worker and kumoba-guest"
+readme = "README.md"
 
 [dependencies]
 tokio.workspace = true

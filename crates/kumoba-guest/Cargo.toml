@@ -3,7 +3,12 @@ name = "kumoba-guest"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "PID 1 agent that runs inside kumoba microVMs and serves commands, files and the desktop over vsock"
+readme = "README.md"
 
 [dependencies]
 tokio.workspace = true
