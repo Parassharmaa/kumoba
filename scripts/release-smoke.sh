@@ -27,10 +27,14 @@ KUMOBA_HOME="$home" node --input-type=module -e '
   import { Kumoba } from "./dist/index.js";
   const kumoba = new Kumoba();
   for (const image of ["default", "test"]) {
-    await using sandbox = await kumoba.create({ image, user: "kumoba" });
-    const result = await sandbox.run(image === "default" ? "python3 --version && node --version" : "uname -m");
-    if (!result.ok) throw new Error(`${image}: ${result.stderr}`);
-    console.log(`ok   ${image}: ${result.stdout.trim().replaceAll("\n", ", ")}`);
+    const sandbox = await kumoba.create({ image, user: "kumoba" });
+    try {
+      const result = await sandbox.run(image === "default" ? "python3 --version && node --version" : "uname -m");
+      if (!result.ok) throw new Error(`${image}: ${result.stderr}`);
+      console.log(`ok   ${image}: ${result.stdout.trim().replaceAll("\n", ", ")}`);
+    } finally {
+      await sandbox.delete();
+    }
   }
 '
 echo RELEASE_SMOKE_PASS
