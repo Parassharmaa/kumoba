@@ -4,6 +4,15 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- `kumoba shell <id>`: an interactive terminal inside a sandbox, with arrow keys, tab completion, Ctrl-C, full-screen programs and window resizing. Both the native and the npm CLI support it, and it exits with the shell's status. Piped input works too.
+- `POST /v1/sandboxes/{id}/shell`: the HTTP route behind it, an upgrade to a small framed protocol documented in the HTTP API reference.
+
+### Changed
+
+- The guest agent reports whether it supports shells. Images from earlier releases keep working for everything else and answer a shell request with a clear error.
+
 ## [0.2.2] - 2026-11-13
 
 ### Changed

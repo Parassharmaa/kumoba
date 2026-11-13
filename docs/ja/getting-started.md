@@ -67,6 +67,7 @@ kumoba start "$id" -q
 kumoba exec "$id" -- pip install requests
 echo 'print("hi")' | kumoba write-file "$id" --path /workspace/hi.py
 kumoba exec "$id" --cwd /workspace -- python3 hi.py
+kumoba shell "$id"                           # サンドボックス内のターミナル。exitで終了します
 ```
 
 ## 4. デスクトップをブラウザで開く

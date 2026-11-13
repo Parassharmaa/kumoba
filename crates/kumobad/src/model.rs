@@ -219,6 +219,37 @@ pub struct PreviewRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShellRequest {
+    #[serde(default)]
+    #[schemars(description = "Program and arguments; empty starts the user's login shell")]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Working directory inside the guest (default /workspace)")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Extra environment variables")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    #[schemars(description = "Guest user to log in as")]
+    pub user: Option<String>,
+    #[serde(default = "default_rows")]
+    #[schemars(description = "Terminal height in rows; the CLI fills it in")]
+    pub rows: u16,
+    #[serde(default = "default_cols")]
+    #[schemars(description = "Terminal width in columns; the CLI fills it in")]
+    pub cols: u16,
+}
+
+fn default_rows() -> u16 {
+    24
+}
+
+fn default_cols() -> u16 {
+    80
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopRequest {
     #[serde(default = "default_link_ttl")]
     #[schemars(description = "Seconds the live view link stays valid, up to 3600")]

@@ -2,6 +2,10 @@
 mod args;
 #[path = "kumoba/client.rs"]
 mod client;
+#[path = "kumoba/session.rs"]
+mod session;
+#[path = "../terminal.rs"]
+mod terminal;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use client::{Connection, Failure};
@@ -284,6 +288,7 @@ fn print_command(spec: &Value) {
         }
     }
     let output = match spec["output"].as_str() {
+        Some("terminal") => "an interactive terminal; it exits with the shell's status",
         Some("events") => "the command's stdout and stderr, and its exit status",
         Some("bytes") => "the raw bytes, on stdout or into -o FILE",
         _ => "JSON",
@@ -364,6 +369,15 @@ async fn invoke(connection: &Connection, spec: &Value, tokens: &[String]) -> Res
         )),
         _ => None,
     };
+    if spec["output"] == "terminal" {
+        let mut body = body;
+        if let Some((rows, cols)) = session::window_size() {
+            body.entry("rows").or_insert(Value::from(rows));
+            body.entry("cols").or_insert(Value::from(cols));
+        }
+        let payload = serde_json::to_vec(&body).expect("json body");
+        return session::run(connection, &path, payload).await;
+    }
     let method = spec["method"].as_str().unwrap_or("GET");
     let response = connection.send(method, &path, payload).await?;
     match spec["output"].as_str() {

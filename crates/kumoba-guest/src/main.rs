@@ -8,6 +8,8 @@ mod execute;
 mod files;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod shell;
 #[cfg(any(target_os = "linux", test))]
 mod shutdown;
 

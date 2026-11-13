@@ -136,7 +136,7 @@ pub async fn handle(
     Ok(route(request, service).await.unwrap_or_else(error_response))
 }
 
-async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<Response<Body>> {
+async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResult<Response<Body>> {
     let Some(resolved) = crate::catalog::resolve(request.method(), request.uri().path()) else {
         return Err(ApiError::Status(404, "route not found".into()));
     };
@@ -268,6 +268,22 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
             let body: RunRequest = read_json(request.into_body()).await?;
             run(service, body).await
         }
+        Operation::Shell => {
+            let upgrading = request
+                .headers()
+                .get(hyper::header::UPGRADE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.eq_ignore_ascii_case(crate::terminal::PROTOCOL));
+            if !upgrading {
+                return Err(ApiError::Status(
+                    426,
+                    "shell is interactive: use the kumoba CLI 0.3 or later, or upgrade the connection to kumoba-shell.v1".into(),
+                ));
+            }
+            let upgrade = hyper::upgrade::on(&mut request);
+            let body: crate::model::ShellRequest = read_json(request.into_body()).await?;
+            shell(service, id, body, upgrade).await
+        }
         Operation::ReadFile => {
             let params = query(&request);
             let user = optional_param(&params, "user");
@@ -292,6 +308,110 @@ async fn route(request: Request<Incoming>, service: Arc<Service>) -> ApiResult<R
 }
 
 const PATH_LOOKUP: &str = "/usr/bin/env";
+
+async fn shell(
+    service: Arc<Service>,
+    id: String,
+    body: crate::model::ShellRequest,
+    upgrade: hyper::upgrade::OnUpgrade,
+) -> ApiResult<Response<Body>> {
+    let login = body.argv.is_empty();
+    let (program, args) = match body.argv.split_first() {
+        None => ("/bin/sh".to_string(), Vec::new()),
+        Some((program, args)) if program.starts_with('/') => (program.clone(), args.to_vec()),
+        Some(_) => (PATH_LOOKUP.to_string(), body.argv.clone()),
+    };
+    let mut command = Command::new(program)
+        .args(args)
+        .timeout(Duration::from_secs(3600));
+    for (name, value) in body.env {
+        command = command.env(name, value);
+    }
+    if let Some(cwd) = body.cwd {
+        command = command.cwd(kumoba::GuestPath::new(cwd)?);
+    }
+    if let Some(user) = body.user {
+        command = command.user(user);
+    }
+    let entry = service.entry(&id).await?;
+    if !service.supports_shell(&entry).await {
+        return Err(ApiError::Status(
+            422,
+            "this sandbox's image has no shell support; boot it from an image of kumoba 0.3 or later"
+                .into(),
+        ));
+    }
+    let (entry, agent, command) = service.running_agent(&id, Some(command)).await?;
+    let (mut sender, mut receiver) = agent
+        .shell(
+            command.expect("prepared command"),
+            body.rows,
+            body.cols,
+            login,
+        )
+        .await?;
+    tokio::spawn(async move {
+        let _operation = entry.begin();
+        let Ok(upgraded) = upgrade.await else {
+            return;
+        };
+        let (mut client_reader, mut client_writer) =
+            tokio::io::split(hyper_util::rt::TokioIo::new(upgraded));
+        let from_client = async {
+            while let Ok(Some(frame)) = crate::terminal::read_frame(&mut client_reader).await {
+                let input = match frame {
+                    crate::terminal::Frame::Data(data) => {
+                        kumoba::ShellInput::Data(STANDARD.encode(data))
+                    }
+                    crate::terminal::Frame::Resize { rows, cols } => {
+                        kumoba::ShellInput::Resize { rows, cols }
+                    }
+                    crate::terminal::Frame::Eof => kumoba::ShellInput::Eof,
+                    crate::terminal::Frame::Exit(_) => break,
+                };
+                if sender.send(&input).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let to_client = async {
+            loop {
+                let frame = match receiver.next().await {
+                    Ok(Some(kumoba::ShellOutput::Data(data))) => match STANDARD.decode(data) {
+                        Ok(bytes) => crate::terminal::Frame::Data(bytes),
+                        Err(_) => break,
+                    },
+                    Ok(Some(kumoba::ShellOutput::Exit { code, signal })) => {
+                        let status = code.or(signal.map(|signal| 128 + signal)).unwrap_or(1);
+                        let _ = crate::terminal::write_frame(
+                            &mut client_writer,
+                            &crate::terminal::Frame::Exit(status),
+                        )
+                        .await;
+                        break;
+                    }
+                    Ok(None) | Err(_) => break,
+                };
+                if crate::terminal::write_frame(&mut client_writer, &frame)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            () = from_client => {}
+            () = to_client => {}
+        }
+    });
+    Response::builder()
+        .status(101)
+        .header(hyper::header::CONNECTION, "upgrade")
+        .header(hyper::header::UPGRADE, crate::terminal::PROTOCOL)
+        .body(Full::new(Bytes::new()).boxed())
+        .map_err(|error| ApiError::Status(500, error.to_string()))
+}
 const DESKTOP_HELPER: &str = "/usr/local/bin/kumoba-desktop";
 const DESKTOP_VNC_PORT: u16 = 6080;
 

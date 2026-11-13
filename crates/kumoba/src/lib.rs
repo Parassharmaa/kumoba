@@ -1,5 +1,6 @@
 mod agent;
-pub use agent::Agent;
+pub use agent::{Agent, ShellReceiver, ShellSender};
+pub use kumoba_protocol::{ShellInput, ShellOutput};
 mod config;
 mod mounts;
 pub use kumoba_protocol::HostMount;

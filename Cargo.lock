@@ -584,6 +584,7 @@ dependencies = [
  "hyper-util",
  "kumoba",
  "kumoba-protocol",
+ "libc",
  "libloading",
  "schemars",
  "serde",

@@ -51,6 +51,7 @@ struct Running {
     tainted: bool,
     desktop_available: bool,
     desktop_startup_timeout: bool,
+    shell_available: bool,
     desktop: Option<crate::DesktopInfo>,
 }
 impl Running {
@@ -275,6 +276,7 @@ impl Sandbox {
             tainted: false,
             desktop_available: false,
             desktop_startup_timeout: false,
+            shell_available: false,
             desktop: None,
         }));
         let Phase::Running(vm) = &mut self.phase else {
@@ -299,6 +301,7 @@ impl Sandbox {
                         version,
                         desktop,
                         desktop_startup_timeout,
+                        shell,
                         ..
                     })) =
                         tokio::time::timeout(Duration::from_millis(300), receive(&mut socket)).await
@@ -310,6 +313,7 @@ impl Sandbox {
                     guard.vm.agent = Some(socket);
                     guard.vm.desktop_available = desktop;
                     guard.vm.desktop_startup_timeout = desktop_startup_timeout;
+                    guard.vm.shell_available = shell;
                     return Ok(());
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -479,6 +483,10 @@ impl Sandbox {
             _ => Err(Error::NotRunning),
         }
     }
+    pub fn supports_shell(&self) -> bool {
+        matches!(&self.phase, Phase::Running(vm) if vm.shell_available)
+    }
+
     pub(crate) fn supports_desktop_startup_timeout(&self) -> bool {
         matches!(&self.phase, Phase::Running(vm) if vm.desktop_startup_timeout)
     }

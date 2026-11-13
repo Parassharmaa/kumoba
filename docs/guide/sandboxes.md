@@ -28,6 +28,8 @@ Before you begin, [install kumoba and start `kumobad`](/getting-started).
 
 ## Run commands
 
+For an interactive terminal, use [`kumoba shell`](/guide/shell). For single commands:
+
 ```sh
 kumoba exec "$id" -- pip install requests
 kumoba exec "$id" --cwd /workspace --env DEBUG=1 -- python3 app.py

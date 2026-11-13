@@ -73,6 +73,7 @@ export default defineConfig({
             items: [
               { text: "Run code once", link: "/guide/run-code" },
               { text: "Work in a sandbox", link: "/guide/sandboxes" },
+              { text: "Open a shell", link: "/guide/shell" },
               { text: "Open the desktop live view", link: "/guide/desktop" },
               { text: "Open a web app", link: "/guide/expose" },
               { text: "Control network access", link: "/guide/network" },
@@ -145,6 +146,7 @@ export default defineConfig({
             text: "ハウツー",
             items: [
               { text: "コードを1回だけ実行する", link: "/ja/guide/run-code" },
+              { text: "シェルを開く", link: "/ja/guide/shell" },
               { text: "デスクトップのライブビューを開く", link: "/ja/guide/desktop" },
               { text: "トラブルシューティング", link: "/ja/troubleshooting" },
             ],

@@ -96,6 +96,25 @@ A bare `argv[0]` such as `python3` is looked up on the guest's `PATH` through `/
 
 `POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects. The stream starts with `{"type":"sandbox","id":"..."}`.
 
+## Shell
+
+`POST /v1/sandboxes/{id}/shell` opens an interactive terminal. Send it with `connection: upgrade` and `upgrade: kumoba-shell.v1`, and a JSON body:
+
+```json
+{"argv": [], "cwd": "/workspace", "env": {}, "user": "kumoba", "rows": 40, "cols": 120}
+```
+
+An empty `argv` starts the user's login shell. kumobad answers `101 Switching Protocols`; from then on both sides exchange frames of one type byte, a 4-byte big-endian length and a payload:
+
+| Type | Direction | Payload |
+| --- | --- | --- |
+| 1 data | both | Terminal bytes |
+| 2 resize | client to kumobad | Rows and columns, 2 bytes each, big-endian |
+| 3 eof | client to kumobad | None; ends input as Ctrl-D does |
+| 4 exit | kumobad to client | The shell's exit status, 4-byte signed big-endian; 128 + the signal for a signal |
+
+Closing the connection ends the shell. A request without the upgrade gets `426 upgrade_required`, and a sandbox whose image predates kumoba 0.3 gets `422`.
+
 ## Files
 
 - `PUT /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` with the raw bytes as the body → `{"written": <bytes>}`. Parent directories must exist. The file is created `0644` as `user`.

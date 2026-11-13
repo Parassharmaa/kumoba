@@ -46,6 +46,7 @@ impl ApiError {
             404 => "not_found",
             409 => "conflict",
             422 => "guest_error",
+            426 => "upgrade_required",
             429 => "capacity",
             _ => "internal",
         }
@@ -616,6 +617,10 @@ impl Service {
             log("secrets_deleted", &id, None);
         }
         Ok(deleted.into_iter().collect())
+    }
+
+    pub async fn supports_shell(&self, entry: &Entry) -> bool {
+        entry.sandbox.lock().await.supports_shell()
     }
 
     pub async fn running_agent(

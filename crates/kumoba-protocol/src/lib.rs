@@ -74,6 +74,31 @@ pub enum Request {
         #[serde(default)]
         user: Option<String>,
     },
+    Shell(ShellRequest),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShellRequest {
+    pub exec: ExecRequest,
+    pub rows: u16,
+    pub cols: u16,
+    pub login: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShellInput {
+    Data(String),
+    Resize { rows: u16, cols: u16 },
+    Eof,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShellOutput {
+    Data(String),
+    Exit {
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +138,8 @@ pub enum Response {
         desktop: bool,
         #[serde(default)]
         desktop_startup_timeout: bool,
+        #[serde(default)]
+        shell: bool,
     },
     Desktop {
         width: u16,

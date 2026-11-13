@@ -1,6 +1,8 @@
 use crate::{Command, Error, ExecSummary, Result, Termination};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use kumoba_protocol::{Entry, MAX_DATA, Request, Response, receive, send};
+use kumoba_protocol::{
+    Entry, MAX_DATA, Request, Response, ShellInput, ShellOutput, ShellRequest, receive, send,
+};
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -18,6 +20,26 @@ type Exit = watch::Receiver<Option<std::result::Result<ExitStatus, String>>>;
 pub struct Agent {
     socket: PathBuf,
     exit: Exit,
+}
+
+pub struct ShellSender(tokio::net::unix::OwnedWriteHalf);
+
+pub struct ShellReceiver(tokio::net::unix::OwnedReadHalf);
+
+impl ShellSender {
+    pub async fn send(&mut self, input: &ShellInput) -> Result<()> {
+        send(&mut self.0, input).await.map_err(Error::Io)
+    }
+}
+
+impl ShellReceiver {
+    pub async fn next(&mut self) -> Result<Option<ShellOutput>> {
+        match receive::<_, ShellOutput>(&mut self.0).await {
+            Ok(output) => Ok(Some(output)),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(error) => Err(Error::Io(error)),
+        }
+    }
 }
 
 pub struct ReadChunk {
@@ -110,6 +132,39 @@ impl Agent {
             stderr_bytes: progress.stderr,
             truncated,
         })
+    }
+
+    pub async fn shell(
+        &self,
+        command: Command,
+        rows: u16,
+        cols: u16,
+        login: bool,
+    ) -> Result<(ShellSender, ShellReceiver)> {
+        let request = Request::Shell(ShellRequest {
+            exec: command.into_request(),
+            rows,
+            cols,
+            login,
+        });
+        let mut stream = self.open().await?;
+        let reply = tokio::time::timeout(REPLY_TIMEOUT, async {
+            send(&mut stream, &request).await?;
+            receive::<_, Response>(&mut stream).await
+        })
+        .await
+        .map_err(|_| Error::OutcomeUnknown("guest shell reply deadline exceeded".into()))?;
+        match reply {
+            Ok(Response::Ok) => {
+                let (reader, writer) = stream.into_split();
+                Ok((ShellSender(writer), ShellReceiver(reader)))
+            }
+            Ok(Response::Error(message)) => Err(Error::Guest(message)),
+            Ok(_) => Err(Error::Protocol("unexpected shell response".into())),
+            Err(error) => Err(Error::Guest(format!(
+                "the guest agent closed the shell: {error}"
+            ))),
+        }
     }
 
     pub async fn read_at(

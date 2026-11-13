@@ -18,6 +18,7 @@ import {
 import { KumobaError } from "./errors.js";
 import { Http, readBody } from "./http.js";
 import { resolveOptions } from "./kumoba.js";
+import { encodeFrame, FrameParser, SHELL_PROTOCOL } from "./terminal.js";
 
 const VERSION: string = (
   JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -52,6 +53,16 @@ export type Io = {
   stdinIsTty: boolean;
   stdoutIsTty: boolean;
   open: (url: string) => void;
+  terminal: TerminalIo;
+};
+
+export type TerminalIo = {
+  input: NodeJS.ReadableStream;
+  isTty: boolean;
+  setRaw: (on: boolean) => void;
+  size: () => { rows: number; cols: number } | undefined;
+  onResize: (listener: () => void) => () => void;
+  release: () => void;
 };
 
 const CUT_OFF = 141;
@@ -177,11 +188,13 @@ function commandHelp(io: Io, spec: CommandSpec): void {
     }
   }
   const output =
-    spec.output === "events"
-      ? "the command's stdout and stderr, and its exit status"
-      : spec.output === "bytes"
-        ? "the raw bytes, on stdout or into -o FILE"
-        : "JSON";
+    spec.output === "terminal"
+      ? "an interactive terminal; it exits with the shell's status"
+      : spec.output === "events"
+        ? "the command's stdout and stderr, and its exit status"
+        : spec.output === "bytes"
+          ? "the raw bytes, on stdout or into -o FILE"
+          : "JSON";
   lines.push("", `Prints ${output}. ${spec.method} ${spec.path}`);
   io.stdout(`${lines.join("\n")}\n`);
 }
@@ -227,6 +240,64 @@ async function streamEvents(io: Io, response: IncomingMessage): Promise<number> 
   throw new Exit(1, "output stream ended before the command exited");
 }
 
+async function runTerminal(
+  io: Io,
+  http: Http,
+  path: string,
+  body: Record<string, unknown>
+): Promise<number> {
+  const size = io.terminal.size();
+  if (size) {
+    body.rows ??= size.rows;
+    body.cols ??= size.cols;
+  }
+  const { socket, head } = await http.upgrade(path, body, SHELL_PROTOCOL);
+  closedPipeStatus = CUT_OFF;
+  const terminal = io.terminal;
+  const parser = new FrameParser();
+  return new Promise<number>((resolve) => {
+    let done = false;
+    const onInput = (chunk: Buffer | string) => {
+      socket.write(encodeFrame({ type: "data", data: Buffer.from(chunk) }));
+    };
+    const onEnd = () => {
+      socket.write(encodeFrame({ type: "eof" }));
+    };
+    const stopResize = terminal.onResize(() => {
+      const next = terminal.size();
+      if (next) socket.write(encodeFrame({ type: "resize", rows: next.rows, cols: next.cols }));
+    });
+    const finish = (code: number) => {
+      if (done) return;
+      done = true;
+      terminal.input.off("data", onInput);
+      terminal.input.off("end", onEnd);
+      stopResize();
+      if (terminal.isTty) terminal.setRaw(false);
+      terminal.release();
+      socket.destroy();
+      resolve(code);
+    };
+    const handle = (chunk: Buffer) => {
+      try {
+        for (const frame of parser.push(chunk)) {
+          if (frame.type === "data") io.stdout(frame.data);
+          else if (frame.type === "exit") finish(frame.code);
+        }
+      } catch {
+        finish(1);
+      }
+    };
+    socket.on("data", handle);
+    socket.on("close", () => finish(1));
+    socket.on("error", () => finish(1));
+    if (head.length > 0) handle(head);
+    if (terminal.isTty) terminal.setRaw(true);
+    terminal.input.on("data", onInput);
+    terminal.input.on("end", onEnd);
+  });
+}
+
 async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): Promise<number> {
   const parsed: Parsed = parseArgs(spec, tokens, io.stdin);
   if (parsed.help) {
@@ -255,6 +326,7 @@ async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): 
   }
   const search = query.toString();
   if (search) path = `${path}?${search}`;
+  if (spec.output === "terminal") return runTerminal(io, http, path, body);
   const response = await http.open({
     method: spec.method,
     path,
@@ -374,10 +446,30 @@ if (isEntryPoint()) {
       const opener = process.platform === "darwin" ? "open" : "xdg-open";
       spawnSync(opener, [url], { stdio: "ignore" });
     },
+    terminal: {
+      input: process.stdin,
+      isTty: Boolean(process.stdin.isTTY),
+      setRaw: (on) => {
+        if (process.stdin.isTTY) process.stdin.setRawMode(on);
+      },
+      size: () =>
+        process.stdout.isTTY
+          ? { rows: process.stdout.rows, cols: process.stdout.columns }
+          : undefined,
+      onResize: (listener) => {
+        process.stdout.on("resize", listener);
+        return () => process.stdout.off("resize", listener);
+      },
+      release: () => {
+        process.stdin.pause();
+        process.stdin.unref();
+      },
+    },
   };
   main(process.argv.slice(2), io).then(
     (code) => {
       process.exitCode = code;
+      process.stdout.write("", () => process.exit(code));
     },
     (error: unknown) => {
       process.stderr.write(`kumoba: ${String(error)}\n`);

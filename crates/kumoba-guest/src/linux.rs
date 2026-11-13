@@ -155,6 +155,7 @@ async fn serve(
                         arch: std::env::consts::ARCH.into(),
                         desktop: crate::desktop::available(),
                         desktop_startup_timeout: true,
+                        shell: true,
                     },
                 )
                 .await?;
@@ -162,6 +163,14 @@ async fn serve(
             Request::Exec(mut request) => {
                 desktop.lock().await.inherit_environment(&mut request.env);
                 crate::execute::exec(stream, request).await?;
+            }
+            Request::Shell(mut request) => {
+                desktop
+                    .lock()
+                    .await
+                    .inherit_environment(&mut request.exec.env);
+                crate::shell::run(stream, request).await?;
+                return Ok(false);
             }
             Request::Read { path, max_bytes } => {
                 let response = match read_file(&path, max_bytes).await {

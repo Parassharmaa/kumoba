@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { encodeFrame, FrameParser } from "../src/terminal.js";
 
 const catalogFixture = JSON.parse(
   readFileSync(new URL("./fixtures/commands.json", import.meta.url), "utf8")
@@ -305,6 +306,35 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         send(response, 404, { error: "not_found", message: "route not found" });
       }
     })();
+  });
+  server.on("upgrade", (request, socket, head) => {
+    if (
+      request.headers.authorization !== `Bearer ${fake.token}` ||
+      !/^\/v1\/sandboxes\/[^/]+\/shell$/.test(request.url ?? "")
+    ) {
+      socket.end("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n");
+      return;
+    }
+    let skip = Number(request.headers["content-length"] ?? 0);
+    const parser = new FrameParser();
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: kumoba-shell.v1\r\n\r\n"
+    );
+    const handle = (chunk: Buffer) => {
+      const rest = chunk.subarray(Math.min(skip, chunk.length));
+      skip -= chunk.length - rest.length;
+      for (const frame of parser.push(rest)) {
+        if (frame.type === "data") {
+          socket.write(
+            encodeFrame({ type: "data", data: Buffer.from(frame.data.toString().toUpperCase()) })
+          );
+        } else if (frame.type === "eof") {
+          socket.end(encodeFrame({ type: "exit", code: 3 }));
+        }
+      }
+    };
+    if (head.length > 0) handle(head);
+    socket.on("data", handle);
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   return fake;

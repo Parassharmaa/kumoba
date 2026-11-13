@@ -19,7 +19,7 @@ export type CommandSpec = {
   positional: string[];
   rest: string | null;
   input: "none" | "json" | "bytes";
-  output: "json" | "events" | "bytes";
+  output: "json" | "events" | "bytes" | "terminal";
   in: Record<string, "path" | "query" | "body" | "bytes">;
   inputSchema: JsonSchema;
 };

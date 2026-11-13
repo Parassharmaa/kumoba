@@ -50,6 +50,7 @@ kumoba start "$id" -q
 kumoba exec "$id" -- pip install requests
 echo 'print("hi")' | kumoba write-file "$id" --path /workspace/hi.py
 kumoba exec "$id" --cwd /workspace -- python3 hi.py
+kumoba shell "$id"                           # a terminal inside the sandbox; exit to leave
 kumoba desktop "$id" --user kumoba --open    # the desktop, live in your browser
 kumoba delete "$id"
 ```

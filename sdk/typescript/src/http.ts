@@ -1,5 +1,5 @@
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
-import { Readable } from "node:stream";
+import { type Duplex, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
@@ -108,13 +108,35 @@ export class Http {
     });
     const status = response.statusCode ?? 500;
     if (status < 400) return response;
-    const text = (await readBody(response)).toString("utf8");
-    const parsed = errorSchema.safeParse(safeJson(text));
-    const message = parsed.success
-      ? (parsed.data.message ?? parsed.data.error ?? text)
-      : text || `kumobad responded ${String(status)}`;
-    const code = parsed.success ? (parsed.data.error ?? "daemon_error") : "daemon_error";
-    throw new KumobaError(message, { status, code, retryable: status === 429 || status >= 500 });
+    throw await responseError(response);
+  }
+
+  async upgrade(
+    path: string,
+    json: unknown,
+    protocol: string
+  ): Promise<{ socket: Duplex; head: Buffer }> {
+    const payload = Buffer.from(JSON.stringify(json));
+    return new Promise((resolve, reject) => {
+      const outgoing = httpRequest({
+        ...this.endpoint,
+        method: "POST",
+        path,
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          "content-type": "application/json",
+          "content-length": String(payload.length),
+          connection: "Upgrade",
+          upgrade: protocol,
+        },
+      });
+      outgoing.on("upgrade", (_response, socket, head) => resolve({ socket, head }));
+      outgoing.on("response", (response) => {
+        responseError(response).then(reject, reject);
+      });
+      outgoing.on("error", (cause) => reject(wrapTransportError(cause, this.endpoint)));
+      outgoing.end(payload);
+    });
   }
 
   async json<T>(schema: z.ZodType<T>, init: HttpInit): Promise<T> {
@@ -130,6 +152,17 @@ export class Http {
     }
     return result.data;
   }
+}
+
+async function responseError(response: IncomingMessage): Promise<KumobaError> {
+  const status = response.statusCode ?? 500;
+  const text = (await readBody(response)).toString("utf8");
+  const parsed = errorSchema.safeParse(safeJson(text));
+  const message = parsed.success
+    ? (parsed.data.message ?? parsed.data.error ?? text)
+    : text || `kumobad responded ${String(status)}`;
+  const code = parsed.success ? (parsed.data.error ?? "daemon_error") : "daemon_error";
+  return new KumobaError(message, { status, code, retryable: status === 429 || status >= 500 });
 }
 
 function wrapTransportError(cause: unknown, endpoint: Endpoint): KumobaError {

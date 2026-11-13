@@ -492,6 +492,77 @@
     },
     {
       "in": {
+        "argv": "body",
+        "cols": "body",
+        "cwd": "body",
+        "env": "body",
+        "id": "path",
+        "rows": "body",
+        "user": "body"
+      },
+      "input": "json",
+      "inputSchema": {
+        "properties": {
+          "argv": {
+            "default": [],
+            "description": "Program and arguments; empty starts the user's login shell",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cols": {
+            "default": 80,
+            "description": "Terminal width in columns; the CLI fills it in",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cwd": {
+            "default": null,
+            "description": "Working directory inside the guest (default /workspace)",
+            "type": ["string", "null"]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Extra environment variables",
+            "type": "object"
+          },
+          "id": {
+            "description": "Sandbox id",
+            "type": "string"
+          },
+          "rows": {
+            "default": 24,
+            "description": "Terminal height in rows; the CLI fills it in",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "default": null,
+            "description": "Guest user to log in as",
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id"],
+        "type": "object"
+      },
+      "method": "POST",
+      "name": "shell",
+      "output": "terminal",
+      "path": "/v1/sandboxes/{id}/shell",
+      "positional": ["id"],
+      "rest": "argv",
+      "summary": "Open an interactive shell in a started sandbox"
+    },
+    {
+      "in": {
         "id": "path",
         "path": "query",
         "user": "query"

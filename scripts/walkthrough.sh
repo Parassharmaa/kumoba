@@ -47,6 +47,7 @@ expect "pip install" "$(run kumoba exec "$id" -- pip install requests 2>&1)" "re
 echo 'import requests; print("requests", requests.__version__)' | run kumoba write-file "$id" --path /workspace/hi.py
 expect "exec script" "$(run kumoba exec "$id" --cwd /workspace -- python3 hi.py)" "requests "
 expect "exit status" "$(set +e; kumoba exec "$id" -- sh -c 'exit 7'; echo "status=$?")" "status=7"
+expect "shell" "$(printf 'echo shell-ok\nexit\n' | run kumoba shell "$id" 2>&1)" "shell-ok"
 view=$(run kumoba desktop "$id" --user kumoba --json)
 url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
 expect "desktop link" "$url" "/vnc.html?autoconnect=1"

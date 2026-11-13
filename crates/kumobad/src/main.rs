@@ -4,6 +4,7 @@ mod http;
 mod model;
 mod preview;
 mod service;
+mod terminal;
 
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;

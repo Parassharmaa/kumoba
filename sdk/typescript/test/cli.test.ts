@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Io, main } from "../src/cli.js";
 import { type CommandSpec, parseArgs } from "../src/cli-args.js";
 import { Kumoba } from "../src/index.js";
+import { encodeFrame, FrameParser } from "../src/terminal.js";
 import { type FakeKumobad, startFakeKumobad } from "./fake-kumobad.js";
 
 const catalog = JSON.parse(
@@ -25,6 +27,14 @@ const io = (env: NodeJS.ProcessEnv = { KUMOBA_URL: fake.url, KUMOBA_TOKEN: fake.
   stdinIsTty: stdin === undefined,
   stdoutIsTty: false,
   open: (url) => opened.push(url),
+  terminal: {
+    input: Readable.from(stdin === undefined ? [] : [stdin]),
+    isTty: false,
+    setRaw: () => {},
+    size: () => undefined,
+    onResize: () => () => {},
+    release: () => {},
+  },
 });
 const text = () => Buffer.concat(out).toString("utf8");
 
@@ -38,6 +48,25 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fake.close();
+});
+
+describe("terminal frames", () => {
+  it("round-trip in any chunking", () => {
+    const frames = [
+      { type: "data", data: Buffer.from("ls -la\r") },
+      { type: "resize", rows: 40, cols: 120 },
+      { type: "eof" },
+      { type: "exit", code: -1 },
+    ] as const;
+    const wire = Buffer.concat(frames.map((frame) => encodeFrame(frame)));
+    const parser = new FrameParser();
+    const seen = [...wire].flatMap((byte) => parser.push(Buffer.from([byte])));
+    expect(seen).toEqual(frames);
+  });
+
+  it("rejects unknown frames", () => {
+    expect(() => new FrameParser().push(Buffer.from([9, 0, 0, 0, 0]))).toThrow(/invalid/);
+  });
 });
 
 describe("argument parsing", () => {
@@ -141,6 +170,15 @@ describe("kumoba CLI", () => {
     expect(exit).toBe(1);
     expect(err.join("")).toContain("no browser URL");
     expect(opened).toEqual([]);
+  });
+
+  it("relays a shell through the upgraded connection and returns its exit status", async () => {
+    const sandbox = await new Kumoba({ url: fake.url, token: fake.token }).create({
+      image: "test",
+    });
+    stdin = Buffer.from("echo hi\n");
+    expect(await main(["shell", sandbox.id], io())).toBe(3);
+    expect(text()).toBe("ECHO HI\n");
   });
 
   it("separates usage errors, daemon errors and an unreachable daemon", async () => {

@@ -29,6 +29,9 @@ check run-cleans-up "$("${cli[@]}" list --label "smoke:$marker" -q | wc -l | tr 
 check usage-error "$(status "${cli[@]}" exec)" 2
 check daemon-error "$(status "${cli[@]}" get no-such-sandbox)" 1
 check unreachable "$(KUMOBA_URL=unix:///nonexistent/kumobad.sock status "${cli[@]}" images)" 3
+check shell-pipe "$(printf 'echo shell-ok\nexit 3\n' | "${cli[@]}" shell "$id" 2>&1 | grep -c '^shell-ok')" 1
+check shell-status "$(set +e; printf 'exit 3\n' | "${cli[@]}" shell "$id" > /dev/null 2>&1; echo $?)" 3
+python3 "$(dirname "$0")/shell-pty-test.py" "$id" "${cli[@]}"
 piped=0
 for _ in $(seq 20); do
   (set -o pipefail; "${cli[@]}" | head -1 > /dev/null) || piped=$((piped + 1))

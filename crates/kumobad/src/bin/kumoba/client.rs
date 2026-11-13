@@ -158,8 +158,68 @@ where
     let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|error| Failure::Unreachable(format!("kumobad handshake failed: {error}")))?;
-    tokio::spawn(connection);
+    tokio::spawn(connection.with_upgrades());
     Ok(sender)
+}
+
+impl Connection {
+    pub async fn upgrade(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        protocol: &str,
+    ) -> Result<hyper::upgrade::Upgraded, Failure> {
+        let unreachable = |error: std::io::Error| {
+            Failure::Unreachable(format!(
+                "Cannot reach kumobad at {}: {error}. Start it with `kumobad`, or point KUMOBA_URL at a running daemon",
+                self.display
+            ))
+        };
+        let (host, mut sender) = match &self.endpoint {
+            Endpoint::Unix(socket) => {
+                let stream = tokio::net::UnixStream::connect(socket)
+                    .await
+                    .map_err(unreachable)?;
+                ("kumobad".to_string(), handshake(stream).await?)
+            }
+            Endpoint::Tcp(address) => {
+                let stream = tokio::net::TcpStream::connect(address)
+                    .await
+                    .map_err(unreachable)?;
+                (address.clone(), handshake(stream).await?)
+            }
+        };
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("host", host)
+            .header("authorization", format!("Bearer {}", self.token))
+            .header("content-type", "application/json")
+            .header("connection", "upgrade")
+            .header("upgrade", protocol)
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|error| Failure::Usage(error.to_string()))?;
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|error| Failure::Api(format!("kumobad closed the connection: {error}")))?;
+        if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+            return hyper::upgrade::on(response)
+                .await
+                .map_err(|error| Failure::Api(format!("the shell connection failed: {error}")));
+        }
+        let status = response.status().as_u16();
+        let bytes = read_all(response).await.unwrap_or_default();
+        let message = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("message")
+                    .and_then(|m| m.as_str().map(str::to_string))
+            })
+            .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+        Err(Failure::Api(format!("{message} (HTTP {status})")))
+    }
 }
 
 pub async fn read_all(response: Response<Incoming>) -> Result<Bytes, Failure> {

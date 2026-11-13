@@ -1,6 +1,6 @@
 # CLI
 
-`kumoba` runs sandboxes from your shell, for people and for agents. It builds its commands from the daemon it talks to (`GET /v1/commands`), so its help always matches that daemon, and new daemon commands work without a CLI upgrade.
+`kumoba` runs sandboxes from your shell, for people and for agents. It builds its commands from the daemon it talks to (`GET /v1/commands`), so its help always matches that daemon, and most new daemon commands work without a CLI upgrade. Interactive commands such as `shell` need a CLI that knows the `terminal` output kind, from 0.3 on.
 
 Two builds behave the same:
 

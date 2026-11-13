@@ -38,6 +38,14 @@ Another program uses port 7789, so kumobad couldn't serve browser links. Free th
 
 Network changes apply at boot. Run `kumoba stop <id>`, then `kumoba update`, then `kumoba start <id>`.
 
+## `this sandbox's image has no shell support`
+
+The sandbox was created from an image older than kumoba 0.3. [Upgrade](/guide/upgrade), then create a new sandbox from the new image.
+
+## `shell is interactive: use the kumoba CLI 0.3 or later`
+
+Your CLI predates `kumoba shell`. Install the current version with the installer or `npm install -g kumoba@latest`.
+
 ## `pip install` fails with `externally-managed-environment`
 
 Your image predates kumoba 0.2.2. Upgrade (see [Upgrade or uninstall](/guide/upgrade)) to get an image where `pip install` works directly.

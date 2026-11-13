@@ -38,6 +38,10 @@ kumobadは初回の起動時に`~/.kumoba/token`を作ります。一度起動�
 
 ネットワークの設定は起動時に適用されます。`kumoba stop <id>`、`kumoba update`、`kumoba start <id>`の順に実行してください。
 
+## `this sandbox's image has no shell support`と表示される
+
+kumoba 0.3より前のイメージから作られたサンドボックスです。アップグレードしてから、新しいイメージでサンドボックスを作り直してください。
+
 ## `pip install`が`externally-managed-environment`で失敗する
 
 kumoba 0.2.2より前のイメージです。アップグレードすると、`pip install`をそのまま使えるイメージになります。

@@ -1,6 +1,6 @@
 use crate::model::{
     CreateRequest, DeleteSecretsRequest, DesktopRequest, ExecRequest, PreviewRequest, RunRequest,
-    SecretsRequest, UpdateRequest,
+    SecretsRequest, ShellRequest, UpdateRequest,
 };
 use hyper::Method;
 use schemars::{JsonSchema, generate::SchemaSettings};
@@ -23,6 +23,7 @@ pub enum Operation {
     Expose,
     Desktop,
     Exec,
+    Shell,
     Run,
     ReadFile,
     WriteFile,
@@ -55,6 +56,7 @@ pub enum Output {
     Json,
     Events,
     Bytes,
+    Terminal,
 }
 
 pub struct Spec {
@@ -228,6 +230,17 @@ pub static SPECS: &[Spec] = &[
         query: &[],
         input: Input::Json(body::<ExecRequest>),
         output: Output::Events,
+        rest: Some("argv"),
+    },
+    Spec {
+        operation: Operation::Shell,
+        name: "shell",
+        summary: "Open an interactive shell in a started sandbox",
+        method: Method::POST,
+        path: "/v1/sandboxes/{id}/shell",
+        query: &[],
+        input: Input::Json(body::<ShellRequest>),
+        output: Output::Terminal,
         rest: Some("argv"),
     },
     Spec {
@@ -432,6 +445,7 @@ fn describe(spec: &Spec) -> Value {
         Output::Json => "json",
         Output::Events => "events",
         Output::Bytes => "bytes",
+        Output::Terminal => "terminal",
     };
     json!({
         "name": spec.name,
