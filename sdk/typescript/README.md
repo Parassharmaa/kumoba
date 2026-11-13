@@ -55,6 +55,6 @@ const link = await sandbox.expose(8080);
 - `desktop.start / screenshot / click / type / hotkey / liveView` on images with the desktop installed.
 - `start / stop / delete / update({ network })`, plus `kumoba.list`, `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
 
-`await using` deletes the sandbox when the scope ends. Errors are `KumobaError` with `status` and `code`.
+`await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `status` and `code`.
 
 The SDK version matches the `kumobad` release it was tested against; see the [changelog](https://github.com/Parassharmaa/kumoba/blob/main/CHANGELOG.md).
