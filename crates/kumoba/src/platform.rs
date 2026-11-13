@@ -75,10 +75,33 @@ fn find_library(variable: &str, candidates: Vec<PathBuf>) -> Result<PathBuf> {
     }
     candidates.into_iter().find(|p|p.is_file()).ok_or_else(||Error::InvalidInput(format!("required host library not found; install libkrun 1.19.6/libkrunfw 5.6.2 or set {variable}")))
 }
+fn beside_executable(mut candidates: Vec<PathBuf>, names: &[&str]) -> Vec<PathBuf> {
+    let bundled = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .and_then(Path::parent)
+            .map(|dir| dir.join("lib"))
+    });
+    if let Some(dir) = bundled {
+        let mut first: Vec<PathBuf> = names.iter().map(|name| dir.join(name)).collect();
+        first.append(&mut candidates);
+        candidates = first;
+    }
+    candidates
+}
 impl RuntimeConfig {
     pub fn for_host(worker: impl Into<PathBuf>, state_dir: impl Into<PathBuf>) -> Result<Self> {
         let platform = HostPlatform::current()?;
         let (libraries, firmware) = platform.libraries();
+        let (libraries, firmware) = match platform {
+            HostPlatform::MacOsArm64 => (
+                beside_executable(libraries, &["libkrun.1.dylib"]),
+                beside_executable(firmware, &["libkrunfw.5.dylib"]),
+            ),
+            HostPlatform::LinuxArm64 | HostPlatform::LinuxX86_64 => (
+                beside_executable(libraries, &["libkrun.so.1"]),
+                beside_executable(firmware, &["libkrunfw.so.5"]),
+            ),
+        };
         Ok(Self::new(
             worker,
             find_library("KUMOBAD_LIBKRUN", libraries)?,

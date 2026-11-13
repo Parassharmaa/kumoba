@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Kumoba, KumobaError } from "../src/index.js";
 import { toArgv } from "../src/shell.js";
@@ -56,7 +59,21 @@ describe("Kumoba", () => {
   it("reads configuration from the environment", () => {
     const client = Kumoba.fromEnv({ KUMOBA_URL: fake.url, KUMOBA_TOKEN: fake.token });
     expect(client).toBeInstanceOf(Kumoba);
-    expect(() => Kumoba.fromEnv({})).toThrow(/KUMOBA_URL/);
+    expect(() => Kumoba.fromEnv({ KUMOBA_HOME: "/nonexistent-kumoba-home" })).toThrow(
+      /No kumobad token/
+    );
+  });
+
+  it("finds a zero-config kumobad through its home directory", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kumoba-home-"));
+    try {
+      writeFileSync(join(home, "token"), `${fake.token}\n`);
+      const client = new Kumoba({ url: fake.url, env: { KUMOBA_HOME: home } });
+      expect(await client.images()).toEqual(await kumoba.images());
+      expect(() => new Kumoba({ env: { KUMOBA_HOME: home } })).not.toThrow();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("deletes the sandbox when `await using` goes out of scope", async () => {
@@ -230,7 +247,10 @@ describe("Sandbox.update", () => {
   it("changes the network policy of a stopped sandbox", async () => {
     const sandbox = await kumoba.create({ start: false });
     await sandbox.update({ network: { allow: ["pypi.org", "*.github.com"] }, autoStopMinutes: 3 });
-    expect(sandbox.info.network).toEqual({ mode: "allowlist", hosts: ["pypi.org", "*.github.com"] });
+    expect(sandbox.info.network).toEqual({
+      mode: "allowlist",
+      hosts: ["pypi.org", "*.github.com"],
+    });
     expect(sandbox.info.autoStopMinutes).toBe(3);
     await sandbox.start();
     await expect(sandbox.update({ network: "blocked" })).rejects.toMatchObject({ status: 409 });
@@ -251,11 +271,19 @@ describe("Kumoba.accessLog", () => {
     fake.accessEntries = [
       { ...base, host: "a.example", startedAtMs: 1, completedAtMs: 10 },
       { ...base, host: "b.example", startedAtMs: 2, completedAtMs: 20 },
-      { ...base, host: "169.254.169.254", port: 80, decision: "denied", startedAtMs: 3, completedAtMs: 30 },
+      {
+        ...base,
+        host: "169.254.169.254",
+        port: 80,
+        decision: "denied",
+        startedAtMs: 3,
+        completedAtMs: 30,
+      },
       { ...base, host: "late.example", startedAtMs: 4, completedAtMs: 40 },
     ];
     const seen = [];
-    for await (const entry of kumoba.accessLog({ since: new Date(5), until: new Date(40) })) seen.push(entry);
+    for await (const entry of kumoba.accessLog({ since: new Date(5), until: new Date(40) }))
+      seen.push(entry);
     expect(seen.map((entry) => [entry.host, entry.decision])).toEqual([
       ["a.example", "allowed"],
       ["b.example", "allowed"],
