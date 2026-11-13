@@ -44,7 +44,9 @@ id=$(KUMOBA_HOME="$home" "$cli" create --image default -q)
 KUMOBA_HOME="$home" "$cli" start "$id" -q > /dev/null
 view=$(KUMOBA_HOME="$home" "$cli" desktop "$id" --user kumoba --json)
 url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
-curl -fsS "$url" | grep -qi novnc || { echo "FAIL desktop live view: $view" >&2; exit 1; }
+page=$(curl -fsS -D - "$url")
+grep -qi '^content-type: text/html' <<<"$page" || { echo "FAIL desktop live view is not a page: $view" >&2; exit 1; }
+grep -qi novnc <<<"$page" || { echo "FAIL desktop live view is not noVNC: $view" >&2; exit 1; }
 echo "ok   desktop live view"
 KUMOBA_HOME="$home" "$cli" delete "$id" -q > /dev/null
 echo RELEASE_SMOKE_PASS
