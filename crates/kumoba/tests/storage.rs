@@ -110,3 +110,52 @@ async fn old_protocol_disks_are_rejected_explicitly() -> Result<(), Box<dyn std:
     assert!(path.parent().unwrap().join("root.raw").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn macos_images_are_cloned_with_their_machine_shape() -> Result<(), Box<dyn std::error::Error>>
+{
+    let state = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    let image = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    std::fs::write(image.path().join("root.raw"), b"macOS disk")?;
+    std::fs::write(image.path().join("aux.img"), b"auxiliary storage")?;
+    std::fs::write(image.path().join("password"), b"guest password")?;
+    std::fs::write(
+        image.path().join("machine.json"),
+        br#"{"hardware_model":"aA==","machine_identifier":"aQ==","cpus":4,"memory_mib":4096}"#,
+    )?;
+    let runtime = Runtime::open(config(state.path())).await?;
+    let mut sandbox = runtime.create(SandboxConfig::new(image.path())).await?;
+    assert_eq!(sandbox.config().vcpus, 4);
+    assert_eq!(sandbox.config().memory_mib, 4096);
+    let directory = state
+        .path()
+        .join("sandboxes")
+        .join(sandbox.id().to_string());
+    for (name, contents) in [
+        ("root.raw", &b"macOS disk"[..]),
+        ("aux.img", b"auxiliary storage"),
+    ] {
+        assert_eq!(std::fs::read(directory.join(name))?, contents);
+    }
+    assert!(!directory.join("password").exists());
+    assert!(matches!(
+        sandbox.snapshot().await,
+        Err(Error::InvalidInput(message)) if message.contains("macOS")
+    ));
+    let share = tempfile::tempdir()?;
+    assert!(matches!(
+        sandbox.set_mounts(vec![kumoba::HostMount {
+            source: share.path().to_path_buf(),
+            target: "/workspace/share".into(),
+            read_only: true,
+        }]),
+        Err(Error::InvalidInput(message)) if message.contains("macOS")
+    ));
+    sandbox.delete().await?;
+    assert_eq!(std::fs::read(image.path().join("root.raw"))?, b"macOS disk");
+    Ok(())
+}

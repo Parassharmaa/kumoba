@@ -26,6 +26,11 @@ use tokio::{
     sync::{oneshot, watch},
 };
 
+const MACOS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+const MACOS_STOP_TIMEOUT: Duration = Duration::from_secs(90);
+const VM_LIMIT_EXIT: i32 = 75;
+const CLOCK_LEAD: Duration = Duration::from_millis(120);
+
 pub type Tunnel = UnixStream;
 
 pub struct Sandbox {
@@ -52,6 +57,7 @@ struct Running {
     desktop_available: bool,
     desktop_startup_timeout: bool,
     shell_available: bool,
+    os: String,
     desktop: Option<crate::DesktopInfo>,
 }
 impl Running {
@@ -151,12 +157,34 @@ impl Sandbox {
             }
             self.force_stop().await?;
         }
+        let machine = crate::runtime::is_machine(&self.directory).then(|| self.directory.clone());
+        if machine.is_some() && !self.manifest.config.mounts.is_empty() {
+            return Err(Error::InvalidInput(
+                "host mounts are not supported in macOS sandboxes yet".into(),
+            ));
+        }
         let permit = self
             .inner
             .capacity
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Capacity)?;
+        let machine_permit = match machine {
+            Some(_) => Some(
+                self.inner
+                    .macos_capacity
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| Error::Capacity)?,
+            ),
+            None => None,
+        };
+        let machine_vm = machine.is_some();
+        let boot_timeout = if machine_vm {
+            self.inner.config.boot_timeout.max(MACOS_BOOT_TIMEOUT)
+        } else {
+            self.inner.config.boot_timeout
+        };
         let socket_dir = tempfile::Builder::new()
             .prefix("ks-")
             .permissions(std::fs::Permissions::from_mode(0o700))
@@ -202,6 +230,7 @@ impl Sandbox {
             memory_mib: self.manifest.config.memory_mib,
             lock_fd: self.lock.as_raw_fd(),
             mounts: self.manifest.config.mounts.clone(),
+            machine,
         };
         self.manifest.clean = false;
         save_manifest(&self.directory, &self.manifest)?;
@@ -263,6 +292,7 @@ impl Sandbox {
                 let _ = broker.shutdown().await;
             }
             drop(permit);
+            drop(machine_permit);
             drop(socket_dir);
             let _ = exit_tx.send(Some(status.map_err(|e| e.to_string())));
             drop(inner);
@@ -277,6 +307,7 @@ impl Sandbox {
             desktop_available: false,
             desktop_startup_timeout: false,
             shell_available: false,
+            os: "linux".into(),
             desktop: None,
         }));
         let Phase::Running(vm) = &mut self.phase else {
@@ -287,9 +318,14 @@ impl Sandbox {
         encoded.push(b'\n');
         guard.vm.owner.as_mut().unwrap().write_all(&encoded).await?;
         guard.vm.owner.as_mut().unwrap().flush().await?;
-        let ready = tokio::time::timeout(self.inner.config.boot_timeout, async {
+        let ready = tokio::time::timeout(boot_timeout, async {
             loop {
                 if let Some(status) = guard.vm.exit.borrow().as_ref() {
+                    if machine_vm
+                        && matches!(status, Ok(status) if status.code() == Some(VM_LIMIT_EXIT))
+                    {
+                        return Err(Error::Capacity);
+                    }
                     return Err(Error::Boot(format!(
                         "worker exited {status:?}; inspect {}",
                         self.directory.join("worker.log").display()
@@ -302,6 +338,7 @@ impl Sandbox {
                         desktop,
                         desktop_startup_timeout,
                         shell,
+                        os,
                         ..
                     })) =
                         tokio::time::timeout(Duration::from_millis(300), receive(&mut socket)).await
@@ -314,6 +351,7 @@ impl Sandbox {
                     guard.vm.desktop_available = desktop;
                     guard.vm.desktop_startup_timeout = desktop_startup_timeout;
                     guard.vm.shell_available = shell;
+                    guard.vm.os = os;
                     return Ok(());
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -324,6 +362,12 @@ impl Sandbox {
         ready?;
         guard.armed = false;
         drop(guard);
+        if self.is_macos()
+            && let Err(error) = self.set_guest_clock().await
+        {
+            self.force_stop().await?;
+            return Err(error);
+        }
         if let Err(error) = self.mount_host_directories().await {
             self.force_stop().await?;
             return Err(error);
@@ -344,6 +388,11 @@ impl Sandbox {
         self.available()?;
         if self.state()? != State::Stopped {
             return Err(Error::Busy);
+        }
+        if !mounts.is_empty() && crate::runtime::is_machine(&self.directory) {
+            return Err(Error::InvalidInput(
+                "host mounts are not supported in macOS sandboxes yet".into(),
+            ));
         }
         let mut next = self.manifest.config.clone();
         next.mounts = mounts;
@@ -404,10 +453,44 @@ impl Sandbox {
         Ok(())
     }
 
+    fn is_macos(&self) -> bool {
+        matches!(&self.phase, Phase::Running(vm) if vm.os == "macos")
+    }
+
+    async fn set_guest_clock(&mut self) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| Error::Boot(e.to_string()))?;
+        let target = (now + CLOCK_LEAD * 2).as_secs() + 1;
+        if let Some(wait) = Duration::from_secs(target).checked_sub(now + CLOCK_LEAD) {
+            tokio::time::sleep(wait).await;
+        }
+        let set = self
+            .exec(Command::new("/bin/sh").args([
+                "-c",
+                &format!(
+                    "/bin/date -u \"$(/bin/date -u -j -f %s {target} +%m%d%H%M%Y.%S)\" >/dev/null"
+                ),
+            ]))
+            .await?;
+        if !set.success() {
+            return Err(Error::Boot(format!(
+                "could not set the guest clock: {}",
+                String::from_utf8_lossy(&set.stderr)
+            )));
+        }
+        Ok(())
+    }
+
     async fn install_trust(&mut self, certificate: &str) -> Result<()> {
+        let system_bundle = if self.is_macos() {
+            "/etc/ssl/cert.pem"
+        } else {
+            "/etc/ssl/certs/ca-certificates.crt"
+        };
         let mut bundle = self
             .read_file(
-                &GuestPath::new("/etc/ssl/certs/ca-certificates.crt")?,
+                &GuestPath::new(system_bundle)?,
                 kumoba_protocol::MAX_DATA / 2,
             )
             .await?;
@@ -704,7 +787,11 @@ impl Sandbox {
         if self.state()? == State::Stopped {
             return Ok(StopOutcome::AlreadyStopped);
         }
-        let grace = self.inner.config.stop_timeout;
+        let grace = if crate::runtime::is_machine(&self.directory) {
+            self.inner.config.stop_timeout.max(MACOS_STOP_TIMEOUT)
+        } else {
+            self.inner.config.stop_timeout
+        };
         let acknowledged = matches!(self.rpc(Request::Shutdown, grace).await, Ok(Response::Ok));
         let Phase::Running(vm) = &mut self.phase else {
             return Ok(StopOutcome::AlreadyStopped);
@@ -738,6 +825,11 @@ impl Sandbox {
     }
     pub async fn snapshot(&mut self) -> Result<Snapshot> {
         self.available()?;
+        if crate::runtime::is_machine(&self.directory) {
+            return Err(Error::InvalidInput(
+                "snapshots of macOS sandboxes are not supported yet".into(),
+            ));
+        }
         if self.state()? != State::Stopped || !self.manifest.clean {
             return Err(Error::NotClean);
         }

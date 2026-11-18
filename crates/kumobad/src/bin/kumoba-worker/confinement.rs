@@ -95,6 +95,7 @@ mod tests {
                 target: "/workspace/repo".into(),
                 read_only,
             }],
+            machine: None,
         }
     }
     #[test]

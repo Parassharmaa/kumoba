@@ -1,10 +1,14 @@
-use std::{
-    io,
-    os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
-    time::Duration,
-};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::{io, time::Duration};
 use tokio::net::{TcpListener, UnixStream};
 
+#[cfg(target_os = "macos")]
+async fn connect() -> io::Result<UnixStream> {
+    crate::macos::connect_host(kumoba_protocol::EGRESS_PORT).await
+}
+
+#[cfg(target_os = "linux")]
 async fn connect() -> io::Result<UnixStream> {
     let fd = unsafe {
         libc::socket(
@@ -18,7 +22,7 @@ async fn connect() -> io::Result<UnixStream> {
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let address =
-        crate::linux::VsockAddress::new(libc::VMADDR_CID_HOST, kumoba_protocol::EGRESS_PORT);
+        crate::agent::VsockAddress::new(libc::VMADDR_CID_HOST, kumoba_protocol::EGRESS_PORT);
     let result = unsafe { libc::connect(fd.as_raw_fd(), address.as_ptr(), address.size()) };
     if result < 0 {
         let error = io::Error::last_os_error();

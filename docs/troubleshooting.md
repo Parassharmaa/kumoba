@@ -58,6 +58,14 @@ Your image predates kumoba 0.2.2. Upgrade (see [Upgrade or uninstall](/guide/upg
 
 The reader of `kumoba exec` or `kumoba run` output closed early, as in `kumoba exec <id> -- cat big.log | head`. That's the normal status for a closed pipe.
 
+## `running sandbox capacity exhausted` when starting a macOS sandbox
+
+Apple allows two macOS VMs running on a Mac at once, counting VMs from other apps such as UTM or Tart. Stop a macOS sandbox, or quit the other app's VM, and start again. See [Run macOS in a sandbox](/guide/macos#limits).
+
+## `kumobad macos-image` stops part way
+
+Run it again. It remembers the finished stages in `~/.kumoba/images/macos/build.json` and resumes, and an interrupted download continues where it stopped. `guest provisioning needs macOS 27 or later on the host` means the Mac itself must be updated first.
+
 ## Still stuck
 
 Open an [issue](https://github.com/Parassharmaa/kumoba/issues) with the kumobad log, the output of `kumoba version`, and your OS and CPU. Report security problems privately as described in [Security](/security).

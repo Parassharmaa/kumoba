@@ -47,6 +47,13 @@ tokio-util = "0.7"
 url = "2"
 schemars.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-virtualization = { version = "0.3.2", features = ["block2", "dispatch2"] }
+block2 = "0.6"
+dispatch2 = "0.3"
+
 [dev-dependencies]
 tempfile.workspace = true
 

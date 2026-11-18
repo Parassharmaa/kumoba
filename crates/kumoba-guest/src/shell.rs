@@ -25,17 +25,21 @@ pub(crate) async fn run(stream: &mut UnixStream, request: ShellRequest) -> io::R
 }
 
 fn login_shell(user: Option<&crate::files::User>) -> String {
-    let name = user.map_or("root", |user| user.name.as_str());
-    std::fs::read_to_string("/etc/passwd")
-        .ok()
-        .and_then(|passwd| {
-            passwd.lines().find_map(|line| {
-                let fields: Vec<&str> = line.split(':').collect();
-                (fields.len() >= 7 && fields[0] == name).then(|| fields[6].to_string())
-            })
-        })
-        .filter(|shell| shell.starts_with('/') && std::path::Path::new(shell).is_file())
-        .unwrap_or_else(|| "/bin/sh".to_string())
+    let shell = match user {
+        Some(user) => user.shell.clone(),
+        None => crate::files::resolve_user("root")
+            .map(|root| root.shell)
+            .unwrap_or_default(),
+    };
+    usable_shell(shell)
+}
+
+fn usable_shell(shell: String) -> String {
+    if shell.starts_with('/') && std::path::Path::new(&shell).is_file() {
+        shell
+    } else {
+        "/bin/sh".into()
+    }
 }
 
 fn window(rows: u16, cols: u16) -> libc::winsize {
@@ -59,15 +63,15 @@ fn start(request: ShellRequest) -> io::Result<(AsyncFd<OwnedFd>, Child)> {
     } else {
         (exec.program, exec.args)
     };
-    let size = window(request.rows, request.cols);
+    let mut size = window(request.rows, request.cols);
     let (mut master, mut slave) = (-1, -1);
     if unsafe {
         libc::openpty(
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &raw const size,
+            std::ptr::null_mut(),
+            &raw mut size,
         )
     } != 0
     {
@@ -113,7 +117,7 @@ fn start(request: ShellRequest) -> io::Result<(AsyncFd<OwnedFd>, Child)> {
                 return Err(io::Error::last_os_error());
             }
             if let Some((name, account)) = &account
-                && (libc::initgroups(name.as_ptr(), account.gid as _) != 0
+                && (libc::initgroups(name.as_ptr(), crate::agent::initgroups_gid(account.gid)) != 0
                     || libc::setgid(account.gid) != 0
                     || libc::setuid(account.uid) != 0)
             {
@@ -170,7 +174,7 @@ async fn relay(
     master: AsyncFd<OwnedFd>,
     mut child: Child,
 ) -> io::Result<()> {
-    let group = crate::linux::pid_of(&child)?;
+    let group = crate::agent::pid_of(&child)?;
     let (mut reader, mut writer) = stream.split();
     let master = &master;
     let input = async move {
@@ -224,4 +228,17 @@ async fn relay(
     let (input, output) = tokio::join!(input, output);
     unsafe { libc::kill(-group, libc::SIGHUP) };
     output.and(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usable_shell;
+
+    #[test]
+    fn falls_back_to_sh_when_the_login_shell_is_missing() {
+        assert_eq!(usable_shell("/bin/sh".into()), "/bin/sh");
+        assert_eq!(usable_shell("/nonexistent/bash".into()), "/bin/sh");
+        assert_eq!(usable_shell("bash".into()), "/bin/sh");
+        assert_eq!(usable_shell(String::new()), "/bin/sh");
+    }
 }
