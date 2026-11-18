@@ -596,7 +596,7 @@ fn parse_headers(bytes: &[u8]) -> io::Result<EgressEndpoint> {
         ));
     }
     let endpoint = authority(request.next().unwrap_or(""))?;
-    if request.next() != Some("HTTP/1.1") || request.next().is_some() {
+    if !matches!(request.next(), Some("HTTP/1.1" | "HTTP/1.0")) || request.next().is_some() {
         return Err(invalid("invalid CONNECT request line"));
     }
     let mut host_seen = false;
@@ -1346,14 +1346,21 @@ mod tests {
 
     #[test]
     fn connect_parser_rejects_ambiguous_and_body_requests() {
-        assert_eq!(
-            parse_headers(b"CONNECT Example.org:443 HTTP/1.1\r\nHost: example.org:443\r\n\r\n")
-                .unwrap(),
-            EgressEndpoint::new("example.org", 443).unwrap()
-        );
+        for request in [
+            "CONNECT Example.org:443 HTTP/1.1\r\nHost: example.org:443\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.0\r\n\r\n",
+            "CONNECT example.org:443 HTTP/1.0\r\nHost: example.org:443\r\n\r\n",
+        ] {
+            assert_eq!(
+                parse_headers(request.as_bytes()).unwrap(),
+                EgressEndpoint::new("example.org", 443).unwrap(),
+                "{request}"
+            );
+        }
         for request in [
             "GET https://example.org HTTP/1.1\r\n\r\n",
-            "CONNECT example.org:443 HTTP/1.0\r\n\r\n",
+            "CONNECT example.org:443 HTTP/2.0\r\n\r\n",
+            "CONNECT example.org:443\r\n\r\n",
             "CONNECT example.org:443 HTTP/1.1\r\nHost: other.org:443\r\n\r\n",
             "CONNECT example.org:443 HTTP/1.1\r\nHost: example.org:443\r\nHost: example.org:443\r\n\r\n",
             "CONNECT example.org:443 HTTP/1.1\r\nContent-Length: 0\r\n\r\n",

@@ -14,6 +14,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - The worker needs the `com.apple.security.virtualization` entitlement as well as `com.apple.security.hypervisor` on macOS. Release builds are signed with both; re-sign a `cargo install`ed worker as the install guide shows.
 - The guest agent reports its operating system, and a sandbox's recorded CPU and memory are the ones it actually runs with.
 
+### Fixed
+
+- The egress proxy accepts `CONNECT ... HTTP/1.0`, which Python's `http.client` sends before Python 3.12. `pip install` with such a Python, including the one Apple's Command Line Tools ship, failed with `400 Bad Request` and the access log showed the allowed host as denied.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added
