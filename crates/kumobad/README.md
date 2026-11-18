@@ -23,6 +23,6 @@ kumobad --help
 kumoba run -- echo hello        # once kumobad is running
 ```
 
-With no configuration `kumobad` uses `~/.kumoba`: it boots every `images/<name>.raw`, creates a token and listens on `kumobad.sock`. Hosts need libkrun and libkrunfw, from Homebrew `slp/krun` on Apple silicon or `scripts/prepare-linux-host.sh` on Linux with `/dev/kvm`. On macOS a `cargo install`ed `kumoba-worker` must also be signed with the `com.apple.security.hypervisor` entitlement; the [install section](https://github.com/Parassharmaa/kumoba#install) has the commands.
+With no configuration `kumobad` uses `~/.kumoba`: it boots every `images/<name>.raw`, creates a token and listens on `kumobad.sock`. Hosts need libkrun and libkrunfw, from Homebrew `slp/krun` on Apple silicon or `scripts/prepare-linux-host.sh` on Linux with `/dev/kvm`. On macOS a `cargo install`ed `kumoba-worker` must also be signed with the `com.apple.security.hypervisor` and `com.apple.security.virtualization` entitlements; the [install guide](https://parassharmaa.github.io/kumoba/install) has the commands. On a Mac, `kumobad macos-image` builds a macOS image so sandboxes can run macOS too.
 
 Clients: the [`kumoba` npm package](https://www.npmjs.com/package/kumoba), or any HTTP client following [docs/http-api.md](https://github.com/Parassharmaa/kumoba/blob/main/docs/http-api.md).

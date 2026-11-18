@@ -12,11 +12,12 @@ pub(crate) struct Account {
     pub gid: u32,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct User {
     pub account: Account,
     pub home: String,
     pub name: String,
+    pub shell: String,
 }
 
 pub(crate) fn path_valid(path: &str) -> bool {
@@ -45,11 +46,55 @@ pub(crate) fn resolve_user(name: &str) -> io::Result<User> {
                     },
                     home: fields[5].to_string(),
                     name: name.to_string(),
+                    shell: fields[6].to_string(),
                 })
             })?
         })
         .ok_or_else(|| invalid("unknown guest user"))
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) fn resolve_user(name: &str) -> io::Result<User> {
+    use std::ffi::{CStr, CString};
+    let wanted = CString::new(name).map_err(|_| invalid("unknown guest user"))?;
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let mut found = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwnam_r(
+            wanted.as_ptr(),
+            &raw mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &raw mut found,
+        )
+    };
+    if status != 0 || found.is_null() {
+        return Err(invalid("unknown guest user"));
+    }
+    let text = |value: *mut libc::c_char| {
+        unsafe { CStr::from_ptr(value) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    Ok(User {
+        account: Account {
+            uid: entry.pw_uid,
+            gid: entry.pw_gid,
+        },
+        home: text(entry.pw_dir),
+        name: name.to_string(),
+        shell: text(entry.pw_shell),
+    })
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn pthread_setugid_np(uid: libc::uid_t, gid: libc::gid_t) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+const KAUTH_ID_NONE: u32 = u32::MAX - 100;
 
 fn as_account<T>(
     owner: Option<Account>,
@@ -63,9 +108,17 @@ fn as_account<T>(
         libc::setfsgid(owner.gid);
         libc::setfsuid(owner.uid);
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    if unsafe { pthread_setugid_np(owner.uid, owner.gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = owner;
     let result = operation();
+    #[cfg(target_os = "macos")]
+    unsafe {
+        pthread_setugid_np(KAUTH_ID_NONE, KAUTH_ID_NONE);
+    }
     #[cfg(target_os = "linux")]
     unsafe {
         libc::setfsuid(0);

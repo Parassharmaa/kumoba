@@ -18,6 +18,7 @@
 - **Built for agents.** A CLI and SDKs where every command has a JSON Schema and returns the guest's exit code.
 - **Safe by default.** Egress allowlists, secrets that never enter the VM, a log of every connection.
 - **Live desktop.** Watch and drive a full desktop from your browser.
+- **macOS too.** On an Apple silicon Mac, sandboxes can run macOS as well as Linux.
 - **Runs anywhere.** Your laptop, your servers, your cloud. Apache-2.0.
 
 ## Getting started
@@ -84,7 +85,7 @@ await sandbox.delete();
 
 | | |
 | --- | --- |
-| Guides | [Run code once](https://parassharmaa.github.io/kumoba/guide/run-code) · [Work in a sandbox](https://parassharmaa.github.io/kumoba/guide/sandboxes) · [Live desktop](https://parassharmaa.github.io/kumoba/guide/desktop) · [Network access](https://parassharmaa.github.io/kumoba/guide/network) · [Secrets](https://parassharmaa.github.io/kumoba/guide/secrets) |
+| Guides | [Run code once](https://parassharmaa.github.io/kumoba/guide/run-code) · [Work in a sandbox](https://parassharmaa.github.io/kumoba/guide/sandboxes) · [Live desktop](https://parassharmaa.github.io/kumoba/guide/desktop) · [macOS sandboxes](https://parassharmaa.github.io/kumoba/guide/macos) · [Network access](https://parassharmaa.github.io/kumoba/guide/network) · [Secrets](https://parassharmaa.github.io/kumoba/guide/secrets) |
 | Reference | [CLI](https://parassharmaa.github.io/kumoba/cli) · [TypeScript SDK](https://parassharmaa.github.io/kumoba/typescript) · [Rust](https://parassharmaa.github.io/kumoba/rust) · [HTTP API](https://parassharmaa.github.io/kumoba/http-api) · [Configuration](https://parassharmaa.github.io/kumoba/configuration) |
 | Operate | [Install options](https://parassharmaa.github.io/kumoba/install) · [Run as a service](https://parassharmaa.github.io/kumoba/service) · [Security](https://parassharmaa.github.io/kumoba/security) · [Troubleshooting](https://parassharmaa.github.io/kumoba/troubleshooting) |
 | Contribute | [Contributing](CONTRIBUTING.md) · [How it works](https://parassharmaa.github.io/kumoba/architecture) · [Releasing](docs/releasing.md) |

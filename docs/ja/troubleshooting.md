@@ -50,6 +50,15 @@ kumoba 0.2.2より前のイメージです。アップグレードすると、`p
 
 `exec`は、コマンドが終わるとそのコマンドが起動したプロセスも止めます。動かし続けるプロセスは`setsid`で起動してください。
 
+
+## macOS サンドボックスの起動で `running sandbox capacity exhausted` になる
+
+Apple の制限により、1 台の Mac で同時に動かせる macOS の VM は 2 台までです。UTM や Tart など他のアプリの VM も数に入ります。macOS サンドボックスを 1 つ止めるか、他のアプリの VM を終了してから、もう一度起動してください。詳しくは[サンドボックスで macOS を動かす](/ja/guide/macos#制限)を参照してください。
+
+## `kumobad macos-image` が途中で止まる
+
+もう一度実行してください。終わった段階は `~/.kumoba/images/macos/build.json` に記録されているので続きから再開し、中断したダウンロードも途中から再開します。`guest provisioning needs macOS 27 or later on the host` と表示された場合は、先に Mac 本体を macOS 27 以降に更新する必要があります。
+
 ## それでも解決しない場合
 
 kumobadのログ、`kumoba version`の出力、OSとCPUを添えて[Issue](https://github.com/Parassharmaa/kumoba/issues)を作成してください。セキュリティの問題は公開せずに報告してください。

@@ -1,5 +1,11 @@
 #[path = "kumoba-worker/confinement.rs"]
 mod confinement;
+#[cfg(target_os = "macos")]
+#[path = "kumoba-worker/macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+#[path = "kumoba-worker/macos_image.rs"]
+mod macos_image;
 use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, VERSION, WorkerConfig};
 use libloading::Library;
 use std::{
@@ -11,11 +17,19 @@ use std::{
 type Failure = Box<dyn std::error::Error>;
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("macos-image") {
+        if let Err(error) = macos_image::main(std::env::args().skip(2).collect()) {
+            eprintln!("kumoba-worker: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("kumoba-worker: {error}");
         if cfg!(target_os = "macos") {
             eprintln!(
-                "kumoba-worker: on macOS this binary needs the com.apple.security.hypervisor entitlement; sign it as described at https://github.com/Parassharmaa/kumoba#install"
+                "kumoba-worker: on macOS this binary needs the com.apple.security.hypervisor and com.apple.security.virtualization entitlements; sign it as described at https://parassharmaa.github.io/kumoba/install"
             );
         }
         std::process::exit(125);
@@ -40,6 +54,12 @@ fn run() -> Result<(), Failure> {
         || config.lock_fd < 3
     {
         return Err("invalid worker configuration".into());
+    }
+    if let Some(directory) = &config.machine {
+        #[cfg(target_os = "macos")]
+        return macos::run(&config, directory);
+        #[cfg(not(target_os = "macos"))]
+        return Err(format!("{} needs a macOS host", directory.display()).into());
     }
     let library = unsafe { Library::new(&config.library)? };
     let _firmware = unsafe { Library::new(&config.firmware)? };

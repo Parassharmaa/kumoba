@@ -35,6 +35,12 @@ pub struct WorkerConfig {
     pub lock_fd: i32,
     #[serde(default)]
     pub mounts: Vec<HostMount>,
+    #[serde(default)]
+    pub machine: Option<PathBuf>,
+}
+
+fn linux() -> String {
+    "linux".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,6 +146,8 @@ pub enum Response {
         desktop_startup_timeout: bool,
         #[serde(default)]
         shell: bool,
+        #[serde(default = "linux")]
+        os: String,
     },
     Desktop {
         width: u16,

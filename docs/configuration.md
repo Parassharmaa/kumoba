@@ -13,6 +13,7 @@ Set these in kumobad's environment. `kumobad --help` prints the same list.
 | `KUMOBAD_STATE_DIR` | `$KUMOBA_HOME/state` | Sandbox disks, metadata and keys |
 | `KUMOBAD_TOKEN_FILE` | `$KUMOBA_HOME/token`, created on first start | Bearer token, 32 bytes or more |
 | `KUMOBAD_WORKER` | next to `kumobad` | The `kumoba-worker` binary |
+| `KUMOBAD_MACOS_AGENT` | `kumoba-guest-macos` next to `kumobad` | The guest agent `kumobad macos-image` installs into a macOS image |
 | `KUMOBAD_SOCKET` | `$KUMOBA_HOME/kumobad.sock` unless `KUMOBAD_LISTEN` is set | Unix socket for the API, mode 0600 |
 | `KUMOBAD_LISTEN` | `127.0.0.1:7788` when neither it nor `KUMOBAD_SOCKET` is set | Loopback address for the API |
 | `KUMOBAD_PREVIEW_LISTEN` | `127.0.0.1:7789` when nothing else is set | Loopback address that serves previews and the desktop to browsers |

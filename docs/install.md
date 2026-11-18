@@ -24,13 +24,13 @@ You need about 2 GB of free disk for the `default` image. `scripts/check-host.sh
 
 ## Sign the worker after `cargo install` (macOS)
 
-The worker needs the Hypervisor.framework entitlement. The release build already has it; a `cargo install`ed one needs signing:
+The worker needs the Hypervisor.framework entitlement for Linux sandboxes and the Virtualization.framework entitlement for macOS sandboxes. The release build already has both; a `cargo install`ed one needs signing:
 
 ```sh
 cat > hvf.plist <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/><key>com.apple.security.virtualization</key><true/></dict></plist>
 PLIST
 codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
 ```

@@ -77,6 +77,10 @@ fn discover_images(dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
             && let Some(name) = path.file_stem().and_then(|stem| stem.to_str())
         {
             images.insert(name.to_string(), path);
+        } else if path.join("machine.json").is_file()
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        {
+            images.insert(name.to_string(), path);
         }
     }
     Ok(images)
@@ -112,10 +116,45 @@ fn read_token(path: &Path, create: bool) -> Result<Vec<u8>, String> {
 }
 
 fn default_worker() -> PathBuf {
+    beside_executable("kumoba-worker")
+}
+
+fn beside_executable(name: &str) -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("kumoba-worker")))
-        .unwrap_or_else(|| PathBuf::from("kumoba-worker"))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+fn macos_image(extra: &[String]) -> Result<i32, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("macOS images can only be built on an Apple silicon Mac".into());
+    }
+    let home = home()?;
+    let worker = env_path_or("KUMOBAD_WORKER", default_worker);
+    let agent = env_path_or("KUMOBAD_MACOS_AGENT", || {
+        beside_executable("kumoba-guest-macos")
+    });
+    for (path, what) in [
+        (&worker, "kumoba-worker"),
+        (&agent, "the macOS kumoba-guest"),
+    ] {
+        if !path.is_file() {
+            return Err(format!("{what} not found at {}", path.display()));
+        }
+    }
+    let status = std::process::Command::new(&worker)
+        .arg("macos-image")
+        .arg("--out")
+        .arg(home.join("images").join("macos"))
+        .arg("--agent")
+        .arg(&agent)
+        .arg("--cache")
+        .arg(home.join("cache"))
+        .args(extra)
+        .status()
+        .map_err(|error| format!("cannot run {}: {error}", worker.display()))?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn loopback(address: &str, variable: &str) -> Result<String, String> {
@@ -222,8 +261,13 @@ const USAGE: &str = "\
 kumobad: serves microVM sandboxes over HTTP
 
 With no configuration it uses ~/.kumoba (or $KUMOBA_HOME): boots every
-images/<name>.raw, keeps sandboxes in state/, creates a bearer token in token
-and listens on kumobad.sock. The SDKs find that socket and token by themselves.
+images/<name>.raw (and, on a Mac, every macOS image directory images/<name>/),
+keeps sandboxes in state/, creates a bearer token in token and listens on
+kumobad.sock. The SDKs find that socket and token by themselves.
+
+  kumobad macos-image   builds the macOS image in images/macos on an Apple silicon
+                        Mac: downloads Apple's restore image, installs macOS and the
+                        guest agent, and checks it boots (about 30 minutes)
 
 Environment, all optional:
   KUMOBA_HOME           base directory for the defaults below (default ~/.kumoba)
@@ -261,6 +305,15 @@ async fn main() {
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("kumobad {}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+    if args.first().map(String::as_str) == Some("macos-image") {
+        match macos_image(&args[1..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("kumobad: {error}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Err(error) = run().await {
         eprintln!(
@@ -403,4 +456,26 @@ async fn run() -> Result<(), String> {
         let _ = std::fs::remove_file(path);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discover_images;
+
+    #[test]
+    fn discovers_raw_disks_and_macos_image_directories() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("default.raw"), b"disk").unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"ignored").unwrap();
+        std::fs::create_dir(root.path().join("macos")).unwrap();
+        std::fs::write(root.path().join("macos").join("machine.json"), b"{}").unwrap();
+        std::fs::create_dir(root.path().join("half-built")).unwrap();
+        std::fs::write(root.path().join("half-built").join("build.json"), b"{}").unwrap();
+        let images = discover_images(root.path()).unwrap();
+        assert_eq!(
+            images.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["default", "macos"]
+        );
+        assert_eq!(images["macos"], root.path().join("macos"));
+    }
 }

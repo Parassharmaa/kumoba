@@ -205,7 +205,7 @@ pub(crate) async fn exec(stream: &mut UnixStream, request: ExecRequest) -> io::R
         let account = user.account;
         unsafe {
             command.pre_exec(move || {
-                if libc::initgroups(name.as_ptr(), account.gid as _) != 0
+                if libc::initgroups(name.as_ptr(), crate::agent::initgroups_gid(account.gid)) != 0
                     || libc::setgid(account.gid) != 0
                     || libc::setuid(account.uid) != 0
                 {
@@ -237,7 +237,7 @@ pub(crate) async fn exec(stream: &mut UnixStream, request: ExecRequest) -> io::R
             .await;
         }
     };
-    let pid = match crate::linux::pid_of(&child) {
+    let pid = match crate::agent::pid_of(&child) {
         Ok(pid) => pid,
         Err(error) => {
             return terminal(

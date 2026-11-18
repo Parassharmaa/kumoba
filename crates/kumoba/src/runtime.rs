@@ -13,6 +13,7 @@ use std::{
 pub(crate) struct Inner {
     pub config: RuntimeConfig,
     pub capacity: Arc<tokio::sync::Semaphore>,
+    pub macos_capacity: Arc<tokio::sync::Semaphore>,
     pub _lock: File,
     pub authority: Option<Arc<crate::secret_https::Authority>>,
 }
@@ -48,6 +49,19 @@ impl Snapshot {
     pub fn path(&self) -> &Path {
         &self.directory
     }
+}
+
+pub(crate) const MACOS_VM_LIMIT: usize = 2;
+pub(crate) const MACHINE_FILES: [&str; 3] = ["root.raw", "aux.img", "machine.json"];
+
+#[derive(Deserialize)]
+struct MachineShape {
+    cpus: u8,
+    memory_mib: u32,
+}
+
+pub(crate) fn is_machine(directory: &Path) -> bool {
+    directory.join("machine.json").is_file()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -109,6 +123,7 @@ impl Runtime {
             inner: Arc::new(Inner {
                 config,
                 capacity,
+                macos_capacity: Arc::new(tokio::sync::Semaphore::new(MACOS_VM_LIMIT)),
                 _lock: lock,
                 authority,
             }),
@@ -132,7 +147,7 @@ impl Runtime {
 
     pub(crate) async fn create_verified_with_copy(
         &self,
-        config: SandboxConfig,
+        mut config: SandboxConfig,
         digest: Option<String>,
         copy: fn(&Path, &Path) -> std::io::Result<u64>,
     ) -> Result<Sandbox> {
@@ -141,10 +156,23 @@ impl Runtime {
         let inner = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             let source = std::fs::canonicalize(&config.image)?;
-            if !std::fs::metadata(&source)?.is_file() {
+            let machine = is_machine(&source);
+            if !machine && !std::fs::metadata(&source)?.is_file() {
                 return Err(Error::InvalidInput(
-                    "image must be a regular raw disk file".into(),
+                    "image must be a regular raw disk file or a macOS image directory".into(),
                 ));
+            }
+            if machine {
+                if !config.mounts.is_empty() {
+                    return Err(Error::InvalidInput(
+                        "host mounts are not supported in macOS sandboxes yet".into(),
+                    ));
+                }
+                let shape: MachineShape =
+                    serde_json::from_reader(File::open(source.join("machine.json"))?)?;
+                config.vcpus = shape.cpus;
+                config.memory_mib = shape.memory_mib;
+                config.validate()?;
             }
             let id = SandboxId(uuid::Uuid::new_v4());
             let parent = inner.config.state_dir.join("sandboxes");
@@ -152,7 +180,13 @@ impl Runtime {
                 .prefix(".creating-")
                 .permissions(std::fs::Permissions::from_mode(0o700))
                 .tempdir_in(&parent)?;
-            copy(&source, &staging.path().join("root.raw"))?;
+            if machine {
+                for name in MACHINE_FILES {
+                    copy(&source.join(name), &staging.path().join(name))?;
+                }
+            } else {
+                copy(&source, &staging.path().join("root.raw"))?;
+            }
             if let Some(digest) = digest
                 && hash_file(&staging.path().join("root.raw"))? != digest
             {
