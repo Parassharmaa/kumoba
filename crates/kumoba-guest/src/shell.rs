@@ -31,10 +31,14 @@ fn login_shell(user: Option<&crate::files::User>) -> String {
             .map(|root| root.shell)
             .unwrap_or_default(),
     };
-    if shell.is_empty() {
-        "/bin/sh".into()
-    } else {
+    usable_shell(shell)
+}
+
+fn usable_shell(shell: String) -> String {
+    if shell.starts_with('/') && std::path::Path::new(&shell).is_file() {
         shell
+    } else {
+        "/bin/sh".into()
     }
 }
 
@@ -224,4 +228,17 @@ async fn relay(
     let (input, output) = tokio::join!(input, output);
     unsafe { libc::kill(-group, libc::SIGHUP) };
     output.and(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usable_shell;
+
+    #[test]
+    fn falls_back_to_sh_when_the_login_shell_is_missing() {
+        assert_eq!(usable_shell("/bin/sh".into()), "/bin/sh");
+        assert_eq!(usable_shell("/nonexistent/bash".into()), "/bin/sh");
+        assert_eq!(usable_shell("bash".into()), "/bin/sh");
+        assert_eq!(usable_shell(String::new()), "/bin/sh");
+    }
 }

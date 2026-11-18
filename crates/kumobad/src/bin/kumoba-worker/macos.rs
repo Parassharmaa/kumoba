@@ -30,12 +30,18 @@ use std::{
         unix::net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
-    sync::{Mutex, mpsc},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
 pub type Failure = Box<dyn std::error::Error>;
 pub const LIMIT_EXIT: i32 = 75;
 const VM_LIMIT_CODE: isize = 6;
+const MAX_BRIDGES: usize = 128;
+static BRIDGES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize)]
 pub struct Machine {
@@ -64,7 +70,7 @@ pub enum Event {
 
 pub struct VmError {
     pub message: String,
-    pub code: isize,
+    pub limit: bool,
 }
 
 impl From<VmError> for Failure {
@@ -81,7 +87,7 @@ pub fn ns_error(error: &NSError) -> VmError {
             error.domain(),
             error.code()
         ),
-        code: error.code(),
+        limit: error.domain().to_string() == "VZErrorDomain" && error.code() == VM_LIMIT_CODE,
     }
 }
 
@@ -228,12 +234,12 @@ define_class!(
             let Ok(guest) = duplicate(unsafe { connection.fileDescriptor() }) else {
                 return Bool::NO;
             };
-            std::thread::spawn(move || {
+            let accepted = bridge(move || {
                 if let Ok(host) = UnixStream::connect(&egress) {
                     splice(guest, OwnedFd::from(host));
                 }
             });
-            Bool::YES
+            Bool::new(accepted)
         }
     }
 );
@@ -262,16 +268,33 @@ fn duplicate(fd: i32) -> std::io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(copy) })
 }
 
+fn bridge(work: impl FnOnce() + Send + 'static) -> bool {
+    if BRIDGES.fetch_add(1, Ordering::AcqRel) >= MAX_BRIDGES {
+        BRIDGES.fetch_sub(1, Ordering::AcqRel);
+        return false;
+    }
+    let spawned = std::thread::Builder::new().spawn(move || {
+        work();
+        BRIDGES.fetch_sub(1, Ordering::AcqRel);
+    });
+    if spawned.is_err() {
+        BRIDGES.fetch_sub(1, Ordering::AcqRel);
+    }
+    spawned.is_ok()
+}
+
 pub fn splice(left: OwnedFd, right: OwnedFd) {
     let (Ok(left_writer), Ok(right_reader)) = (left.try_clone(), right.try_clone()) else {
         return;
     };
-    let forward = std::thread::spawn(move || {
+    let Ok(forward) = std::thread::Builder::new().spawn(move || {
         let mut reader = File::from(left);
         let mut writer = File::from(right);
         let _ = std::io::copy(&mut reader, &mut writer);
         unsafe { libc::shutdown(writer.as_raw_fd(), libc::SHUT_WR) };
-    });
+    }) else {
+        return;
+    };
     let mut reader = File::from(right_reader);
     let mut writer = File::from(left_writer);
     let _ = std::io::copy(&mut reader, &mut writer);
@@ -352,7 +375,7 @@ impl Vm {
         receiver.recv().unwrap_or_else(|_| {
             Err(VmError {
                 message: "the virtual machine queue stopped".into(),
-                code: 0,
+                limit: false,
             })
         })
     }
@@ -435,7 +458,7 @@ pub fn serve_agent(vm: &std::sync::Arc<Vm>, socket: &Path) -> Result<(), Failure
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let vm = vm.clone();
-            std::thread::spawn(move || {
+            bridge(move || {
                 if let Ok(guest) = vm.connect(AGENT_PORT) {
                     splice(OwnedFd::from(stream), guest);
                 }
@@ -445,8 +468,21 @@ pub fn serve_agent(vm: &std::sync::Arc<Vm>, socket: &Path) -> Result<(), Failure
     Ok(())
 }
 
+fn own_identifier(directory: &Path) -> Result<String, Failure> {
+    let path = directory.join("identifier");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        return Ok(existing);
+    }
+    let identifier = encode(&*unsafe { VZMacMachineIdentifier::new().dataRepresentation() });
+    let temporary = directory.join(".identifier");
+    std::fs::write(&temporary, &identifier)?;
+    std::fs::rename(&temporary, &path)?;
+    Ok(identifier)
+}
+
 pub fn run(config: &WorkerConfig, directory: &Path) -> Result<(), Failure> {
-    let machine = Machine::load(directory)?;
+    let mut machine = Machine::load(directory)?;
+    machine.machine_identifier = own_identifier(directory)?;
     let (events, receiver) = mpsc::channel();
     let vm = Vm::new(
         configuration(&machine, directory, &config.disk, None)?,
@@ -455,7 +491,7 @@ pub fn run(config: &WorkerConfig, directory: &Path) -> Result<(), Failure> {
     );
     match vm.start() {
         Ok(()) => {}
-        Err(error) if error.code == VM_LIMIT_CODE => {
+        Err(error) if error.limit => {
             eprintln!("kumoba-worker: {}", error.message);
             std::process::exit(LIMIT_EXIT);
         }

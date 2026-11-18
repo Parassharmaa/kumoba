@@ -87,6 +87,13 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
     std::fs::create_dir_all(&options.out)?;
     std::fs::set_permissions(&options.out, std::fs::Permissions::from_mode(0o700))?;
     let progress = options.out.join("build.json");
+    if options.out.join("machine.json").exists() && !progress.exists() {
+        return Err(format!(
+            "a macOS image is already at {}; delete that directory to build a new one",
+            options.out.display()
+        )
+        .into());
+    }
     let mut build = match File::open(&progress) {
         Ok(file) => serde_json::from_reader(file)?,
         Err(_) => {
@@ -452,7 +459,7 @@ impl Ssh {
     }
 }
 
-const SETUP: &str = r#"set -e
+const BOOTSTRAP: &str = r#"set -e
 install -d -m 755 /usr/local/bin
 install -m 755 -o root -g wheel /tmp/kumoba-guest /usr/local/bin/kumoba-guest
 cat > /Library/LaunchDaemons/dev.kumoba.guest.plist <<'PLIST'
@@ -468,11 +475,18 @@ cat > /Library/LaunchDaemons/dev.kumoba.guest.plist <<'PLIST'
 PLIST
 chown root:wheel /Library/LaunchDaemons/dev.kumoba.guest.plist
 chmod 644 /Library/LaunchDaemons/dev.kumoba.guest.plist
+rm -f /tmp/kumoba-guest /tmp/kumoba-bootstrap.sh
+launchctl bootstrap system /Library/LaunchDaemons/dev.kumoba.guest.plist 2>/dev/null || launchctl kickstart -k system/dev.kumoba.guest
+"#;
+
+const SETUP: &str = r#"set -e
 mkdir -p /System/Volumes/Data/workspace
 chown kumoba:staff /System/Volumes/Data/workspace
 grep -q '^workspace' /etc/synthetic.conf 2>/dev/null || printf 'workspace\tSystem/Volumes/Data/workspace\n' >> /etc/synthetic.conf
-echo 'kumoba ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/kumoba
-chmod 440 /etc/sudoers.d/kumoba
+printf '%s\n' 'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy SSL_CERT_FILE CURL_CA_BUNDLE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"' 'kumoba ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/kumoba.new
+chmod 440 /etc/sudoers.d/kumoba.new
+visudo -cf /etc/sudoers.d/kumoba.new
+mv /etc/sudoers.d/kumoba.new /etc/sudoers.d/kumoba
 pmset -a sleep 0 displaysleep 0 disksleep 0 || true
 mdutil -a -i off >/dev/null 2>&1 || true
 softwareupdate --schedule off >/dev/null 2>&1 || true
@@ -480,6 +494,12 @@ defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -
 defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false || true
 sudo -u kumoba defaults -currentHost write com.apple.screensaver idleTime -int 0 || true
 "#;
+
+const IMAGE_CHECK: &str = "test -x /usr/local/bin/kumoba-guest && xcode-select -p >/dev/null && test -L /workspace && visudo -cf /etc/sudoers.d/kumoba >/dev/null && launchctl print-disabled system | grep -q '\"com.openssh.sshd\" => disabled' && ! pgrep -x sshd >/dev/null";
+
+const FORGET_CLOCK: &str = "rm -f /var/db/timed/com.apple.timed.plist && (nvram -d com.apple.System.rtc-offset 2>/dev/null || true)";
+
+const SSH_OFF: &str = "launchctl disable system/com.openssh.sshd && (launchctl bootout system/com.openssh.sshd 2>/dev/null || true) && launchctl print-disabled system | grep -q '\"com.openssh.sshd\" => disabled'";
 
 fn guest_password(directory: &Path) -> Result<String, Failure> {
     let path = directory.join("password");
@@ -541,12 +561,17 @@ fn provision(options: &Options, machine: &Machine) -> Result<(), Failure> {
         "first boot; waiting for the guest ({mac}) to finish setup"
     ));
     let deadline = Instant::now() + Duration::from_secs(900);
-    let ssh = loop {
+    let mut agent = loop {
         if Instant::now() > deadline {
-            return Err("the guest never became reachable over SSH".into());
+            return Err("the guest never became reachable over SSH or the agent".into());
         }
         if let Ok(Event::Stopped(error)) = stopped.try_recv() {
             return Err(format!("the guest stopped during setup: {error:?}").into());
+        }
+        if let Some(mut agent) = AgentSession::open(&vm) {
+            say("the guest agent is already installed; updating it");
+            agent.replace_agent(&options.agent)?;
+            break agent;
         }
         if let Some(address) = lease(&mac) {
             let ssh = Ssh {
@@ -555,61 +580,193 @@ fn provision(options: &Options, machine: &Machine) -> Result<(), Failure> {
                 password: password.clone(),
             };
             if ssh.run("true", None)? {
-                break ssh;
+                say(&format!(
+                    "guest reachable at {}; installing the agent",
+                    ssh.address
+                ));
+                bootstrap(options, &ssh, &password)?;
+                break wait_for_agent(&vm)?;
             }
         }
         std::thread::sleep(Duration::from_secs(5));
     };
-    say(&format!(
-        "guest reachable at {}; installing the agent",
-        ssh.address
-    ));
-    ssh.copy(&options.agent, "/tmp/kumoba-guest")?;
-    if !ssh.run("sudo -S -p '' sh -s", Some(&format!("{password}\n{SETUP}")))? {
-        return Err("guest setup failed".into());
-    }
+    std::fs::remove_file(&askpass)?;
+    say("configuring the guest");
+    agent.run_checked(SETUP, "guest setup failed")?;
     say("installing Apple's Command Line Tools (git, clang, python3)");
-    if !ssh.run("sudo -n sh -s", Some(TOOLS))? {
-        say(
-            "the Command Line Tools did not install; git, clang and python3 stay unavailable in this image",
-        );
+    agent.run_checked(
+        TOOLS,
+        "Apple's Command Line Tools did not install; run the command again to retry",
+    )?;
+    agent.run_checked(SSH_OFF, "could not turn off SSH in the guest")?;
+    if !agent.shutdown() {
+        return Err("the agent did not accept the shutdown request".into());
     }
-    let _ = ssh.run(
-        "sudo -n sh -c 'launchctl disable system/com.openssh.sshd; shutdown -h now'",
-        None,
-    );
     say("waiting for the guest to shut down");
     match stopped.recv_timeout(Duration::from_secs(300)) {
-        Ok(Event::Stopped(None)) => {}
-        Ok(Event::Stopped(Some(error))) => return Err(error.into()),
+        Ok(Event::Stopped(None)) => Ok(()),
+        Ok(Event::Stopped(Some(error))) => Err(error.into()),
         _ => {
-            vm.stop()?;
+            let _ = vm.stop();
+            Err("the guest did not shut down cleanly; run the command again".into())
         }
     }
-    std::fs::remove_file(&askpass)?;
-    Ok(())
 }
 
-fn ask(vm: &Vm, request: &Request) -> Option<Response> {
-    let fd = vm.connect(AGENT_PORT).ok()?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async move {
-        let stream = std::os::unix::net::UnixStream::from(fd);
-        stream.set_nonblocking(true).ok()?;
-        let mut stream = tokio::net::UnixStream::from_std(stream).ok()?;
-        send(&mut stream, request).await.ok()?;
-        let answer = tokio::time::timeout(Duration::from_secs(10), receive(&mut stream))
-            .await
-            .ok()?
+fn bootstrap(options: &Options, ssh: &Ssh, password: &str) -> Result<(), Failure> {
+    ssh.copy(&options.agent, "/tmp/kumoba-guest")?;
+    let script = options.out.join(".bootstrap.sh");
+    std::fs::write(&script, BOOTSTRAP)?;
+    ssh.copy(&script, "/tmp/kumoba-bootstrap.sh")?;
+    std::fs::remove_file(&script)?;
+    if ssh.run(
+        "sudo -S -p '' sh /tmp/kumoba-bootstrap.sh",
+        Some(&format!("{password}\n")),
+    )? {
+        Ok(())
+    } else {
+        Err("installing the guest agent failed".into())
+    }
+}
+
+fn wait_for_agent(vm: &Vm) -> Result<AgentSession, Failure> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(agent) = AgentSession::open(vm) {
+            return Ok(agent);
+        }
+        if Instant::now() > deadline {
+            return Err("the guest agent did not start after installation".into());
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+struct AgentSession {
+    runtime: tokio::runtime::Runtime,
+    stream: tokio::net::UnixStream,
+}
+
+impl AgentSession {
+    fn open(vm: &Vm) -> Option<Self> {
+        let fd = vm.connect(AGENT_PORT).ok()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .ok()?;
-        tokio::io::AsyncWriteExt::write_u8(&mut stream, 1)
-            .await
-            .ok()?;
-        Some(answer)
-    })
+        let stream = runtime.block_on(async move {
+            let stream = std::os::unix::net::UnixStream::from(fd);
+            stream.set_nonblocking(true).ok()?;
+            let mut stream = tokio::net::UnixStream::from_std(stream).ok()?;
+            send(&mut stream, &Request::Hello).await.ok()?;
+            let answer = tokio::time::timeout(Duration::from_secs(5), receive(&mut stream))
+                .await
+                .ok()?
+                .ok()?;
+            tokio::io::AsyncWriteExt::write_u8(&mut stream, 1)
+                .await
+                .ok()?;
+            matches!(answer, Response::Hello { .. }).then_some(stream)
+        })?;
+        Some(Self { runtime, stream })
+    }
+
+    fn run(&mut self, script: &str) -> Result<Option<i32>, Failure> {
+        let request = Request::Exec(kumoba_protocol::ExecRequest {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            cwd: "/".into(),
+            env: [(
+                "PATH".to_string(),
+                "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+            )]
+            .into(),
+            stdin: String::new(),
+            timeout_ms: 3_600_000,
+            output_limit: 64 << 20,
+            user: None,
+        });
+        let stream = &mut self.stream;
+        self.runtime.block_on(async move {
+            send(stream, &request).await?;
+            loop {
+                let event: kumoba_protocol::ExecEvent =
+                    kumoba_protocol::receive_limited(stream, kumoba_protocol::MAX_EXEC_FRAME)
+                        .await?;
+                tokio::io::AsyncWriteExt::write_u8(stream, 1).await?;
+                match event {
+                    kumoba_protocol::ExecEvent::Output { data, .. } => {
+                        let bytes = base64::Engine::decode(
+                            &base64::engine::general_purpose::STANDARD,
+                            data,
+                        )?;
+                        std::io::stderr().write_all(&bytes)?;
+                    }
+                    kumoba_protocol::ExecEvent::Finished { code, .. } => return Ok(code),
+                    kumoba_protocol::ExecEvent::Failed { message } => {
+                        return Err(message.into());
+                    }
+                }
+            }
+        })
+    }
+
+    fn write_at(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<(), Failure> {
+        let request = Request::WriteAt {
+            path: path.into(),
+            offset,
+            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data),
+            truncate: offset == 0,
+            user: None,
+        };
+        let stream = &mut self.stream;
+        let answer = self.runtime.block_on(async move {
+            send(stream, &request).await?;
+            let answer: Response = receive(stream).await?;
+            tokio::io::AsyncWriteExt::write_u8(stream, 1).await?;
+            Ok::<_, std::io::Error>(answer)
+        })?;
+        match answer {
+            Response::Ok => Ok(()),
+            Response::Error(message) => Err(message.into()),
+            _ => Err("unexpected answer to a file write".into()),
+        }
+    }
+
+    fn replace_agent(&mut self, agent: &Path) -> Result<(), Failure> {
+        let staged = "/usr/local/bin/.kumoba-guest.new";
+        let bytes = std::fs::read(agent)?;
+        let mut offset = 0;
+        for chunk in bytes.chunks(512 * 1024) {
+            self.write_at(staged, offset, chunk)?;
+            offset += chunk.len() as u64;
+        }
+        self.run_checked(
+            &format!(
+                "install -m 755 -o root -g wheel {staged} /usr/local/bin/kumoba-guest && rm -f {staged}"
+            ),
+            "could not replace the guest agent",
+        )
+    }
+
+    fn run_checked(&mut self, script: &str, failure: &str) -> Result<(), Failure> {
+        match self.run(script)? {
+            Some(0) => Ok(()),
+            _ => Err(failure.into()),
+        }
+    }
+
+    fn shutdown(mut self) -> bool {
+        let stream = &mut self.stream;
+        self.runtime.block_on(async move {
+            if send(stream, &Request::Shutdown).await.is_err() {
+                return false;
+            }
+            let answer = tokio::time::timeout(Duration::from_secs(10), receive(stream)).await;
+            let _ = tokio::io::AsyncWriteExt::write_u8(stream, 1).await;
+            matches!(answer, Ok(Ok(Response::Ok)))
+        })
+    }
 }
 
 fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
@@ -623,7 +780,10 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
     let began = Instant::now();
     vm.start()?;
     say("booting the image without a network card to check the agent");
-    while !matches!(ask(&vm, &Request::Hello), Some(Response::Hello { .. })) {
+    let mut agent = loop {
+        if let Some(agent) = AgentSession::open(&vm) {
+            break agent;
+        }
         if began.elapsed() > Duration::from_secs(600) {
             return Err("the agent did not answer after boot".into());
         }
@@ -631,12 +791,17 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
             return Err(format!("the guest stopped while booting: {error:?}").into());
         }
         std::thread::sleep(Duration::from_millis(500));
-    }
+    };
     say(&format!(
-        "agent answered {:.0} s after boot; shutting down",
+        "agent answered {:.0} s after boot; checking the image",
         began.elapsed().as_secs_f64()
     ));
-    if !matches!(ask(&vm, &Request::Shutdown), Some(Response::Ok)) {
+    agent.run_checked(
+        IMAGE_CHECK,
+        "the image is incomplete; delete it and build again",
+    )?;
+    agent.run_checked(FORGET_CLOCK, "could not reset the guest clock state")?;
+    if !agent.shutdown() {
         return Err("the agent did not accept the shutdown request".into());
     }
     match stopped.recv_timeout(Duration::from_secs(300)) {

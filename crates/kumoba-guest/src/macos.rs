@@ -83,6 +83,9 @@ fn listen(connections: &mpsc::Sender<StdUnixStream>) -> io::Result<()> {
             return Err(error);
         }
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            continue;
+        }
         if connections.blocking_send(bridged(fd)?).is_err() {
             return Ok(());
         }

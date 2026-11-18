@@ -17,7 +17,7 @@ macOS sandboxes are new in kumoba 0.4 and, like the rest of kumoba, alpha.
    kumobad macos-image
    ```
 
-   This downloads Apple's macOS restore image for your Mac (about 26 GB), installs macOS, creates the `kumoba` user, and installs Apple's Command Line Tools and the kumoba guest agent. It takes about 30 minutes plus the download, and it deletes the restore image when the install is done. If it stops part way, run it again: it resumes where it stopped.
+   This downloads Apple's macOS restore image for your Mac (about 26 GB), installs macOS, creates the `kumoba` user, and installs Apple's Command Line Tools and the kumoba guest agent. It takes about 30 minutes plus the download, and it deletes the restore image when the install is done. If it stops part way, run it again: it resumes where it stopped. Over a finished image it does nothing; delete `~/.kumoba/images/macos` to build a new one.
 
 2. Restart `kumobad` so it finds the new image. `kumoba images` now lists `macos`.
 
@@ -32,13 +32,13 @@ kumoba shell "$id" --user kumoba               # an interactive zsh
 kumoba delete "$id"
 ```
 
-Each sandbox is a copy-on-write clone of the image, so creating one takes well under a second and uses almost no disk until it changes. Every macOS sandbox has the image's 4 CPUs and 4 GB of memory; the `cpu` and `memoryMib` you ask for are ignored.
+Each sandbox is a copy-on-write clone of the image with its own machine identity, so creating one takes well under a second and uses almost no disk until it changes. Every macOS sandbox has the image's 4 CPUs and 4 GB of memory; the `cpu` and `memoryMib` you ask for are ignored.
 
 Inside the sandbox:
 
 - Commands run as root unless you pass `--user kumoba`. The `kumoba` user has passwordless `sudo`.
 - `/workspace` exists and belongs to `kumoba`.
-- The guest clock follows your Mac's clock.
+- The guest clock is set from your Mac's at every start, to within about a second.
 - Apple's Command Line Tools are installed, so `git`, `clang`, `make` and `python3` work. Xcode itself is not included.
 
 ## Network and secrets

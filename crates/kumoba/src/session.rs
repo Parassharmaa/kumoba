@@ -29,6 +29,7 @@ use tokio::{
 const MACOS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
 const MACOS_STOP_TIMEOUT: Duration = Duration::from_secs(90);
 const VM_LIMIT_EXIT: i32 = 75;
+const CLOCK_LEAD: Duration = Duration::from_millis(120);
 
 pub type Tunnel = UnixStream;
 
@@ -178,7 +179,8 @@ impl Sandbox {
             ),
             None => None,
         };
-        let boot_timeout = if machine.is_some() {
+        let machine_vm = machine.is_some();
+        let boot_timeout = if machine_vm {
             self.inner.config.boot_timeout.max(MACOS_BOOT_TIMEOUT)
         } else {
             self.inner.config.boot_timeout
@@ -319,7 +321,9 @@ impl Sandbox {
         let ready = tokio::time::timeout(boot_timeout, async {
             loop {
                 if let Some(status) = guard.vm.exit.borrow().as_ref() {
-                    if matches!(status, Ok(status) if status.code() == Some(VM_LIMIT_EXIT)) {
+                    if machine_vm
+                        && matches!(status, Ok(status) if status.code() == Some(VM_LIMIT_EXIT))
+                    {
                         return Err(Error::Capacity);
                     }
                     return Err(Error::Boot(format!(
@@ -358,6 +362,12 @@ impl Sandbox {
         ready?;
         guard.armed = false;
         drop(guard);
+        if self.is_macos()
+            && let Err(error) = self.set_guest_clock().await
+        {
+            self.force_stop().await?;
+            return Err(error);
+        }
         if let Err(error) = self.mount_host_directories().await {
             self.force_stop().await?;
             return Err(error);
@@ -445,6 +455,31 @@ impl Sandbox {
 
     fn is_macos(&self) -> bool {
         matches!(&self.phase, Phase::Running(vm) if vm.os == "macos")
+    }
+
+    async fn set_guest_clock(&mut self) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| Error::Boot(e.to_string()))?;
+        let target = (now + CLOCK_LEAD * 2).as_secs() + 1;
+        if let Some(wait) = Duration::from_secs(target).checked_sub(now + CLOCK_LEAD) {
+            tokio::time::sleep(wait).await;
+        }
+        let set = self
+            .exec(Command::new("/bin/sh").args([
+                "-c",
+                &format!(
+                    "/bin/date -u \"$(/bin/date -u -j -f %s {target} +%m%d%H%M%Y.%S)\" >/dev/null"
+                ),
+            ]))
+            .await?;
+        if !set.success() {
+            return Err(Error::Boot(format!(
+                "could not set the guest clock: {}",
+                String::from_utf8_lossy(&set.stderr)
+            )));
+        }
+        Ok(())
     }
 
     async fn install_trust(&mut self, certificate: &str) -> Result<()> {
