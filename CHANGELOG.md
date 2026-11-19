@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
 ### Added
 
 - macOS sandboxes on Apple silicon Macs running macOS 27 or later. `kumobad macos-image` downloads Apple's restore image, installs macOS with a `kumoba` user, Apple's Command Line Tools and the guest agent, and adds a `macos` image; run it again after upgrading kumoba to update the agent in that image. `kumoba create --image macos` then works like any other image, including exec, files, shell, network rules and secrets. Sandboxes are copy-on-write clones with their own machine identity, and they take commands about 10 to 25 seconds after start. Apple allows two macOS VMs per Mac at once, so a third start reports capacity exhausted. The desktop live view, host mounts and snapshots don't support macOS yet.
@@ -86,7 +88,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Parassharmaa/kumoba/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Parassharmaa/kumoba/compare/v0.2.0...v0.2.1
