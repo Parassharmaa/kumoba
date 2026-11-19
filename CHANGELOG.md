@@ -6,7 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Added
 
-- macOS sandboxes on Apple silicon Macs running macOS 27 or later. `kumobad macos-image` downloads Apple's restore image, installs macOS with a `kumoba` user, Apple's Command Line Tools and the guest agent, compacts the disk image, and adds a `macos` image. Run it again over a finished image to update its guest agent after upgrading kumoba; `kumoba create --image macos` then works like any other image, including exec, files, shell, network rules and secrets. Sandboxes are copy-on-write clones with their own machine identity that boot in about 10 to 25 seconds. Apple allows two macOS VMs per Mac at once, so a third start reports capacity exhausted. The desktop live view, host mounts and snapshots don't support macOS yet.
+- macOS sandboxes on Apple silicon Macs running macOS 27 or later. `kumobad macos-image` downloads Apple's restore image, installs macOS with a `kumoba` user, Apple's Command Line Tools and the guest agent, and adds a `macos` image; run it again after upgrading kumoba to update the agent in that image. `kumoba create --image macos` then works like any other image, including exec, files, shell, network rules and secrets. Sandboxes are copy-on-write clones with their own machine identity, and they take commands about 10 to 25 seconds after start. Apple allows two macOS VMs per Mac at once, so a third start reports capacity exhausted. The desktop live view, host mounts and snapshots don't support macOS yet.
 - `scripts/macos-smoke.sh`: the local check for macOS sandboxes, since CI runners can't boot macOS guests.
 
 ### Changed
