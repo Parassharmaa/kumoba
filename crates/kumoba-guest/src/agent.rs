@@ -56,6 +56,7 @@ pub(crate) async fn serve(
                         desktop_startup_timeout: true,
                         shell: true,
                         os: std::env::consts::OS.into(),
+                        clock: true,
                     },
                 )
                 .await?;
@@ -120,6 +121,13 @@ pub(crate) async fn serve(
             }
             Request::Shutdown => {
                 return Ok(true);
+            }
+            Request::SetClock { unix_micros } => {
+                let response = match set_clock(unix_micros) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => Response::Error(e.to_string()),
+                };
+                reply(stream, &response).await?;
             }
             Request::ReadAt {
                 path,
@@ -244,6 +252,21 @@ async fn write_file(path: &str, encoded: &str) -> io::Result<()> {
     )?;
     tokio::fs::rename(tmp.path(), path).await?;
     std::fs::File::open(parent)?.sync_all()
+}
+
+fn set_clock(unix_micros: u64) -> io::Result<()> {
+    let time = libc::timeval {
+        tv_sec: (unix_micros / 1_000_000)
+            .try_into()
+            .map_err(io::Error::other)?,
+        tv_usec: (unix_micros % 1_000_000)
+            .try_into()
+            .map_err(io::Error::other)?,
+    };
+    if unsafe { libc::settimeofday(&raw const time, std::ptr::null()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 pub(crate) async fn reply(stream: &mut UnixStream, response: &Response) -> io::Result<()> {

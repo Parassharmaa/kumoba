@@ -41,6 +41,7 @@ pub type Failure = Box<dyn std::error::Error>;
 pub const LIMIT_EXIT: i32 = 75;
 const VM_LIMIT_CODE: isize = 6;
 const MAX_BRIDGES: usize = 128;
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 static BRIDGES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize)]
@@ -416,9 +417,15 @@ impl Vm {
             );
             unsafe { device.connectToPort_completionHandler(port, &block) };
         });
-        receiver
-            .recv()
-            .unwrap_or_else(|_| Err("the virtual machine queue stopped".into()))
+        match receiver.recv_timeout(CONNECT_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(format!("guest port {port} did not answer a connection"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("the virtual machine queue stopped".into())
+            }
+        }
     }
 
     pub fn start(&self) -> Result<(), VmError> {

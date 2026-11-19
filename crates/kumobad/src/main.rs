@@ -267,7 +267,9 @@ kumobad.sock. The SDKs find that socket and token by themselves.
 
   kumobad macos-image   builds the macOS image in images/macos on an Apple silicon
                         Mac: downloads Apple's restore image, installs macOS and the
-                        guest agent, and checks it boots (about 30 minutes)
+                        guest agent, and checks it boots (about 30 minutes). Over a
+                        finished image it updates the guest agent and settings and
+                        compacts the disk; run it after upgrading kumoba
 
 Environment, all optional:
   KUMOBA_HOME           base directory for the defaults below (default ~/.kumoba)

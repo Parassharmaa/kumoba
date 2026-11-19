@@ -81,6 +81,9 @@ pub enum Request {
         user: Option<String>,
     },
     Shell(ShellRequest),
+    SetClock {
+        unix_micros: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,6 +151,8 @@ pub enum Response {
         shell: bool,
         #[serde(default = "linux")]
         os: String,
+        #[serde(default)]
+        clock: bool,
     },
     Desktop {
         width: u16,
