@@ -56,6 +56,7 @@ pub(crate) async fn serve(
                         desktop_startup_timeout: true,
                         shell: true,
                         os: std::env::consts::OS.into(),
+                        clock: true,
                     },
                 )
                 .await?;

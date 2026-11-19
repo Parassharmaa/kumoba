@@ -27,6 +27,7 @@ use tokio::{
 };
 
 const MACOS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+const OUTDATED_MACOS_AGENT: &str = "this macOS sandbox's guest agent is from another kumoba release; run `kumobad macos-image` to update the image, then create the sandbox again";
 const MACOS_STOP_TIMEOUT: Duration = Duration::from_secs(90);
 const VM_LIMIT_EXIT: i32 = 75;
 
@@ -338,16 +339,16 @@ impl Sandbox {
                         desktop_startup_timeout,
                         shell,
                         os,
+                        clock,
                         ..
                     })) =
                         tokio::time::timeout(Duration::from_millis(300), receive(&mut socket)).await
                 {
+                    if machine_vm && (version != VERSION || !clock) {
+                        return Err(Error::Protocol(OUTDATED_MACOS_AGENT.into()));
+                    }
                     if version != VERSION {
-                        return Err(Error::Protocol(if machine_vm {
-                            "this macOS sandbox's guest agent is from another kumoba release; run `kumobad macos-image` to update the image, then create the sandbox again".into()
-                        } else {
-                            "guest agent version mismatch".into()
-                        }));
+                        return Err(Error::Protocol("guest agent version mismatch".into()));
                     }
                     socket.write_u8(1).await?;
                     guard.vm.agent = Some(socket);

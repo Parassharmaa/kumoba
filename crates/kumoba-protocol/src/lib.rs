@@ -151,6 +151,8 @@ pub enum Response {
         shell: bool,
         #[serde(default = "linux")]
         os: String,
+        #[serde(default)]
+        clock: bool,
     },
     Desktop {
         width: u16,

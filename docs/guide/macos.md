@@ -25,9 +25,9 @@ macOS sandboxes are new in kumoba 0.4 and, like the rest of kumoba, alpha.
 
 macOS sandboxes need the guest agent from the same kumoba release, so run `kumobad macos-image` again after upgrading kumoba. Over a finished image it boots the image without a network card, installs this release's agent, applies the image settings again, checks the image and compacts its disk. That takes a few minutes, and no download.
 
-- The image can't be used while it runs: creating a macOS sandbox fails until it finishes. Sandboxes that already exist keep running.
+- The image can't be used while it runs: creating a macOS sandbox fails until it finishes. Sandboxes that already exist keep running. If `kumobad` was started while it ran, restart `kumobad` afterwards so it finds the image again.
 - It boots a macOS VM, so it needs one of the two VMs Apple allows on the Mac.
-- Compacting rewrites the disk image in place and needs at least 2 GB free. Sandboxes made from the image share its disk blocks, so with many of them around it can need much more. If it stops for lack of space, free some and run it again; it resumes.
+- Compacting rewrites the disk image in place, so it only runs when your Mac has free space about the size of the image (about 31 GB), because sandboxes made from the image can keep its old blocks in use. With less, it skips compacting and says so; the image still works, and new sandboxes just start more slowly. If it's interrupted, run it again and it resumes.
 - Sandboxes made before the update keep their old agent on their own disk. Create them again.
 
 Compacting matters because every sandbox starts as a copy-on-write clone of the image, and the first write to a clone costs time in proportion to how fragmented the image file is on your Mac's disk. The more free space your Mac has, the better it compacts; on a nearly full disk it can only help a little.
@@ -51,7 +51,7 @@ Inside the sandbox:
 - `/workspace` exists and belongs to `kumoba`.
 - The guest clock is set from your Mac's at every start, to within about 50 ms.
 - `start` returns once the guest agent answers, while macOS is still starting background services, so the first commands can take a few seconds longer than later ones.
-- Nobody is logged in to the desktop: the image turns automatic login off, because the login session's apps slowed the first commands after start by up to 17 seconds.
+- Nobody is logged in to the desktop: the image turns automatic login off, because the login session's apps slowed the first commands after start by up to 17 seconds. The `kumoba` user's login keychain stays locked, so tools that keep credentials there need `security unlock-keychain` first.
 - Apple's Command Line Tools are installed, so `git`, `clang`, `make` and `python3` work. Xcode itself is not included.
 
 ## Network and secrets

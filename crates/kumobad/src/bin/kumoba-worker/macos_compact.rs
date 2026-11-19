@@ -3,7 +3,7 @@ use std::{
     io,
     os::{
         fd::AsRawFd,
-        unix::fs::{FileExt, OpenOptionsExt},
+        unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -36,9 +36,29 @@ pub fn compact(disk: &Path) -> io::Result<()> {
     compact_chunks(disk, CHUNK, usize::MAX).map(|_| ())
 }
 
+pub fn started(disk: &Path) -> bool {
+    Paths::new(disk).progress.exists()
+}
+
+pub fn needed(disk: &Path) -> io::Result<u64> {
+    Ok(std::fs::metadata(disk)?.blocks() * 512 + RESERVE)
+}
+
+pub fn fits(disk: &Path) -> io::Result<bool> {
+    Ok(free_bytes(directory(disk))? >= needed(disk)?)
+}
+
+pub fn directory(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
 fn compact_chunks(disk: &Path, chunk: u64, budget: usize) -> io::Result<bool> {
     let paths = Paths::new(disk);
     let source = OpenOptions::new().read(true).write(true).open(disk)?;
+    source.sync_all()?;
     let size = source.metadata()?.len();
     let (target, mut moved) = match std::fs::read(&paths.progress) {
         Ok(bytes) => {
@@ -53,6 +73,13 @@ fn compact_chunks(disk: &Path, chunk: u64, budget: usize) -> io::Result<bool> {
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if std::fs::metadata(&paths.target).is_ok_and(|target| target.blocks() > 0) {
+                return Err(io::Error::other(format!(
+                    "{} holds data but {} is missing; remove it if no compaction is running",
+                    paths.target.display(),
+                    paths.progress.display()
+                )));
+            }
             let target = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -92,7 +119,7 @@ fn compact_chunks(disk: &Path, chunk: u64, budget: usize) -> io::Result<bool> {
         copied += 1;
     }
     std::fs::rename(&paths.target, disk)?;
-    File::open(disk.parent().unwrap_or(Path::new(".")))?.sync_all()?;
+    File::open(directory(disk))?.sync_all()?;
     std::fs::remove_file(&paths.progress)?;
     Ok(true)
 }
@@ -121,7 +148,7 @@ pub fn free_bytes(path: &Path) -> io::Result<u64> {
 }
 
 fn ensure_space(disk: &Path, needed: u64) -> io::Result<()> {
-    let available = free_bytes(disk.parent().unwrap_or(Path::new(".")))?;
+    let available = free_bytes(directory(disk))?;
     if available < needed + RESERVE {
         return Err(io::Error::other(format!(
             "compacting {} needs {} MiB free on its volume and {} MiB are; free some space and run the command again",
@@ -183,7 +210,6 @@ fn punch(file: &File, offset: u64, length: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
 
     #[repr(C, packed(4))]
     struct Log2Phys {
@@ -247,8 +273,14 @@ mod tests {
         let original = fragmented(&disk, 8192);
         let allocated = std::fs::metadata(&disk).unwrap().blocks();
         let before = physical_extents(&disk);
+        let size = std::fs::metadata(&disk).unwrap().len();
+        let layout = data_runs(&File::open(&disk).unwrap(), 0, size).unwrap();
         compact_chunks(&disk, 4 << 20, usize::MAX).unwrap();
         assert_eq!(std::fs::read(&disk).unwrap(), original);
+        assert_eq!(
+            data_runs(&File::open(&disk).unwrap(), 0, size).unwrap(),
+            layout
+        );
         assert!(std::fs::metadata(&disk).unwrap().blocks() <= allocated);
         let after = physical_extents(&disk);
         assert!(after < before, "{before} extents before, {after} after");
@@ -278,5 +310,17 @@ mod tests {
         assert!(compact_chunks(&disk, 1 << 20, usize::MAX).unwrap());
         assert_eq!(std::fs::read(&disk).unwrap(), original);
         assert!(!Paths::new(&disk).progress.exists());
+    }
+
+    #[test]
+    fn a_target_with_data_and_no_progress_file_is_left_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let disk = directory.path().join("root.raw");
+        let original = fragmented(&disk, 256);
+        let target = Paths::new(&disk).target;
+        std::fs::write(&target, [7; 8192]).unwrap();
+        assert!(compact_chunks(&disk, 1 << 20, usize::MAX).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), [7; 8192]);
+        assert_eq!(std::fs::read(&disk).unwrap(), original);
     }
 }

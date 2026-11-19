@@ -86,10 +86,18 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
     }
     std::fs::create_dir_all(&options.out)?;
     std::fs::set_permissions(&options.out, std::fs::Permissions::from_mode(0o700))?;
+    let _lock = lock(&options.out)?;
     let progress = options.out.join("build.json");
     let finished = options.out.join("machine.json");
     let mut build = match File::open(&progress) {
-        Ok(file) => serde_json::from_reader(file)?,
+        Ok(file) => {
+            let build: Build = serde_json::from_reader(file)?;
+            if finished.exists() {
+                std::fs::remove_file(&finished)?;
+                sync_directory(&options.out)?;
+            }
+            build
+        }
         Err(_) if finished.exists() => {
             say(&format!(
                 "a macOS image is already at {}; updating its guest agent and settings",
@@ -101,6 +109,7 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
             };
             save(&progress, &build)?;
             std::fs::remove_file(&finished)?;
+            sync_directory(&options.out)?;
             build
         }
         Err(_) => {
@@ -125,7 +134,8 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
     }
     if build.stage == "refresh" {
         refresh(&options, &build.machine)?;
-        build.stage = "provisioned".into();
+        verify(&options, &build.machine)?;
+        build.stage = "verified".into();
         save(&progress, &build)?;
     }
     if build.stage == "provisioned" {
@@ -134,17 +144,32 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
         save(&progress, &build)?;
     }
     if build.stage == "verified" {
-        say("compacting the disk image");
-        crate::macos_compact::compact(&options.out.join("root.raw"))?;
+        let disk = options.out.join("root.raw");
+        if crate::macos_compact::started(&disk) || crate::macos_compact::fits(&disk)? {
+            say("compacting the disk image");
+            crate::macos_compact::compact(&disk)?;
+        } else {
+            say(&format!(
+                "skipping disk compaction, which needs about {} GiB free; new sandboxes start more slowly until you free that and run this command again",
+                crate::macos_compact::needed(&disk)? >> 30
+            ));
+        }
+        build.stage = "compacted".into();
+        save(&progress, &build)?;
+    }
+    if build.stage == "compacted" {
+        let temporary = options.out.join("machine.json.tmp");
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&finished)?;
+            .open(&temporary)?;
         serde_json::to_writer_pretty(&mut file, &build.machine)?;
         file.sync_all()?;
+        std::fs::rename(&temporary, &finished)?;
         std::fs::remove_file(&progress)?;
+        sync_directory(&options.out)?;
     }
     say(&format!("macOS image ready at {}", options.out.display()));
     Ok(())
@@ -156,9 +181,39 @@ fn say(message: &str) {
 
 fn save(path: &Path, build: &Build) -> Result<(), Failure> {
     let temporary = path.with_extension("tmp");
-    serde_json::to_writer_pretty(File::create(&temporary)?, build)?;
+    let mut file = File::create(&temporary)?;
+    serde_json::to_writer_pretty(&mut file, build)?;
+    file.sync_all()?;
     std::fs::rename(temporary, path)?;
+    sync_directory(crate::macos_compact::directory(path))
+}
+
+fn sync_directory(directory: &Path) -> Result<(), Failure> {
+    File::open(directory)?.sync_all()?;
     Ok(())
+}
+
+fn lock(directory: &Path) -> Result<File, Failure> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(directory.join(".lock"))?;
+    if unsafe {
+        libc::flock(
+            std::os::fd::AsRawFd::as_raw_fd(&file),
+            libc::LOCK_EX | libc::LOCK_NB,
+        )
+    } != 0
+    {
+        return Err(format!(
+            "another kumobad macos-image is already working on {}",
+            directory.display()
+        )
+        .into());
+    }
+    Ok(file)
 }
 
 fn free_gib(path: &Path) -> Result<u64, Failure> {
@@ -849,7 +904,7 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
     )?;
     agent.run_checked(
         IMAGE_CHECK,
-        "the image is incomplete; delete it and build again",
+        "the image check failed; run the command again, and if it fails again, delete the image and build it again",
     )?;
     agent.run_checked(FORGET_CLOCK, "could not reset the guest clock state")?;
     shut_down(agent, &stopped)
