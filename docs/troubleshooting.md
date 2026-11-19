@@ -62,6 +62,10 @@ The reader of `kumoba exec` or `kumoba run` output closed early, as in `kumoba e
 
 Apple allows two macOS VMs running on a Mac at once, counting VMs from other apps such as UTM or Tart. Stop a macOS sandbox, or quit the other app's VM, and start again. See [Run macOS in a sandbox](/guide/macos#limits).
 
+## A macOS sandbox won't start after upgrading kumoba
+
+`this macOS sandbox's guest agent is from another kumoba release` means the sandbox's disk still has the agent it was cloned with. Run `kumobad macos-image`: over a finished image it installs the current agent and keeps everything else. Sandboxes made before that keep their old agent on their own disk, so copy out what you need and create them again. See [Run macOS in a sandbox](/guide/macos#update-the-image).
+
 ## `kumobad macos-image` stops part way
 
 Run it again. It remembers the finished stages in `~/.kumoba/images/macos/build.json` and resumes, and an interrupted download continues where it stopped. `guest provisioning needs macOS 27 or later on the host` means the Mac itself must be updated first.

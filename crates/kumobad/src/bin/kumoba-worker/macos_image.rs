@@ -87,15 +87,22 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
     std::fs::create_dir_all(&options.out)?;
     std::fs::set_permissions(&options.out, std::fs::Permissions::from_mode(0o700))?;
     let progress = options.out.join("build.json");
-    if options.out.join("machine.json").exists() && !progress.exists() {
-        return Err(format!(
-            "a macOS image is already at {}; delete that directory to build a new one",
-            options.out.display()
-        )
-        .into());
-    }
+    let finished = options.out.join("machine.json");
     let mut build = match File::open(&progress) {
         Ok(file) => serde_json::from_reader(file)?,
+        Err(_) if finished.exists() => {
+            say(&format!(
+                "a macOS image is already at {}; updating its guest agent and settings",
+                options.out.display()
+            ));
+            let build = Build {
+                machine: serde_json::from_reader(File::open(&finished)?)?,
+                stage: "refresh".into(),
+            };
+            save(&progress, &build)?;
+            std::fs::remove_file(&finished)?;
+            build
+        }
         Err(_) => {
             let downloaded = options.ipsw.as_os_str().is_empty();
             let ipsw = if downloaded {
@@ -116,14 +123,25 @@ pub fn main(args: Vec<String>) -> Result<(), Failure> {
         build.stage = "provisioned".into();
         save(&progress, &build)?;
     }
+    if build.stage == "refresh" {
+        refresh(&options, &build.machine)?;
+        build.stage = "provisioned".into();
+        save(&progress, &build)?;
+    }
     if build.stage == "provisioned" {
         verify(&options, &build.machine)?;
+        build.stage = "verified".into();
+        save(&progress, &build)?;
+    }
+    if build.stage == "verified" {
+        say("compacting the disk image");
+        crate::macos_compact::compact(&options.out.join("root.raw"))?;
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(options.out.join("machine.json"))?;
+            .open(&finished)?;
         serde_json::to_writer_pretty(&mut file, &build.machine)?;
         file.sync_all()?;
         std::fs::remove_file(&progress)?;
@@ -144,12 +162,7 @@ fn save(path: &Path, build: &Build) -> Result<(), Failure> {
 }
 
 fn free_gib(path: &Path) -> Result<u64, Failure> {
-    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
-    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(path.as_ptr(), &raw mut stats) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(u64::from(stats.f_bavail) * stats.f_frsize / (1 << 30))
+    Ok(crate::macos_compact::free_bytes(path)? / (1 << 30))
 }
 
 fn restore_image(path: &Path) -> Result<Shared<Retained<VZMacOSRestoreImage>>, Failure> {
@@ -493,9 +506,11 @@ softwareupdate --schedule off >/dev/null 2>&1 || true
 defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false || true
 defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false || true
 sudo -u kumoba defaults -currentHost write com.apple.screensaver idleTime -int 0 || true
+defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || true
+rm -f /etc/kcpassword
 "#;
 
-const IMAGE_CHECK: &str = "test -x /usr/local/bin/kumoba-guest && xcode-select -p >/dev/null && test -L /workspace && visudo -cf /etc/sudoers.d/kumoba >/dev/null && launchctl print-disabled system | grep -q '\"com.openssh.sshd\" => disabled' && ! pgrep -x sshd >/dev/null";
+const IMAGE_CHECK: &str = "test -x /usr/local/bin/kumoba-guest && xcode-select -p >/dev/null && test -L /workspace && visudo -cf /etc/sudoers.d/kumoba >/dev/null && launchctl print-disabled system | grep -q '\"com.openssh.sshd\" => disabled' && ! pgrep -x sshd >/dev/null && ! defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1 && test ! -e /etc/kcpassword";
 
 const FORGET_CLOCK: &str = "rm -f /var/db/timed/com.apple.timed.plist && (nvram -d com.apple.System.rtc-offset 2>/dev/null || true)";
 
@@ -769,7 +784,11 @@ impl AgentSession {
     }
 }
 
-fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
+fn boot_offline(
+    options: &Options,
+    machine: &Machine,
+    purpose: &str,
+) -> Result<(Vm, mpsc::Receiver<Event>, AgentSession), Failure> {
     let (events, stopped) = mpsc::channel();
     let disk = options.out.join("root.raw");
     let vm = Vm::new(
@@ -779,8 +798,8 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
     );
     let began = Instant::now();
     vm.start()?;
-    say("booting the image without a network card to check the agent");
-    let mut agent = loop {
+    say(purpose);
+    let agent = loop {
         if let Some(agent) = AgentSession::open(&vm) {
             break agent;
         }
@@ -793,14 +812,13 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
         std::thread::sleep(Duration::from_millis(500));
     };
     say(&format!(
-        "agent answered {:.0} s after boot; checking the image",
+        "agent answered {:.0} s after boot",
         began.elapsed().as_secs_f64()
     ));
-    agent.run_checked(
-        IMAGE_CHECK,
-        "the image is incomplete; delete it and build again",
-    )?;
-    agent.run_checked(FORGET_CLOCK, "could not reset the guest clock state")?;
+    Ok((vm, stopped, agent))
+}
+
+fn shut_down(agent: AgentSession, stopped: &mpsc::Receiver<Event>) -> Result<(), Failure> {
     if !agent.shutdown() {
         return Err("the agent did not accept the shutdown request".into());
     }
@@ -809,4 +827,30 @@ fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
         Ok(Event::Stopped(Some(error))) => Err(error.into()),
         _ => Err("the guest did not shut down".into()),
     }
+}
+
+fn refresh(options: &Options, machine: &Machine) -> Result<(), Failure> {
+    let (_vm, stopped, mut agent) = boot_offline(
+        options,
+        machine,
+        "booting the image without a network card to update it",
+    )?;
+    agent.replace_agent(&options.agent)?;
+    agent.run_checked(SETUP, "guest setup failed")?;
+    agent.run_checked(SSH_OFF, "could not turn off SSH in the guest")?;
+    shut_down(agent, &stopped)
+}
+
+fn verify(options: &Options, machine: &Machine) -> Result<(), Failure> {
+    let (_vm, stopped, mut agent) = boot_offline(
+        options,
+        machine,
+        "booting the image without a network card to check the agent",
+    )?;
+    agent.run_checked(
+        IMAGE_CHECK,
+        "the image is incomplete; delete it and build again",
+    )?;
+    agent.run_checked(FORGET_CLOCK, "could not reset the guest clock state")?;
+    shut_down(agent, &stopped)
 }

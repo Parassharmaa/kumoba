@@ -81,6 +81,9 @@ pub enum Request {
         user: Option<String>,
     },
     Shell(ShellRequest),
+    SetClock {
+        unix_micros: u64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

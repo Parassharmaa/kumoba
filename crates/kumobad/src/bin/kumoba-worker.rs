@@ -4,6 +4,9 @@ mod confinement;
 #[path = "kumoba-worker/macos.rs"]
 mod macos;
 #[cfg(target_os = "macos")]
+#[path = "kumoba-worker/macos_compact.rs"]
+mod macos_compact;
+#[cfg(target_os = "macos")]
 #[path = "kumoba-worker/macos_image.rs"]
 mod macos_image;
 use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, VERSION, WorkerConfig};

@@ -18,7 +18,7 @@
 - **Built for agents.** A CLI and SDKs where every command has a JSON Schema and returns the guest's exit code.
 - **Safe by default.** Egress allowlists, secrets that never enter the VM, a log of every connection.
 - **Live desktop.** Watch and drive a full desktop from your browser.
-- **macOS too.** On an Apple silicon Mac, sandboxes can run macOS as well as Linux.
+- **macOS too.** On an Apple silicon Mac, sandboxes can run macOS as well as Linux. A macOS sandbox boots in about 10 to 25 seconds.
 - **Runs anywhere.** Your laptop, your servers, your cloud. Apache-2.0.
 
 ## Getting started

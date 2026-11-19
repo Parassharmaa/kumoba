@@ -29,7 +29,6 @@ use tokio::{
 const MACOS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
 const MACOS_STOP_TIMEOUT: Duration = Duration::from_secs(90);
 const VM_LIMIT_EXIT: i32 = 75;
-const CLOCK_LEAD: Duration = Duration::from_millis(120);
 
 pub type Tunnel = UnixStream;
 
@@ -344,7 +343,11 @@ impl Sandbox {
                         tokio::time::timeout(Duration::from_millis(300), receive(&mut socket)).await
                 {
                     if version != VERSION {
-                        return Err(Error::Protocol("guest agent version mismatch".into()));
+                        return Err(Error::Protocol(if machine_vm {
+                            "this macOS sandbox's guest agent is from another kumoba release; run `kumobad macos-image` to update the image, then create the sandbox again".into()
+                        } else {
+                            "guest agent version mismatch".into()
+                        }));
                     }
                     socket.write_u8(1).await?;
                     guard.vm.agent = Some(socket);
@@ -461,25 +464,15 @@ impl Sandbox {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| Error::Boot(e.to_string()))?;
-        let target = (now + CLOCK_LEAD * 2).as_secs() + 1;
-        if let Some(wait) = Duration::from_secs(target).checked_sub(now + CLOCK_LEAD) {
-            tokio::time::sleep(wait).await;
+        let unix_micros = u64::try_from(now.as_micros()).map_err(|e| Error::Boot(e.to_string()))?;
+        match self
+            .rpc(Request::SetClock { unix_micros }, Duration::from_secs(10))
+            .await?
+        {
+            Response::Ok => Ok(()),
+            Response::Error(e) => Err(Error::Boot(format!("could not set the guest clock: {e}"))),
+            _ => Err(Error::Protocol("unexpected clock response".into())),
         }
-        let set = self
-            .exec(Command::new("/bin/sh").args([
-                "-c",
-                &format!(
-                    "/bin/date -u \"$(/bin/date -u -j -f %s {target} +%m%d%H%M%Y.%S)\" >/dev/null"
-                ),
-            ]))
-            .await?;
-        if !set.success() {
-            return Err(Error::Boot(format!(
-                "could not set the guest clock: {}",
-                String::from_utf8_lossy(&set.stderr)
-            )));
-        }
-        Ok(())
     }
 
     async fn install_trust(&mut self, certificate: &str) -> Result<()> {

@@ -55,6 +55,10 @@ kumoba 0.2.2より前のイメージです。アップグレードすると、`p
 
 Apple の制限により、1 台の Mac で同時に動かせる macOS の VM は 2 台までです。UTM や Tart など他のアプリの VM も数に入ります。macOS サンドボックスを 1 つ止めるか、他のアプリの VM を終了してから、もう一度起動してください。詳しくは[サンドボックスで macOS を動かす](/ja/guide/macos#制限)を参照してください。
 
+## kumoba をアップグレードしたら macOS サンドボックスが起動しない
+
+`this macOS sandbox's guest agent is from another kumoba release` は、サンドボックスのディスクにクローン時のエージェントが残っていることを示します。`kumobad macos-image` を実行してください。完成したイメージに対しては、現在のエージェントを入れ直し、それ以外はそのまま残します。それより前に作ったサンドボックスは自分のディスクに古いエージェントを持ち続けるので、必要なものを取り出してから作り直してください。[サンドボックスで macOS を動かす](/ja/guide/macos#イメージを更新する)を参照してください。
+
 ## `kumobad macos-image` が途中で止まる
 
 もう一度実行してください。終わった段階は `~/.kumoba/images/macos/build.json` に記録されているので続きから再開し、中断したダウンロードも途中から再開します。`guest provisioning needs macOS 27 or later on the host` と表示された場合は、先に Mac 本体を macOS 27 以降に更新する必要があります。
