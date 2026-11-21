@@ -21,6 +21,7 @@ pub struct FrameStats {
     pub bands: usize,
     pub coded_pixels: usize,
     pub lossy_blocks: usize,
+    pub moved_blocks: usize,
     pub exact_blocks: usize,
     pub pending_blocks: usize,
 }
@@ -383,7 +384,7 @@ impl Encoder {
                 let index = self.busy[at].0;
                 let place = blocks::place(index, width, height);
                 self.put_block(index, &mut previous, false);
-                blocks::encode_lossy(
+                let moved = blocks::encode_lossy(
                     &mut self.bits,
                     &tables,
                     &mut predictor,
@@ -392,6 +393,7 @@ impl Encoder {
                     width,
                     place,
                 );
+                stats.moved_blocks += usize::from(moved);
                 if !self.lossy[index] {
                     self.lossy[index] = true;
                     self.pending += 1;

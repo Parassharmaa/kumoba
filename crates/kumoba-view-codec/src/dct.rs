@@ -128,9 +128,10 @@ pub(crate) fn inverse(data: &mut [i32; 64]) {
 }
 
 #[inline]
-pub(crate) fn quantise(value: i32, step: i32) -> i32 {
+pub(crate) fn quantise(value: i32, step: i32, coarse: bool) -> i32 {
     let divisor = step * 8;
-    let magnitude = (value.abs() + divisor / 2) / divisor;
+    let rounding = if coarse { divisor / 3 } else { divisor / 2 };
+    let magnitude = (value.abs() + rounding) / divisor;
     if value < 0 { -magnitude } else { magnitude }
 }
 
@@ -159,7 +160,7 @@ mod tests {
             let original = block;
             forward(&mut block);
             for value in &mut block {
-                *value = quantise(*value, 1);
+                *value = quantise(*value, 1, false);
             }
             inverse(&mut block);
             for (after, before) in block.iter().zip(&original) {

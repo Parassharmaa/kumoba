@@ -1,11 +1,13 @@
 const canvas = document.getElementById("screen");
 const status = document.getElementById("status");
+const keys = document.getElementById("keys");
 const context = canvas.getContext("2d", { alpha: false });
 
 const SERVER_HELLO = 1;
 const SERVER_FRAME = 2;
 const SERVER_CURSOR = 3;
 const SERVER_POINTER = 4;
+const SERVER_CLIPBOARD = 5;
 const CLIENT_ACK = 1;
 const CLIENT_POINTER = 2;
 const CLIENT_BUTTON = 3;
@@ -14,6 +16,10 @@ const CLIENT_WHEEL = 5;
 
 const CLIENT_PAUSE = 6;
 const CLIENT_SYMBOL = 7;
+const CLIENT_TEXT = 8;
+const CLIENT_CLIPBOARD = 9;
+const CLIENT_COPY = 10;
+const CLIENT_CHORD = 11;
 
 const FLOOR_DRIFT = 0.02;
 const FLOOR_RESET_MS = 1000;
@@ -26,6 +32,11 @@ const LOCAL_POINTER_MS = 600;
 const WHEEL_STEP = 100;
 const MAX_CURSOR = 128;
 const MAX_ATTEMPTS = 6;
+const MAX_TEXT = 200000;
+const PASTE_WAIT_MS = 120;
+const PASTE_GAP_MS = 300;
+const APPLE = /Mac|iPhone|iPad/.test(navigator.platform);
+const COPY_WINDOW_MS = 2000;
 
 const MODIFIERS = [
   ["Shift", 42, 54],
@@ -152,6 +163,12 @@ const playout = { floor: null, late: 0, spread: 0, streak: 0, lastCaptured: 0, l
 let frameHandle = 0;
 let retry = 0;
 const wheel = { x: 0, y: 0 };
+const local = { x: 0, y: 0 };
+let composing = false;
+let pasteTimer = 0;
+let pasteShift = false;
+let pastedAt = 0;
+let copyUntil = 0;
 let stopped = false;
 const pressed = new Map();
 const modifiers = new Set();
@@ -319,6 +336,8 @@ function showCursor(view, data) {
 }
 
 function position(event) {
+  local.x = event.clientX;
+  local.y = event.clientY;
   remote.localUntil = performance.now() + LOCAL_POINTER_MS;
   clearTimeout(remote.timer);
   remote.timer = setTimeout(placePointer, LOCAL_POINTER_MS + 20);
@@ -399,7 +418,7 @@ function releaseKeys() {
 
 canvas.addEventListener("pointermove", position);
 canvas.addEventListener("pointerdown", (event) => {
-  canvas.focus();
+  keys.focus({ preventScroll: true });
   canvas.setPointerCapture(event.pointerId);
   position(event);
   button(event, true);
@@ -411,6 +430,7 @@ canvas.addEventListener("pointerup", (event) => {
   event.preventDefault();
 });
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+canvas.addEventListener("mousedown", (event) => event.preventDefault());
 canvas.addEventListener(
   "wheel",
   (event) => {
@@ -427,10 +447,65 @@ canvas.addEventListener(
   },
   { passive: false }
 );
-canvas.addEventListener("keydown", (event) => {
-  if (event.code === "CapsLock" || event.isComposing) return;
+function sendText(kind, value) {
+  let bytes = new TextEncoder().encode(value);
+  if (bytes.length > MAX_TEXT) {
+    let end = MAX_TEXT;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    bytes = bytes.subarray(0, end);
+  }
+  const message = new Uint8Array(bytes.length + 1);
+  message[0] = kind;
+  message.set(bytes, 1);
+  send(message);
+}
+
+function clipboardKey(event) {
+  if (event.altKey) return "";
+  if (event.key === "Insert") return event.shiftKey ? "v" : "";
+  const command = APPLE ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  const letter = event.key.toLowerCase();
+  return command && (letter === "c" || letter === "x" || letter === "v") ? letter : "";
+}
+
+function sendChord(letter, shift) {
+  for (const code of modifiers) key(code, false);
+  modifiers.clear();
+  send(new Uint8Array([CLIENT_CHORD, letter.charCodeAt(0), shift ? 1 : 0]));
+}
+
+function pasteWithoutEvent() {
+  pasteTimer = 0;
+  sendChord("v", pasteShift);
+}
+
+function placeKeys() {
+  const x = Math.max(0, Math.min(local.x, innerWidth - 220));
+  const y = Math.max(0, Math.min(local.y + 18, innerHeight - 40));
+  keys.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+keys.addEventListener("keydown", (event) => {
+  if (event.code === "CapsLock" || event.isComposing || event.keyCode === 229) return;
+  const clipboard = clipboardKey(event);
+  if (clipboard === "v") {
+    if (event.repeat) return;
+    pasteShift = event.shiftKey && event.key !== "Insert";
+    clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(pasteWithoutEvent, PASTE_WAIT_MS);
+    return;
+  }
   event.preventDefault();
   if (event.repeat) return;
+  if (clipboard && APPLE) {
+    copyUntil = performance.now() + COPY_WINDOW_MS;
+    sendChord(clipboard, event.shiftKey);
+    return;
+  }
+  if (clipboard) {
+    copyUntil = performance.now() + COPY_WINDOW_MS;
+    send(new Uint8Array([CLIENT_COPY]));
+  }
   syncModifiers(event);
   const entry = entryFor(event);
   if (!entry) return;
@@ -438,7 +513,7 @@ canvas.addEventListener("keydown", (event) => {
   if (MODIFIER_CODES.has(entry.code)) modifiers.add(entry.code);
   sendKey(entry, true);
 });
-canvas.addEventListener("keyup", (event) => {
+keys.addEventListener("keyup", (event) => {
   const id = event.code || event.key;
   const entry = pressed.get(id);
   if (!entry) return;
@@ -451,7 +526,36 @@ canvas.addEventListener("keyup", (event) => {
   }
   sendKey(entry, false);
 });
-canvas.addEventListener("blur", releaseKeys);
+keys.addEventListener("paste", (event) => {
+  event.preventDefault();
+  clearTimeout(pasteTimer);
+  pasteTimer = 0;
+  const now = performance.now();
+  if (now - pastedAt < PASTE_GAP_MS) return;
+  pastedAt = now;
+  const value = event.clipboardData?.getData("text/plain") ?? "";
+  if (value) sendText(CLIENT_CLIPBOARD, value);
+  sendChord("v", pasteShift);
+});
+keys.addEventListener("compositionstart", () => {
+  composing = true;
+  keys.classList.add("composing");
+  placeKeys();
+});
+keys.addEventListener("compositionend", (event) => {
+  composing = false;
+  keys.classList.remove("composing");
+  if (event.data) sendText(CLIENT_TEXT, event.data);
+  setTimeout(() => {
+    if (!composing) keys.value = "";
+  }, 0);
+});
+keys.addEventListener("input", (event) => {
+  if (composing || event.isComposing) return;
+  if (event.inputType === "insertText" && event.data) sendText(CLIENT_TEXT, event.data);
+  keys.value = "";
+});
+keys.addEventListener("blur", releaseKeys);
 document.addEventListener("visibilitychange", reportVisibility);
 addEventListener("resize", placePointer);
 
@@ -480,6 +584,12 @@ function connect() {
       reportVisibility();
     } else if (type === SERVER_CURSOR && view.byteLength >= 9) {
       showCursor(view, event.data);
+    } else if (type === SERVER_CLIPBOARD) {
+      if (performance.now() < copyUntil) {
+        copyUntil = 0;
+        const value = new TextDecoder().decode(new Uint8Array(event.data, 1));
+        navigator.clipboard?.writeText(value).catch(() => {});
+      }
     } else if (type === SERVER_POINTER && view.byteLength >= 5) {
       remote.x = view.getUint16(1, true);
       remote.y = view.getUint16(3, true);
@@ -515,4 +625,5 @@ function connect() {
 
 const module = await WebAssembly.instantiate(await (await fetch("codec.wasm")).arrayBuffer(), {});
 codec = module.instance.exports;
+keys.focus({ preventScroll: true });
 connect();

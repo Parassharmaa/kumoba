@@ -4,8 +4,12 @@
     clippy::cast_sign_loss
 )]
 
+#[cfg(target_os = "linux")]
+mod clipboard;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod flow;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod hints;
 #[cfg(target_os = "linux")]
 mod http;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
