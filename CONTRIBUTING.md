@@ -25,7 +25,7 @@ scripts/serve.sh                 # kumobad with the built images
 | `crates/kumobad` | Daemon, HTTP API, `kumoba` CLI and `kumoba-worker` |
 | `crates/kumoba-guest` | Agent inside every VM |
 | `crates/kumoba-protocol` | Host-guest wire protocol |
-| `crates/kumoba-view` | Live view engine that runs in the guest, and its browser viewer |
+| `crates/kumoba-view` | Live view engine and its browser viewer. It runs in a Linux guest, and on the host for a macOS sandbox |
 | `crates/kumoba-view-codec` | Screen codec the engine encodes with and the viewer decodes with |
 | `crates/kumoba-view-wasm` | The decoder built as WebAssembly for the viewer |
 | `sdk/typescript` | `kumoba` npm package: SDK and CLI |
@@ -51,6 +51,17 @@ scripts/ci-lint.sh               # everything the lint CI job checks
 To run the SDK against a real daemon: `scripts/serve.sh` in one terminal, then in another `set -a; source .local/serve/env; set +a; cd sdk/typescript && npm run test:live`.
 
 On Linux run `scripts/prepare-linux-host.sh` once and `source .local/linux-host.env` before the commands above. `scripts/ci-linux.sh` is what CI runs.
+
+### Try the macOS live view without a macOS image
+
+The host side of the live view works with any VM that has a display, so a small Linux image is enough to exercise it:
+
+```sh
+.local/bin/kumoba-worker screen-check --disk alpine-virt-aarch64.iso --socket /tmp/kv.sock &
+.local/bin/kumoba-view-host --screen /tmp/kv.sock --listen 127.0.0.1:6191
+```
+
+Open `http://127.0.0.1:6191/`. `screen-check` boots the image with Apple's Virtualization framework and shares its screen the way a macOS sandbox's worker does. Keep the socket path short: a Unix socket path holds about 100 characters.
 
 ## Changing the host-guest protocol
 

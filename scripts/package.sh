@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Called by scripts/release-assets.sh on the release runners and by hand on a prepared host.
-# Packs kumobad, the kumoba CLI, kumoba-worker, kumoba-guest and kumoba-view (plus the macOS guest agent on a Mac) with the licences and a manifest of sha256
+# Packs kumobad, the kumoba CLI, kumoba-worker, kumoba-guest and kumoba-view (plus the macOS guest agent and the host build of kumoba-view on a Mac) with the licences and a manifest of sha256
 # digests into one tarball. Linux tarballs also carry the patched libkrun and libkrunfw;
 # macOS hosts get both from Homebrew. KUMOBA_IMAGE=/path.raw adds that disk image (Linux).
 #   scripts/package.sh <version> [output-dir]
@@ -23,7 +23,7 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/licenses" "$output_dir"
 install -m 0755 .local/bin/kumobad .local/bin/kumoba .local/bin/kumoba-worker .local/bin/kumoba-guest .local/bin/kumoba-view "$stage/bin/"
 if [[ "$host_os" == macos ]]; then
-  install -m 0755 .local/bin/kumoba-guest-macos "$stage/bin/"
+  install -m 0755 .local/bin/kumoba-guest-macos .local/bin/kumoba-view-host "$stage/bin/"
 fi
 cp LICENSE NOTICE "$stage/licenses/"
 if [[ "$host_os" == linux ]]; then

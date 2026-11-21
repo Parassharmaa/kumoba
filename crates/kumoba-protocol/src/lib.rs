@@ -1,4 +1,5 @@
 pub mod desktop;
+pub mod screen;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeMap, io, path::PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -6,6 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const VERSION: u32 = 3;
 pub const AGENT_PORT: u32 = 1024;
 pub const EGRESS_PORT: u32 = 1025;
+pub const SCREEN_SOCKET: &str = "view.sock";
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_DATA: usize = 1024 * 1024;
 pub const MAX_OUTPUT_CHUNK: usize = 16 * 1024;

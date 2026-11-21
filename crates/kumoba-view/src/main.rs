@@ -20,6 +20,12 @@ fn main() {
                     config.max_mbps = value;
                 }
             }
+            "--screen" => {
+                if let Some(value) = args.next() {
+                    config.screen = Some(value.into());
+                }
+            }
+            "--owned" => config.owned = true,
             "--version" => {
                 println!("kumoba-view {}", env!("CARGO_PKG_VERSION"));
                 return;

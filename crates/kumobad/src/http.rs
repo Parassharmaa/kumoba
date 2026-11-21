@@ -249,6 +249,7 @@ async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResu
                 sandbox_id: id,
                 port: body.port,
                 exp_ms,
+                host_view: false,
             });
             let path = format!("/v1/preview/{token}/");
             Ok(json_response(
@@ -441,11 +442,60 @@ async fn listening(agent: &kumoba::Agent, port: u16, limit: Duration) -> bool {
     }
 }
 
+fn desktop_link(
+    service: &Service,
+    id: String,
+    view: (u16, &str),
+    host_view: bool,
+    ttl_seconds: u32,
+    processes: &Value,
+) -> Response<Body> {
+    let (port, name) = view;
+    let exp_ms = crate::service::now_ms() + u64::from(ttl_seconds.clamp(1, 3600)) * 1000;
+    let token = service.preview_key.sign(&crate::preview::PreviewClaims {
+        sandbox_id: id,
+        port,
+        exp_ms,
+        host_view,
+    });
+    let base = format!("/v1/preview/{token}/");
+    let viewer = if view == VNC_VIEW {
+        format!(
+            "{base}vnc.html?autoconnect=1&resize=remote&path={}",
+            url::form_urlencoded::byte_serialize(base.trim_start_matches('/').as_bytes())
+                .collect::<String>()
+        )
+    } else {
+        base
+    };
+    json_response(
+        200,
+        json!({
+            "url": service.public_link(&viewer),
+            "path": viewer,
+            "expiresAtMs": exp_ms,
+            "processes": processes,
+            "viewer": name,
+        }),
+    )
+}
+
 async fn desktop(
     service: &Service,
     id: String,
     body: crate::model::DesktopRequest,
 ) -> ApiResult<Response<Body>> {
+    if let Some((entry, _)) = service.live_view(&id, true).await? {
+        let _operation = entry.begin();
+        return Ok(desktop_link(
+            service,
+            id,
+            STREAM_VIEW,
+            true,
+            body.ttl_seconds,
+            &json!({"view": true}),
+        ));
+    }
     let mut command = Command::new(DESKTOP_HELPER)
         .arg("start")
         .timeout(Duration::from_secs(90))
@@ -487,32 +537,13 @@ async fn desktop(
             "the {name} live view did not start listening"
         )));
     }
-    let stream = view == STREAM_VIEW;
-    let exp_ms = crate::service::now_ms() + u64::from(body.ttl_seconds.clamp(1, 3600)) * 1000;
-    let token = service.preview_key.sign(&crate::preview::PreviewClaims {
-        sandbox_id: id,
-        port,
-        exp_ms,
-    });
-    let base = format!("/v1/preview/{token}/");
-    let viewer = if stream {
-        base
-    } else {
-        format!(
-            "{base}vnc.html?autoconnect=1&resize=remote&path={}",
-            url::form_urlencoded::byte_serialize(base.trim_start_matches('/').as_bytes())
-                .collect::<String>()
-        )
-    };
-    Ok(json_response(
-        200,
-        json!({
-            "url": service.public_link(&viewer),
-            "path": viewer,
-            "expiresAtMs": exp_ms,
-            "processes": processes,
-            "viewer": name,
-        }),
+    Ok(desktop_link(
+        service,
+        id,
+        view,
+        false,
+        body.ttl_seconds,
+        &processes,
     ))
 }
 
@@ -834,7 +865,19 @@ async fn preview(
         .verify(token, crate::service::now_ms())
         .ok_or_else(|| ApiError::Status(403, "preview token is invalid or expired".into()))?;
     let (entry, agent, _) = service.running_agent(&claims.sandbox_id, None).await?;
-    let mut tunnel = agent.connect(claims.port).await?;
+    let mut tunnel = if claims.host_view {
+        let Some((_, live)) = service.live_view(&claims.sandbox_id, false).await? else {
+            return Err(ApiError::Status(409, "sandbox is not started".into()));
+        };
+        tokio::net::UnixStream::connect(&live).await.map_err(|_| {
+            ApiError::Status(
+                502,
+                "the live view is not running; ask for the desktop link again".into(),
+            )
+        })?
+    } else {
+        agent.connect(claims.port).await?
+    };
     let target = match request.uri().query() {
         Some(query) => format!("/{rest}?{query}"),
         None => format!("/{rest}"),

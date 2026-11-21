@@ -26,6 +26,7 @@ struct Options {
     egress: kumoba::EgressConfig,
     state_dir: PathBuf,
     worker: PathBuf,
+    view: PathBuf,
     images: BTreeMap<String, PathBuf>,
     socket: Option<PathBuf>,
     listen: Option<String>,
@@ -227,6 +228,7 @@ fn options() -> Result<Options, String> {
         egress,
         state_dir: env_path_or("KUMOBAD_STATE_DIR", || home.join("state")),
         worker,
+        view: env_path_or("KUMOBAD_VIEW", || beside_executable("kumoba-view-host")),
         images,
         socket,
         listen,
@@ -277,6 +279,7 @@ Environment, all optional:
   KUMOBAD_STATE_DIR     sandbox disks, metadata and keys (default $KUMOBA_HOME/state)
   KUMOBAD_TOKEN_FILE    bearer token, 32 bytes or more (default $KUMOBA_HOME/token, created)
   KUMOBAD_WORKER        kumoba-worker binary (default: next to kumobad)
+  KUMOBAD_VIEW          live view engine for macOS sandboxes (default: kumoba-view-host next to kumobad)
   KUMOBAD_SOCKET        Unix socket to listen on, mode 0600
                         (default $KUMOBA_HOME/kumobad.sock unless KUMOBAD_LISTEN is set)
   KUMOBAD_LISTEN        loopback host:port to listen on (default 127.0.0.1:7788 when neither
@@ -355,6 +358,7 @@ async fn run() -> Result<(), String> {
         ServiceConfig {
             state_dir: options.state_dir.clone(),
             images: options.images,
+            view: options.view,
         },
         access_rx,
         dropped,

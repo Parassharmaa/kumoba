@@ -1,13 +1,10 @@
 use crate::flow::Flow;
+use crate::http::Link;
+use crate::screen::{Failure, Screen};
 use crate::ws::{Message, Reader, Writer};
-use crate::x11::Screen;
 use kumoba_view_codec::{Encoder, Rect};
 use std::collections::VecDeque;
-use std::net::TcpStream;
-use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
-
-type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 pub const SERVER_HELLO: u8 = 1;
 pub const SERVER_FRAME: u8 = 2;
@@ -144,10 +141,13 @@ fn sooner(timeout: Option<Duration>, other: Option<Duration>) -> Option<Duration
     }
 }
 
-pub fn run(mut stream: TcpStream, settings: Settings) -> Result<(), Failure> {
-    stream.set_nonblocking(true)?;
-    stream.set_nodelay(true)?;
-    let mut screen = Screen::open()?;
+pub fn run<S: Screen>(
+    mut stream: impl Link,
+    settings: Settings,
+    open: impl FnOnce() -> Result<S, Failure>,
+) -> Result<(), Failure> {
+    stream.streaming()?;
+    let mut screen = open()?;
     let (width, height) = screen.size();
     let mut encoder = Encoder::new(width, height);
     let mut reader = Reader::default();

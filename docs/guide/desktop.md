@@ -26,6 +26,8 @@ Before you begin:
 
 The link expires after one hour. Run the same command again for a new one. Without `--open`, the command prints the link as `url`.
 
+A macOS sandbox has a live view too, opened with the same command. [See the screen](/guide/macos#see-the-screen) lists what differs there.
+
 ## What the live view does
 
 The live view is kumoba's own viewer. It sends the desktop to your browser only when the screen changes, so a still desktop uses no bandwidth and almost no CPU.

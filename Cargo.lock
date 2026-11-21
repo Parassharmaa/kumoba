@@ -608,6 +608,7 @@ name = "kumoba-view"
 version = "0.5.0"
 dependencies = [
  "base64",
+ "kumoba-protocol",
  "kumoba-view-codec",
  "libc",
  "sha1",
@@ -642,6 +643,7 @@ dependencies = [
  "libc",
  "libloading",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-virtualization",
  "schemars",

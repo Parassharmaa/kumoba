@@ -1,10 +1,50 @@
+use crate::remote::Remote;
 use crate::session::{self, Settings};
 use crate::ws;
+#[cfg(target_os = "linux")]
+use crate::x11::X11;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+#[derive(Clone)]
+pub enum Source {
+    #[cfg(target_os = "linux")]
+    X11,
+    Remote(PathBuf),
+}
+
+pub trait Link: Read + Write + AsRawFd + Send + 'static {
+    fn limit(&self, wait: Option<Duration>) -> io::Result<()>;
+    fn streaming(&self) -> io::Result<()>;
+}
+
+impl Link for TcpStream {
+    fn limit(&self, wait: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(wait)
+    }
+
+    fn streaming(&self) -> io::Result<()> {
+        self.set_nonblocking(true)?;
+        self.set_nodelay(true)
+    }
+}
+
+impl Link for UnixStream {
+    fn limit(&self, wait: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(wait)
+    }
+
+    fn streaming(&self) -> io::Result<()> {
+        self.set_nonblocking(true)
+    }
+}
 
 const PAGE: &[u8] = include_bytes!("../viewer/index.html");
 const SCRIPT: &[u8] = include_bytes!("../viewer/viewer.js");
@@ -27,7 +67,7 @@ impl Request {
     }
 }
 
-fn read_request(stream: &mut TcpStream) -> io::Result<Option<Request>> {
+fn read_request(stream: &mut impl Read) -> io::Result<Option<Request>> {
     let mut head = Vec::new();
     let mut chunk = [0u8; 2048];
     while !head.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -55,7 +95,7 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Option<Request>> {
     }))
 }
 
-fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) -> io::Result<()> {
+fn respond(stream: &mut impl Write, status: &str, kind: &str, body: &[u8]) -> io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n",
         body.len()
@@ -85,15 +125,16 @@ fn local_request(request: &Request, port: u16) -> bool {
 }
 
 fn handle(
-    mut stream: TcpStream,
-    port: u16,
+    mut stream: impl Link,
+    port: Option<u16>,
     settings: Settings,
+    source: &Source,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.limit(Some(Duration::from_secs(10)))?;
     let Some(request) = read_request(&mut stream)? else {
         return Ok(());
     };
-    if !local_request(&request, port) {
+    if port.is_some_and(|port| !local_request(&request, port)) {
         return Ok(respond(
             &mut stream,
             "403 Forbidden",
@@ -141,43 +182,91 @@ fn handle(
                 ws::accept_key(key)
             );
             stream.write_all(head.as_bytes())?;
-            stream.set_read_timeout(None)?;
-            session::run(stream, settings)?;
+            stream.limit(None)?;
+            match source {
+                #[cfg(target_os = "linux")]
+                Source::X11 => session::run(stream, settings, X11::open)?,
+                Source::Remote(path) => session::run(stream, settings, || Remote::open(path))?,
+            }
         }
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found\n")?,
     }
     Ok(())
 }
 
-pub fn serve(listen: &str, settings: Settings) -> io::Result<()> {
-    let listener = TcpListener::bind(listen)?;
-    let address = listener.local_addr()?;
-    if !address.ip().is_loopback() {
-        return Err(io::Error::other("kumoba-view listens on loopback only"));
-    }
-    let port = address.port();
-    println!("kumoba-view listening on {address}");
+fn accept<L: Link>(
+    incoming: impl Iterator<Item = io::Result<L>>,
+    port: Option<u16>,
+    settings: Settings,
+    source: &Source,
+) {
     let open = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
+    for stream in incoming {
         let Ok(stream) = stream else { continue };
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             open.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
         let open = Arc::clone(&open);
+        let source = source.clone();
         std::thread::spawn(move || {
-            if let Err(error) = handle(stream, port, settings) {
+            if let Err(error) = handle(stream, port, settings, &source) {
                 eprintln!("kumoba-view: connection ended: {error}");
             }
             open.fetch_sub(1, Ordering::SeqCst);
         });
     }
+}
+
+pub fn serve(listen: &str, settings: Settings, source: &Source) -> io::Result<()> {
+    if let Some(path) = listen.strip_prefix("unix:") {
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        println!("kumoba-view listening on {path}");
+        accept(listener.incoming(), None, settings, source);
+        return Ok(());
+    }
+    let listener = TcpListener::bind(listen)?;
+    let address = listener.local_addr()?;
+    if !address.ip().is_loopback() {
+        return Err(io::Error::other("kumoba-view listens on loopback only"));
+    }
+    println!("kumoba-view listening on {address}");
+    accept(listener.incoming(), Some(address.port()), settings, source);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn answer(port: Option<u16>, request: &str) -> String {
+        let (mut browser, engine) = UnixStream::pair().unwrap();
+        browser.write_all(request.as_bytes()).unwrap();
+        let settings = Settings {
+            fps: 30,
+            max_mbps: 10,
+        };
+        let source = Source::Remote("/nonexistent/view.sock".into());
+        handle(engine, port, settings, &source).unwrap();
+        let mut reply = String::new();
+        browser.read_to_string(&mut reply).unwrap();
+        reply.lines().next().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn a_private_socket_serves_any_host_and_a_port_serves_only_its_own() {
+        let page = "GET / HTTP/1.1\r\nhost: sandbox.example\r\n\r\n";
+        assert_eq!(answer(None, page), "HTTP/1.1 200 OK");
+        assert_eq!(answer(Some(6090), page), "HTTP/1.1 403 Forbidden");
+        let own = "GET / HTTP/1.1\r\nhost: 127.0.0.1:6090\r\n\r\n";
+        assert_eq!(answer(Some(6090), own), "HTTP/1.1 200 OK");
+        assert_eq!(
+            answer(None, "POST / HTTP/1.1\r\n\r\n"),
+            "HTTP/1.1 405 Method Not Allowed"
+        );
+    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
         Request {
