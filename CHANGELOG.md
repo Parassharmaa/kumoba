@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
 ### Added
 
 - A new desktop live view for Linux sandboxes. `kumoba desktop` now opens kumoba's own viewer instead of noVNC. It shows text and windows pixel for pixel, sends a scroll as a move plus the newly shown part, compresses regions that keep changing such as video, and returns them to exact pixels when they stop. It adapts to slow connections, shows the remote pointer, types the characters of any keyboard layout, and sends nothing while the screen is still or the tab is in the background. Text from an input method editor and pasted text aren't sent yet. Rebuild or update the `default` image to get it; older images keep noVNC.
@@ -98,7 +100,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Parassharmaa/kumoba/compare/v0.2.1...v0.2.2
