@@ -69,7 +69,7 @@ See [docs/cli.md](https://github.com/Parassharmaa/kumoba/blob/main/docs/cli.md).
 - `files.write / readText / read / stream / upload / list / remove`
 - `setSecrets([...])`: values never enter the guest; they are injected into HTTPS requests to the hosts you name.
 - `expose(port, { ttlSeconds })`: a signed, expiring link through `kumobad` to a port in the VM.
-- `desktop.start / screenshot / click / type / hotkey / liveView` on images with the desktop installed.
+- `desktop.start / screenshot / click / type / hotkey` on images with the desktop installed, and `desktop.liveView()` for a link that shows the desktop in a browser. `liveView()` also works on macOS sandboxes.
 - `start / stop / delete / update({ network })`, plus `kumoba.list`, `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
 
 `await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `status` and `code`.

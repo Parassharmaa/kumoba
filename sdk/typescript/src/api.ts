@@ -67,6 +67,7 @@ const accessLogSchema = z.object({
 });
 
 const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
+const desktopSchema = previewSchema.extend({ viewer: z.enum(["stream", "vnc"]) });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
 const deletedSchema = z.object({ deletedNames: z.array(z.string()) });
 const anySchema = z.unknown();
@@ -198,6 +199,18 @@ export class Api {
       method: "POST",
       path: sandboxPath(id, "/preview"),
       json: { port, ttlSeconds },
+    });
+  }
+
+  async desktop(
+    id: string,
+    ttlSeconds: number,
+    viewer?: "stream" | "vnc"
+  ): Promise<{ path: string; expiresAtMs: number; viewer: "stream" | "vnc" }> {
+    return this.http.json(desktopSchema, {
+      method: "POST",
+      path: sandboxPath(id, "/desktop"),
+      json: { ttlSeconds, ...(viewer === undefined ? {} : { viewer }) },
     });
   }
 

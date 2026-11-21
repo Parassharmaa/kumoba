@@ -262,6 +262,19 @@ describe("Sandbox extras", () => {
       viewer: "vnc",
     });
   });
+
+  it("asks kumobad for the live view of a sandbox with no desktop helper inside", async () => {
+    fake.onExec = () => ({ stdout: "", exitCode: 127 });
+    const sandbox = await kumoba.create();
+    const before = Date.now();
+    const view = await sandbox.desktop.liveView({ ttlSeconds: 120 });
+    expect(view).toMatchObject({ path: "/v1/preview/token-host/", viewer: "stream" });
+    expect(view.expiresAt.getTime() - before).toBeGreaterThanOrEqual(120_000);
+    expect(await sandbox.desktop.liveView({ viewer: "vnc" })).toMatchObject({
+      path: "/v1/preview/token-host/",
+      viewer: "stream",
+    });
+  });
 });
 
 describe("Sandbox.update", () => {

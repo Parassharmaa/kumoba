@@ -44,7 +44,11 @@ export class Sandbox implements AsyncDisposable {
     this.desktop = new Desktop(
       async (command, options) => this.run(command, options),
       this.files,
-      async (port, options) => this.expose(port, options)
+      async (port, options) => this.expose(port, options),
+      async (options) => {
+        const view = await context.api.desktop(this.id, options.ttlSeconds ?? 600, options.viewer);
+        return { ...this.link(view), viewer: view.viewer };
+      }
     );
   }
 
@@ -110,7 +114,10 @@ export class Sandbox implements AsyncDisposable {
    * `url` is set when the client was configured with a base URL; `path` always is.
    */
   async expose(port: number, options: ExposeOptions = {}): Promise<Exposed> {
-    const preview = await this.context.api.preview(this.id, port, options.ttlSeconds ?? 600);
+    return this.link(await this.context.api.preview(this.id, port, options.ttlSeconds ?? 600));
+  }
+
+  private link(preview: { path: string; expiresAtMs: number }): Exposed {
     const base = this.context.baseUrl;
     return {
       path: preview.path,

@@ -34,3 +34,15 @@ cat > hvf.plist <<'PLIST'
 PLIST
 codesign --force --sign - --entitlements hvf.plist "$(which kumoba-worker)"
 ```
+
+## Build the live view engine for macOS sandboxes
+
+The [live view of a macOS sandbox](/guide/macos#see-the-screen) is served by `kumoba-view-host`, which `kumobad` starts from the directory it is in. The release build includes it. It is not on crates.io, so after `cargo install` build it from the repository:
+
+```sh
+git clone https://github.com/Parassharmaa/kumoba && cd kumoba
+cargo build --release -p kumoba-view
+cp target/release/kumoba-view "$(dirname "$(which kumobad)")/kumoba-view-host"
+```
+
+Linux sandboxes don't need it: their engine is inside the image.
