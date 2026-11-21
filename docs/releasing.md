@@ -11,7 +11,7 @@ kumoba ships as four crates on crates.io (`kumoba-protocol`, `kumoba-guest`, `ku
 
 ## Cutting a release
 
-On a clean `main` checkout that CI has passed. CI can't boot macOS guests, so when a change touches macOS sandboxes, first run `scripts/macos-smoke.sh` on an Apple silicon Mac with `kumobad` running and the `macos` image built:
+On a clean `main` checkout that CI has passed. CI can't boot macOS guests, so when a change touches macOS sandboxes, first run `scripts/macos-smoke.sh` on an Apple silicon Mac with `kumobad` running and the `macos` image built. When it touches the live view, also open `kumoba desktop <id> --open` on a macOS sandbox and check the picture, typing, a click and the scroll wheel; CI covers the Linux live view only:
 
 ```sh
 scripts/release.sh 0.2.0

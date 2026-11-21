@@ -34,6 +34,16 @@ kumobad writes `~/.kumoba/token` the first time it starts. Start it once, or set
 
 Another program uses port 7789, so kumobad couldn't serve browser links. Free the port, or choose another one: `KUMOBAD_PREVIEW_LISTEN=127.0.0.1:7790 kumobad`. kumobad also logs `listen_skipped` when port 7788 is taken; the CLI and SDK keep working through the socket.
 
+## The live view of a macOS sandbox doesn't open
+
+`kumoba desktop` on a macOS sandbox answers `the live view did not start` with the reason in brackets:
+
+- **`kumoba-view-host is missing`**: the engine that shows a macOS sandbox's screen is not next to `kumobad`. The install script puts it there; a `kumobad` built with `cargo install` does not have it. [Build it from the repository](/install#build-the-live-view-engine-for-macos-sandboxes), or set `KUMOBAD_VIEW` to where it is.
+- **`the live view needs kumobad to run inside a logged-in desktop session`**: `kumobad` was started over SSH or as a boot-time daemon. Start it from a terminal in your desktop session.
+- **`too many live views are open on this sandbox`**: eight pages can watch one macOS sandbox at a time. Close some.
+
+If the page opens and shows the macOS login window, that is the sandbox's screen: nobody is logged in yet. Sign in as `kumoba` with the password in `~/.kumoba/images/macos/password`.
+
 ## `stop the sandbox before changing its network`
 
 Network changes apply at boot. Run `kumoba stop <id>`, then `kumoba update`, then `kumoba start <id>`.
