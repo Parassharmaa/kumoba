@@ -33,6 +33,15 @@ Every connection attempt, allowed or denied, goes to an access log under the sta
 
 A preview link is a signed token for one sandbox, port and expiry. Requests to it are relayed to the guest port, WebSockets included. Browsers load previews from a separate listener so pages from a sandbox never share the API's origin.
 
+## Live view
+
+`kumoba-view` runs inside the guest next to the desktop and listens on loopback. A browser reaches it through a preview link, like any other guest port.
+
+- It waits for the X server to report a change, then reads only the changed rows through shared memory.
+- It keeps a copy of what the browser shows. Each frame is the difference from that copy: areas that moved, pixels coded exactly, and blocks of busy content coded with loss. Lossy blocks are sent exactly once they stop changing.
+- The browser decodes frames with the same Rust code, built as WebAssembly, and draws one whole frame per screen refresh.
+- The browser acknowledges every frame. From the delay of those acknowledgements the engine sets how many frames may be on the way and how many bytes a second it may send.
+
 ## State directory
 
 ```

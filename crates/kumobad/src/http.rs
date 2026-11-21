@@ -414,6 +414,32 @@ async fn shell(
 }
 const DESKTOP_HELPER: &str = "/usr/local/bin/kumoba-desktop";
 const DESKTOP_VNC_PORT: u16 = 6080;
+const DESKTOP_STREAM_PORT: u16 = 6090;
+
+const STREAM_VIEW: (u16, &str) = (DESKTOP_STREAM_PORT, "stream");
+const VNC_VIEW: (u16, &str) = (DESKTOP_VNC_PORT, "vnc");
+
+fn desktop_view(requested: crate::model::DesktopViewer, processes: &Value) -> (u16, &'static str) {
+    let running = processes.get("view").and_then(Value::as_bool) == Some(true);
+    if requested == crate::model::DesktopViewer::Stream && running {
+        STREAM_VIEW
+    } else {
+        VNC_VIEW
+    }
+}
+
+async fn listening(agent: &kumoba::Agent, port: u16, limit: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if agent.connect(port).await.is_ok() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
 
 async fn desktop(
     service: &Service,
@@ -446,37 +472,38 @@ async fn desktop(
             .to_string();
         return Err(no_desktop(detail));
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        match agent.connect(DESKTOP_VNC_PORT).await {
-            Ok(_) => break,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-            Err(error) => {
-                return Err(no_desktop(format!(
-                    "the noVNC bridge did not start listening: {error}"
-                )));
-            }
-        }
-    }
     let processes = String::from_utf8_lossy(&stdout)
         .lines()
         .last()
         .and_then(|line| serde_json::from_str::<Value>(line).ok())
         .unwrap_or(Value::Null);
+    let mut view = desktop_view(body.viewer, &processes);
+    if view == STREAM_VIEW && !listening(&agent, view.0, Duration::from_secs(10)).await {
+        view = VNC_VIEW;
+    }
+    let (port, name) = view;
+    if !listening(&agent, port, Duration::from_secs(30)).await {
+        return Err(no_desktop(format!(
+            "the {name} live view did not start listening"
+        )));
+    }
+    let stream = view == STREAM_VIEW;
     let exp_ms = crate::service::now_ms() + u64::from(body.ttl_seconds.clamp(1, 3600)) * 1000;
     let token = service.preview_key.sign(&crate::preview::PreviewClaims {
         sandbox_id: id,
-        port: DESKTOP_VNC_PORT,
+        port,
         exp_ms,
     });
     let base = format!("/v1/preview/{token}/");
-    let viewer = format!(
-        "{base}vnc.html?autoconnect=1&resize=remote&path={}",
-        url::form_urlencoded::byte_serialize(base.trim_start_matches('/').as_bytes())
-            .collect::<String>()
-    );
+    let viewer = if stream {
+        base
+    } else {
+        format!(
+            "{base}vnc.html?autoconnect=1&resize=remote&path={}",
+            url::form_urlencoded::byte_serialize(base.trim_start_matches('/').as_bytes())
+                .collect::<String>()
+        )
+    };
     Ok(json_response(
         200,
         json!({
@@ -484,6 +511,7 @@ async fn desktop(
             "path": viewer,
             "expiresAtMs": exp_ms,
             "processes": processes,
+            "viewer": name,
         }),
     ))
 }
@@ -903,6 +931,19 @@ async fn preview(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_desktop_link_prefers_the_stream_viewer_only_when_it_runs() {
+        use super::{STREAM_VIEW, VNC_VIEW, desktop_view};
+        use crate::model::DesktopViewer::{Stream, Vnc};
+        use serde_json::{Value, json};
+        let both = json!({"view": true, "novnc": true});
+        assert_eq!(desktop_view(Stream, &both), STREAM_VIEW);
+        assert_eq!(desktop_view(Vnc, &both), VNC_VIEW);
+        assert_eq!(desktop_view(Stream, &json!({"novnc": true})), VNC_VIEW);
+        assert_eq!(desktop_view(Stream, &json!({"view": false})), VNC_VIEW);
+        assert_eq!(desktop_view(Stream, &Value::Null), VNC_VIEW);
+    }
+
     #[test]
     fn reads_the_declared_body_length() {
         use super::declared_length;

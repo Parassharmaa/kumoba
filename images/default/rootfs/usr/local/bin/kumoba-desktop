@@ -12,6 +12,8 @@ WIDTH = int(os.environ.get("KUMOBA_DESKTOP_WIDTH", "1024"))
 HEIGHT = int(os.environ.get("KUMOBA_DESKTOP_HEIGHT", "768"))
 VNC_PORT = 5901
 NOVNC_PORT = 6080
+VIEW_PORT = 6090
+VIEW = "/usr/local/bin/kumoba-view"
 STATE = Path.home() / ".kumoba-desktop"
 PROCESSES = {
     "xvfb": ["Xvfb", DISPLAY, "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-ac", "-nolisten", "tcp"],
@@ -23,12 +25,14 @@ PROCESSES = {
     "novnc": [
         "websockify", "--web", "/usr/share/novnc", f"127.0.0.1:{NOVNC_PORT}", f"127.0.0.1:{VNC_PORT}",
     ],
+    "view": [VIEW, "--listen", f"127.0.0.1:{VIEW_PORT}"],
 }
 PATTERNS = {
     "xvfb": f"Xvfb {DISPLAY}",
     "xfce4": "xfce4-session",
     "x11vnc": f"x11vnc -display {DISPLAY}",
     "novnc": f"websockify --web /usr/share/novnc",
+    "view": f"{VIEW} --listen",
 }
 KEYS = {
     "enter": "Return", "return": "Return", "escape": "Escape", "esc": "Escape", "tab": "Tab",
@@ -107,7 +111,8 @@ def stop_process(name):
 
 
 def start():
-    for name in ["xvfb", "xfce4", "x11vnc", "novnc"]:
+    names = ["xvfb", "xfce4", "x11vnc", "novnc"] + (["view"] if os.access(VIEW, os.X_OK) else [])
+    for name in names:
         if not running(name):
             start_process(name)
     print(json.dumps({name: running(name) for name in PROCESSES}))

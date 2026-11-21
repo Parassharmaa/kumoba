@@ -5,6 +5,7 @@ source scripts/host-env.sh
 rustup target add "$guest_target"
 cargo build --release --locked -p kumobad
 RUSTFLAGS='-C linker=rust-lld' cargo build --release --locked -p kumoba-guest --target "$guest_target"
+RUSTFLAGS='-C linker=rust-lld' cargo build --release --locked -p kumoba-view --target "$guest_target"
 stage_worker
 if [[ "$host_os" == macos ]]; then
   cargo build --release --locked -p kumoba-guest
@@ -13,6 +14,8 @@ if [[ "$host_os" == macos ]]; then
 fi
 cp "target/$guest_target/release/kumoba-guest" .local/bin/kumoba-guest.next
 mv .local/bin/kumoba-guest.next .local/bin/kumoba-guest
+cp "target/$guest_target/release/kumoba-view" .local/bin/kumoba-view.next
+mv .local/bin/kumoba-view.next .local/bin/kumoba-view
 cp "target/$guest_target/release/http-fixture" .local/bin/http-fixture.next
 mv .local/bin/http-fixture.next .local/bin/http-fixture
 cp target/release/kumobad .local/bin/kumobad.next

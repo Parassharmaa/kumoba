@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kumoba desktop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101214; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; max-width: 100vw; max-height: 100vh; outline: none; cursor: default; }
+  #pointer { position: fixed; left: 0; top: 0; pointer-events: none; transform-origin: 0 0; }
+  #status { position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 system-ui, sans-serif; color: #c9d1d9; background: rgba(16, 18, 20, 0.8); padding: 4px 8px; border-radius: 4px; }
+  #status:empty { display: none; }
+</style>
+</head>
+<body>
+<canvas id="screen" tabindex="0" width="16" height="16"></canvas>
+<canvas id="pointer" width="1" height="1" hidden></canvas>
+<div id="status" role="status">Connecting</div>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>
