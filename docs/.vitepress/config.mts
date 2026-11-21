@@ -1,4 +1,10 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vitepress";
+
+const cargo = readFileSync(new URL("../../Cargo.toml", import.meta.url), "utf8");
+const version = /^\[workspace\.package\][^[]*?^version = "(\d+)\.(\d+)\./m.exec(cargo);
+if (!version) throw new Error("no [workspace.package] version in Cargo.toml");
+const release = `v${version[1]}.${version[2]}`;
 
 const repo = "https://github.com/Parassharmaa/kumoba";
 const repoFiles: Record<string, string> = {
@@ -51,7 +57,7 @@ export default defineConfig({
           { text: "CLI", link: "/cli" },
           { text: "HTTP API", link: "/http-api" },
           {
-            text: "v0.2 · alpha",
+            text: `${release} · alpha`,
             items: [
               { text: "Changelog", link: "/changelog" },
               { text: "Releases", link: `${repo}/releases` },
@@ -129,7 +135,7 @@ export default defineConfig({
           { text: "ガイド", link: "/ja/getting-started" },
           { text: "CLI(英語)", link: "/cli" },
           {
-            text: "v0.2 · アルファ版",
+            text: `${release} · アルファ版`,
             items: [
               { text: "変更履歴(英語)", link: "/changelog" },
               { text: "リリース", link: `${repo}/releases` },

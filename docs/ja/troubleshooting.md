@@ -51,6 +51,16 @@ kumoba 0.2.2より前のイメージです。アップグレードすると、`p
 `exec`は、コマンドが終わるとそのコマンドが起動したプロセスも止めます。動かし続けるプロセスは`setsid`で起動してください。
 
 
+## macOS サンドボックスのライブビューが開かない
+
+macOS サンドボックスで `kumoba desktop` を実行すると、`the live view did not start` と、かっこの中に理由が表示されます。
+
+- **`kumoba-view-host is missing`**: macOS サンドボックスの画面を表示するエンジンが `kumobad` の隣にありません。インストールスクリプトはそこに置きますが、`cargo install` でビルドした `kumobad` にはありません。[リポジトリからビルドする](/install#build-the-live-view-engine-for-macos-sandboxes)か、`KUMOBAD_VIEW` に場所を設定してください。
+- **`the live view needs kumobad to run inside a logged-in desktop session`**: `kumobad` を SSH から起動したか、起動時のデーモンとして動かしています。ログイン中のデスクトップセッションのターミナルから起動してください。
+- **`too many live views are open on this sandbox`**: 1 つの macOS サンドボックスを同時に見られるページは 8 つまでです。いくつか閉じてください。
+
+ページが開いて macOS のログイン画面が表示される場合、それがサンドボックスの画面です。まだ誰もログインしていません。`~/.kumoba/images/macos/password` のパスワードで `kumoba` としてログインしてください。
+
 ## macOS サンドボックスの起動で `running sandbox capacity exhausted` になる
 
 Apple の制限により、1 台の Mac で同時に動かせる macOS の VM は 2 台までです。UTM や Tart など他のアプリの VM も数に入ります。macOS サンドボックスを 1 つ止めるか、他のアプリの VM を終了してから、もう一度起動してください。詳しくは[サンドボックスで macOS を動かす](/ja/guide/macos#制限)を参照してください。

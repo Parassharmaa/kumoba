@@ -31,7 +31,7 @@ features:
   - title: Safe by default
     details: Egress allowlists, hidden secrets, a log of every connection.
   - title: Live desktop
-    details: Watch and drive a full desktop from your browser.
+    details: Watch and drive a sandbox's desktop from your browser in kumoba's own viewer, on Linux and macOS sandboxes.
   - title: Runs anywhere
     details: Your laptop, your servers, your cloud. Apache-2.0.
 ---

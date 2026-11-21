@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed
+
+- TypeScript SDK: `desktop.liveView()` returns a working link for a macOS sandbox. It used to link to a port inside the sandbox, where macOS has no viewer. For an image without a desktop it now fails with kumobad's reason instead of returning a link that opens nothing.
+
 ## [0.6.0] - 2026-11-21
 
 ### Added

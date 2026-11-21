@@ -66,7 +66,8 @@ export class Desktop {
   constructor(
     private readonly sh: Sh,
     private readonly files: Files,
-    private readonly expose: (port: number, options?: ExposeOptions) => Promise<Exposed>
+    private readonly expose: (port: number, options?: ExposeOptions) => Promise<Exposed>,
+    private readonly hosted: (options: LiveViewOptions) => Promise<LiveView>
   ) {}
 
   private async helper(args: readonly (string | number)[], timeoutMs = 30_000): Promise<string> {
@@ -207,11 +208,17 @@ export class Desktop {
    * A time-limited link to the live view, and which viewer it opens. `stream` is kumoba's
    * own viewer and the link is its page. `vnc` is the noVNC bridge, where `vnc.html` under
    * the link is the page; an image without the stream viewer gets it, and so does
-   * `viewer: "vnc"`. The desktop must be started first.
+   * `viewer: "vnc"`. On a Linux sandbox the desktop must be started first. A macOS sandbox
+   * has no desktop helper inside it: kumobad reads its screen on the host, and the link is
+   * always the `stream` viewer.
    */
   async liveView(options: LiveViewOptions = {}): Promise<LiveView> {
     const { viewer, ...expose } = options;
-    const stream = viewer !== "vnc" && (await this.status("view").catch(() => false));
+    const running = await this.status("view").catch(() => null);
+    if (running === null && !(await this.sh(`test -x ${HELPER}`)).ok) {
+      return this.hosted(options);
+    }
+    const stream = viewer !== "vnc" && running === true;
     const link = await this.expose(stream ? DESKTOP_STREAM_PORT : DESKTOP_VNC_PORT, expose);
     return { ...link, viewer: stream ? "stream" : "vnc" };
   }

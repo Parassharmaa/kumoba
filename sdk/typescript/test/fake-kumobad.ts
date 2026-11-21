@@ -242,6 +242,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           path: `/v1/preview/token-${String(port)}/`,
           expiresAtMs: Date.now() + 60_000,
         });
+      } else if (method === "POST" && action === "desktop") {
+        const asked = JSON.parse((await body(request)).toString()) as { ttlSeconds: number };
+        send(response, 200, {
+          path: "/v1/preview/token-host/",
+          expiresAtMs: Date.now() + asked.ttlSeconds * 1000,
+          viewer: "stream",
+        });
       } else if (method === "POST" && action === "exec") {
         const call = JSON.parse((await body(request)).toString()) as Omit<
           FakeExecCall,

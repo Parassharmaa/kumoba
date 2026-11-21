@@ -62,6 +62,7 @@ kumoba desktop "$id" --open
 
 This opens the sandbox's screen in your browser, with keyboard and mouse working. It is the same [live view](/guide/desktop) Linux sandboxes have. The picture is read on your Mac from the VM's display, so nothing is installed or granted inside macOS.
 
+- From code, `await sandbox.desktop.liveView()` returns the same link. The other `sandbox.desktop` methods, such as `screenshot` and `click`, need the desktop helper of the Linux images and don't work here.
 - The sandbox starts at the macOS login window, because nobody is logged in. Sign in as `kumoba` with the password in `~/.kumoba/images/macos/password`.
 - Keys are sent as a US keyboard. Characters outside that layout, and text from an input method editor, are not typed yet.
 - Copy and paste work inside the sandbox. Your Mac's clipboard and the sandbox's are not shared yet.

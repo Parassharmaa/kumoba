@@ -78,7 +78,12 @@ const png = await sandbox.desktop.screenshot();
 await sandbox.desktop.click(200, 300);
 await sandbox.desktop.type("hello");
 await sandbox.desktop.hotkey("ctrl+s");
+
+const view = await sandbox.desktop.liveView({ ttlSeconds: 600 });
+console.log(view.url, view.viewer);
 ```
+
+`liveView()` returns a link to the [live view](/guide/desktop) and which viewer it opens: `stream`, kumoba's own, or `vnc`, the noVNC bridge that older images have. On a macOS sandbox `liveView()` is the one `desktop` method that works: kumobad reads the screen on the host, and there is no desktop helper inside macOS for the others.
 
 ## Find sandboxes and read the access log
 

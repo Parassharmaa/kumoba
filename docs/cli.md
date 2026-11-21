@@ -29,7 +29,7 @@ kumoba commands --json       # every command with its full JSON Schema, for agen
 kumoba version               # this CLI and the daemon
 ```
 
-The commands a 0.2 daemon serves:
+The commands the daemon serves:
 
 | Command | What it does |
 | --- | --- |
@@ -74,7 +74,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 
 `write-file` reads the file content from `content=@path`, or from stdin when it is piped.
 
-`--open` opens a returned `url` in your browser. That is how `kumoba desktop <id> --open` shows the desktop live and `kumoba expose <id> --port 3000 --ttl-seconds 600 --open` opens a web app running in the sandbox. Those links point at the daemon's preview listener, which the zero-config daemon starts on `127.0.0.1:7789`, apart from its API. A daemon configured by hand needs `KUMOBAD_PREVIEW_LISTEN`, and behind a reverse proxy `KUMOBAD_PREVIEW_URL`.
+`--open` opens a returned `url` in your browser. That is how `kumoba desktop <id> --open` shows the desktop live, on a Linux or a macOS sandbox, and `kumoba expose <id> --port 3000 --ttl-seconds 600 --open` opens a web app running in the sandbox. Those links point at the daemon's preview listener, which the zero-config daemon starts on `127.0.0.1:7789`, apart from its API. A daemon configured by hand needs `KUMOBAD_PREVIEW_LISTEN`, and behind a reverse proxy `KUMOBAD_PREVIEW_URL`.
 
 ![The default image's desktop in the browser, opened with kumoba desktop --open](public/desktop-live-view.png)
 
