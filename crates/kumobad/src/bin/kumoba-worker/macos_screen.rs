@@ -5,7 +5,9 @@ use kumoba_protocol::screen::{
     WHEEL, frame, pair, size,
 };
 use objc2::{
-    AllocAnyThread, MainThreadMarker, MainThreadOnly, msg_send,
+    AllocAnyThread, MainThreadMarker, MainThreadOnly,
+    encode::{Encoding, RefEncode},
+    msg_send,
     rc::{Allocated, Retained, autoreleasepool},
     runtime::{AnyClass, AnyObject, Sel},
     sel,
@@ -44,7 +46,8 @@ const WATCH_EVERY: Duration = Duration::from_millis(8);
 const WRITE_WAIT: Duration = Duration::from_secs(2);
 const SURFACE_WAIT: Duration = Duration::from_millis(10);
 const SURFACE_TRIES: usize = 50;
-const WHEEL_STEP: f64 = 10.0;
+const WHEEL_LINES: i32 = -3;
+const SCROLL_LINES: u32 = 1;
 const KEY_DOWN: isize = 0;
 const KEY_UP: isize = 1;
 const READ_ONLY: u32 = 1;
@@ -68,6 +71,14 @@ unsafe extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
+    fn CGEventCreateScrollWheelEvent2(
+        source: *const c_void,
+        units: u32,
+        wheels: u32,
+        vertical: i32,
+        horizontal: i32,
+        third: i32,
+    ) -> *mut CGEvent;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -462,25 +473,38 @@ fn point(machine: &VZVirtualMachine, x: f64, y: f64, buttons: u8) {
     }
 }
 
-fn wheel(machine: &VZVirtualMachine, dx: f64, dy: f64) {
+#[repr(C)]
+struct CGEvent {
+    opaque: [u8; 0],
+}
+
+unsafe impl RefEncode for CGEvent {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("__CGEvent", &[]));
+}
+
+fn wheel(machine: &VZVirtualMachine, dx: i32, dy: i32) {
     let send = sel!(sendScrollWheelEvents:);
-    let init = sel!(initWithScrollingDeltaX:scrollingDeltaY:acceleratedScrollingDeltaX:acceleratedScrollingDeltaY:scrollPhase:momentumPhase:);
+    let init = sel!(initWithEvent:);
     unsafe {
         let Some(pointer) = device(machine, sel!(_pointingDevices), send) else {
             return;
         };
-        let Some(blank) = blank(c"_VZScrollWheelEvent", init) else {
+        let (Some(blank), Some(events)) = (
+            blank(c"_VZScrollWheelEvent", init),
+            AnyClass::get(c"NSEvent"),
+        ) else {
             return;
         };
-        let event: Option<Retained<AnyObject>> = msg_send![
-            blank,
-            initWithScrollingDeltaX: dx,
-            scrollingDeltaY: dy,
-            acceleratedScrollingDeltaX: dx,
-            acceleratedScrollingDeltaY: dy,
-            scrollPhase: 0usize,
-            momentumPhase: 0usize
-        ];
+        let turned = CGEventCreateScrollWheelEvent2(std::ptr::null(), SCROLL_LINES, 2, dy, dx, 0);
+        if turned.is_null() {
+            return;
+        }
+        let host: Option<Retained<AnyObject>> = msg_send![events, eventWithCGEvent: turned];
+        CFRelease(turned.cast());
+        let Some(host) = host else {
+            return;
+        };
+        let event: Option<Retained<AnyObject>> = msg_send![blank, initWithEvent: &*host];
         if let Some(event) = event {
             let events = NSArray::from_retained_slice(&[event]);
             let () = msg_send![pointer, sendScrollWheelEvents: &*events];
@@ -650,8 +674,8 @@ fn converse(
                 }
                 (WHEEL, &[x_low, x_high, y_low, y_high]) => {
                     let (dx, dy) = (
-                        f64::from(i16::from_le_bytes([x_low, x_high])) * WHEEL_STEP,
-                        f64::from(i16::from_le_bytes([y_low, y_high])) * WHEEL_STEP,
+                        i32::from(i16::from_le_bytes([x_low, x_high])) * WHEEL_LINES,
+                        i32::from(i16::from_le_bytes([y_low, y_high])) * WHEEL_LINES,
                     );
                     send(vm, move |machine| wheel(machine, dx, dy));
                 }

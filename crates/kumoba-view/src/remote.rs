@@ -10,10 +10,13 @@ use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const OPEN_WAIT: Duration = Duration::from_secs(10);
 const GRAB_WAIT: Duration = Duration::from_secs(5);
+const COLOUR: u32 = 0x00ff_ffff;
+const LIVELY: u32 = 30;
+const STILL_LOOK: Duration = Duration::from_millis(100);
 const NOTHING: Rect = Rect {
     x: 0,
     y: 0,
@@ -121,20 +124,18 @@ pub fn changed(old: &mut [u32], new: &[u32], width: usize) -> Rect {
         .zip(new.chunks_exact(width))
         .enumerate()
     {
-        if was == now {
+        let differs = |(a, b): (&u32, &u32)| *a != *b & COLOUR;
+        let Some(first) = was.iter().zip(now).position(differs) else {
             continue;
-        }
-        let first = was.iter().zip(now).position(|(a, b)| a != b).unwrap_or(0);
-        let last = was
-            .iter()
-            .zip(now)
-            .rposition(|(a, b)| a != b)
-            .unwrap_or(width - 1);
+        };
+        let last = was.iter().zip(now).rposition(differs).unwrap_or(first);
         top = top.min(row);
         bottom = row;
         left = left.min(first);
         right = right.max(last);
-        was.copy_from_slice(now);
+        for (kept, seen) in was.iter_mut().zip(now) {
+            *kept = *seen & COLOUR;
+        }
     }
     if top == usize::MAX {
         return NOTHING;
@@ -155,6 +156,8 @@ pub struct Remote {
     height: u16,
     pixels: Vec<u32>,
     dirty: bool,
+    still: u32,
+    look: Instant,
     resized: bool,
     at: (u16, u16),
     buttons: u8,
@@ -208,6 +211,8 @@ impl Remote {
             height,
             pixels: vec![0; pixels],
             dirty: true,
+            still: 0,
+            look: Instant::now(),
             resized: false,
             at: (0, 0),
             buttons: 0,
@@ -219,8 +224,28 @@ impl Remote {
     }
 
     fn send(&mut self, kind: u8, payload: &[u8]) -> Result<(), Failure> {
+        if kind != GRAB {
+            self.still = 0;
+            self.look = Instant::now();
+        }
         self.socket.write_all(&frame(kind, payload))?;
         Ok(())
+    }
+
+    fn looked(&mut self, area: Rect) -> Rect {
+        let now = Instant::now();
+        if area == NOTHING {
+            self.still = self.still.saturating_add(1);
+            self.look = if self.still < LIVELY {
+                now
+            } else {
+                now + STILL_LOOK
+            };
+        } else {
+            self.still = 0;
+            self.look = now;
+        }
+        area
     }
 
     fn press(&mut self, key: u16, down: bool) -> Result<(), Failure> {
@@ -297,7 +322,7 @@ impl Screen for Remote {
                 revents: 0,
             }];
             if unsafe { libc::poll(probe.as_mut_ptr(), 1, 0) } <= 0 {
-                return Ok(self.dirty);
+                return Ok(self.dirty || Instant::now() >= self.look);
             }
             receive(&self.socket, false, &mut self.parser)?;
         }
@@ -325,7 +350,9 @@ impl Screen for Remote {
         }
         let width = usize::from(self.width);
         if full {
-            self.pixels.copy_from_slice(self.shared.pixels());
+            for (kept, seen) in self.pixels.iter_mut().zip(self.shared.pixels()) {
+                *kept = *seen & COLOUR;
+            }
             return Ok(Rect {
                 x: 0,
                 y: 0,
@@ -333,7 +360,8 @@ impl Screen for Remote {
                 height: usize::from(self.height),
             });
         }
-        Ok(changed(&mut self.pixels, self.shared.pixels(), width))
+        let area = changed(&mut self.pixels, self.shared.pixels(), width);
+        Ok(self.looked(area))
     }
 
     fn moves(&mut self) -> Vec<(i32, i32)> {
@@ -585,19 +613,20 @@ mod tests {
         let grabbing = std::thread::spawn(move || {
             let first = remote.grab(true).unwrap();
             let seen = remote.pixels().to_vec();
-            let quiet = remote.drain().unwrap();
-            (remote, first, seen, quiet)
+            let told = remote.dirty;
+            (remote, first, seen, told)
         });
         answering(&mut sandbox, (WIDTH, HEIGHT));
-        let (mut remote, first, seen, quiet) = grabbing.join().unwrap();
+        let (mut remote, first, seen, told) = grabbing.join().unwrap();
         assert_eq!((first.width, first.height), (4, 3));
         assert_eq!(seen, picture);
-        assert!(!quiet);
+        assert!(!told);
         picture[6] = 9;
         sandbox.paint(&picture);
         sandbox.say(DAMAGE, &[]);
         let grabbing = std::thread::spawn(move || {
-            while !remote.drain().unwrap() {
+            while !remote.dirty {
+                remote.drain().unwrap();
                 std::thread::sleep(Duration::from_millis(5));
             }
             let area = remote.grab(false).unwrap();
@@ -686,7 +715,8 @@ mod tests {
         let mut remote = remote.unwrap();
         let grabbing = std::thread::spawn(move || {
             remote.grab(true).unwrap();
-            let pending = remote.drain().unwrap();
+            remote.drain().unwrap();
+            let pending = remote.dirty;
             (remote, pending)
         });
         assert_eq!(sandbox.heard().0, GRAB);
@@ -696,10 +726,57 @@ mod tests {
         assert!(pending);
         let grabbing = std::thread::spawn(move || {
             remote.grab(false).unwrap();
-            remote.drain().unwrap()
+            remote.drain().unwrap();
+            remote.dirty
         });
         answering(&mut sandbox, (WIDTH, HEIGHT));
         assert!(!grabbing.join().unwrap());
+    }
+
+    #[test]
+    fn a_screen_that_changes_without_saying_so_is_still_seen_and_a_still_one_is_looked_at_less() {
+        let (remote, mut sandbox) = connected("still", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        let mut picture = vec![1u32; 12];
+        sandbox.paint(&picture);
+        let (asked, answered) = std::sync::mpsc::channel::<()>();
+        let sandbox = std::thread::spawn(move || {
+            let mut looks = 0;
+            while sandbox.heard().0 == GRAB {
+                looks += 1;
+                if looks == 2 {
+                    picture[3] = 7;
+                    sandbox.paint(&picture);
+                }
+                sandbox.say(GRABBED, &kumoba_protocol::screen::size(WIDTH, HEIGHT));
+                if answered.recv().is_err() {
+                    break;
+                }
+            }
+            sandbox
+        });
+        let grab = |remote: &mut Remote, full: bool| {
+            let area = remote.grab(full).unwrap();
+            asked.send(()).unwrap();
+            area
+        };
+        grab(&mut remote, true);
+        assert!(remote.drain().unwrap());
+        assert_eq!(grab(&mut remote, false).width, 1);
+        for _ in 0..LIVELY {
+            assert!(remote.drain().unwrap());
+            assert_eq!(grab(&mut remote, false), NOTHING);
+        }
+        assert!(!remote.drain().unwrap());
+        std::thread::sleep(STILL_LOOK);
+        assert!(remote.drain().unwrap());
+        assert_eq!(grab(&mut remote, false), NOTHING);
+        assert!(!remote.drain().unwrap());
+        remote.pointer(1, 1).unwrap();
+        assert!(remote.drain().unwrap());
+        drop(remote);
+        drop(asked);
+        drop(sandbox);
     }
 
     #[test]
@@ -740,6 +817,19 @@ mod tests {
         let new = vec![7u32; 12];
         let mut old = new.clone();
         assert_eq!(changed(&mut old, &new, 4), NOTHING);
+    }
+
+    #[test]
+    fn only_colour_counts_so_the_unused_byte_of_a_pixel_never_reaches_the_encoder() {
+        let mut old = vec![0x0012_3456u32; 8];
+        let new = vec![0xff12_3456u32; 8];
+        assert_eq!(changed(&mut old, &new, 4), NOTHING);
+        let mut new = new;
+        new[5] = 0x8065_4321;
+        let area = changed(&mut old, &new, 4);
+        assert_eq!((area.x, area.y, area.width, area.height), (1, 1, 1, 1));
+        assert!(old.iter().all(|pixel| pixel >> 24 == 0));
+        assert_eq!(old[5], 0x0065_4321);
     }
 
     #[test]
