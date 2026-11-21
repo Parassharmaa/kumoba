@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-21
+
 ### Fixed
 
 - TypeScript SDK: `desktop.liveView()` returns a working link for a macOS sandbox. It used to link to a port inside the sandbox, where macOS has no viewer. For an image without a desktop it now fails with kumobad's reason instead of returning a link that opens nothing.
@@ -124,7 +126,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...v0.4.0
