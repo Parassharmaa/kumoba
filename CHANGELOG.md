@@ -4,6 +4,16 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- A new desktop live view for Linux sandboxes. `kumoba desktop` now opens kumoba's own viewer instead of noVNC. It shows text and windows pixel for pixel, sends a scroll as a move plus the newly shown part, compresses regions that keep changing such as video, and returns them to exact pixels when they stop. It adapts to slow connections, shows the remote pointer, types the characters of any keyboard layout, and sends nothing while the screen is still or the tab is in the background. Text from an input method editor and pasted text aren't sent yet. Rebuild or update the `default` image to get it; older images keep noVNC.
+- `kumoba desktop --viewer vnc`, and `viewer` in `POST /v1/sandboxes/{id}/desktop`, open noVNC on an image that has both viewers. The response's `viewer` field says which one the link opens.
+- TypeScript SDK: `desktop.liveView()` links to the new viewer when the image has it, takes `{ viewer: "vnc" }` for the noVNC bridge, and returns which one it linked to as `viewer`. With the new viewer the link is the page itself, so code that appends `vnc.html` should check `viewer` first. `DESKTOP_STREAM_PORT` is the viewer's port in the guest.
+
+### Changed
+
+- The `default` image and the release tarballs include `kumoba-view`, and `scripts/build.sh` builds it. Building kumoba from source now needs the `wasm32-unknown-unknown` Rust target, which `rust-toolchain.toml` installs.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

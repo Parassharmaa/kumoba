@@ -257,6 +257,19 @@ pub struct DesktopRequest {
     #[serde(default)]
     #[schemars(description = "Guest user that owns the desktop session")]
     pub user: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Live view to link to: stream is kumoba's own viewer, vnc is noVNC. An image without the stream viewer gets vnc"
+    )]
+    pub viewer: DesktopViewer,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DesktopViewer {
+    #[default]
+    Stream,
+    Vnc,
 }
 
 fn default_link_ttl() -> u32 {

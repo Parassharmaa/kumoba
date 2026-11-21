@@ -23,9 +23,9 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash kumoba \
   && mkdir -p /workspace \
   && chown kumoba:kumoba /workspace
 
-COPY kumoba-guest /usr/local/bin/kumoba-guest
+COPY kumoba-guest kumoba-view /usr/local/bin/
 COPY rootfs/ /
-RUN chmod 0755 /usr/local/bin/kumoba-guest /usr/local/bin/kumoba-desktop
+RUN chmod 0755 /usr/local/bin/kumoba-guest /usr/local/bin/kumoba-view /usr/local/bin/kumoba-desktop
 
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 WORKDIR /workspace

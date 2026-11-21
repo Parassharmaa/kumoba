@@ -26,6 +26,29 @@ Before you begin:
 
 The link expires after one hour. Run the same command again for a new one. Without `--open`, the command prints the link as `url`.
 
+## What the live view does
+
+The live view is kumoba's own viewer. It sends the desktop to your browser only when the screen changes, so a still desktop uses no bandwidth and almost no CPU.
+
+- **Text and windows are exact.** Every pixel matches the desktop. Scrolling sends only the newly shown part.
+- **Video and animations are compressed.** A region that keeps changing, such as a playing video, is sent at lower quality so it stays smooth. It becomes exact again about a second after it stops.
+- **Slow connections get a lower rate.** The viewer measures the connection and lowers the quality of moving regions before it lowers the frame rate.
+- **The pointer follows whoever drives.** While an agent moves the pointer, you see it move. While you move it, the page shows the desktop's pointer shape under your own pointer.
+
+A tab in the background receives nothing until you return to it.
+
+The keyboard sends the characters you type, so it works with any keyboard layout on your side. Text from an input method editor and pasted text aren't sent yet; use `kumoba exec` or the SDK's `desktop.type` for those.
+
+## Use the noVNC viewer instead
+
+Images built for kumoba 0.4 or earlier don't include the viewer, so `kumoba desktop` opens noVNC for them. To get noVNC on a newer image, ask for it:
+
+```sh
+kumoba desktop "$id" --user kumoba --viewer vnc --open
+```
+
+The output's `viewer` field says which one the link opens: `stream` or `vnc`.
+
 ## Open the live view of a remote machine
 
 If kumobad runs on a server, forward its preview port from your laptop, then open the printed link:

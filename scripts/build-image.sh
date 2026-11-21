@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 cp -R "images/$name/." "$context/"
-cp .local/bin/kumoba-guest "$context/kumoba-guest"
+cp .local/bin/kumoba-guest .local/bin/kumoba-view "$context/"
 docker build --platform "$platform" -t "kumoba-image:$name" "$context"
 docker build --platform "$platform" -t kumoba-image:mkfs images/mkfs
 mkdir -p .local/images

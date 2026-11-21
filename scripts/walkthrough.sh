@@ -50,10 +50,13 @@ expect "exit status" "$(set +e; kumoba exec "$id" -- sh -c 'exit 7'; echo "statu
 expect "shell" "$(printf 'echo shell-ok\nexit\n' | run kumoba shell "$id" 2>&1)" "shell-ok"
 view=$(run kumoba desktop "$id" --user kumoba --json)
 url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
-expect "desktop link" "$url" "/vnc.html?autoconnect=1"
+expect "desktop link" "$view" '"viewer":"stream"'
 page=$(curl -fsS -D - "$url")
 expect "live view is a page" "$page" "text/html"
-expect "live view is noVNC" "$page" "noVNC"
+expect "live view is the stream viewer" "$page" "viewer.js"
+vnc=$(run kumoba desktop "$id" --user kumoba --viewer vnc --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
+expect "vnc link" "$vnc" "/vnc.html?autoconnect=1"
+expect "vnc live view is noVNC" "$(curl -fsS "$vnc")" "noVNC"
 printf 'live view: %s\n' "$url"
 if [[ -n "${KUMOBA_WALKTHROUGH_PAUSE:-}" ]]; then
   printf 'paused for %s s so the live view can be opened\n' "$KUMOBA_WALKTHROUGH_PAUSE"

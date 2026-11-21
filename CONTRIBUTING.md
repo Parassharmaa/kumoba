@@ -25,6 +25,9 @@ scripts/serve.sh                 # kumobad with the built images
 | `crates/kumobad` | Daemon, HTTP API, `kumoba` CLI and `kumoba-worker` |
 | `crates/kumoba-guest` | Agent inside every VM |
 | `crates/kumoba-protocol` | Host-guest wire protocol |
+| `crates/kumoba-view` | Live view engine that runs in the guest, and its browser viewer |
+| `crates/kumoba-view-codec` | Screen codec the engine encodes with and the viewer decodes with |
+| `crates/kumoba-view-wasm` | The decoder built as WebAssembly for the viewer |
 | `sdk/typescript` | `kumoba` npm package: SDK and CLI |
 | `images/` | Guest image recipes |
 | `docs/` | This site |

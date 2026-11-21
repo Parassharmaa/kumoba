@@ -1,0 +1,16 @@
+[package]
+name = "kumoba-view-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Screen codec for the kumoba live view: encodes desktop frames in the guest and decodes them in the browser"
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

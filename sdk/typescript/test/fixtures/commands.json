@@ -707,7 +707,8 @@
       "in": {
         "id": "path",
         "ttlSeconds": "body",
-        "user": "body"
+        "user": "body",
+        "viewer": "body"
       },
       "input": "json",
       "inputSchema": {
@@ -727,6 +728,12 @@
             "default": null,
             "description": "Guest user that owns the desktop session",
             "type": ["string", "null"]
+          },
+          "viewer": {
+            "default": "stream",
+            "description": "Live view to link to: stream is kumoba's own viewer, vnc is noVNC. An image without the stream viewer gets vnc",
+            "enum": ["stream", "vnc"],
+            "type": "string"
           }
         },
         "required": ["id"],

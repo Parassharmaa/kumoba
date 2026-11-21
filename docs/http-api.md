@@ -147,7 +147,7 @@ Previews on the preview listener render in a browser: the guest's `content-type`
 
 ## Desktop
 
-`POST /v1/sandboxes/{id}/desktop` with `{"user": "kumoba", "ttlSeconds": 3600}` (both optional) starts Xvfb, xfce, x11vnc and the noVNC bridge in an image that has them, and → `{"url": "http://127.0.0.1:7789/v1/preview/<token>/vnc.html?autoconnect=1&resize=remote&path=...", "path": "...", "expiresAtMs": ..., "processes": {"xvfb": true, ...}}`. Opening `url` shows the desktop live, with keyboard and mouse. An image without a desktop answers 422.
+`POST /v1/sandboxes/{id}/desktop` with `{"user": "kumoba", "ttlSeconds": 3600, "viewer": "stream"}` (all optional) starts Xvfb, xfce and the live views in an image that has them, and → `{"url": "http://127.0.0.1:7789/v1/preview/<token>/", "path": "...", "expiresAtMs": ..., "processes": {"xvfb": true, ...}, "viewer": "stream"}`. Opening `url` shows the desktop live, with keyboard and mouse. `viewer` chooses the page: `stream`, the default, is kumoba's own viewer, and `vnc` is noVNC, whose link ends in `vnc.html?autoconnect=1&resize=remote&path=...`. An image without the stream viewer gets `vnc` either way, and the response says which one the link opens. An image without a desktop answers 422.
 
 Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that port inside the guest, including WebSocket upgrades, without a bearer token. The token is an HMAC over the sandbox id, port and expiry, so it cannot be reused for another sandbox or after it expires. Hop-by-hop and host-identifying headers are stripped in both directions, and responses carry `content-disposition: attachment` for types a browser would otherwise render, so a page served from a sandbox cannot script against the daemon's origin.
 

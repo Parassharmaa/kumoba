@@ -1,0 +1,18 @@
+[package]
+name = "kumoba-view-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "WebAssembly build of the kumoba live view decoder"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kumoba-view-codec = { path = "../kumoba-view-codec" }
+
+[lints]
+workspace = true

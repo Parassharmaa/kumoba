@@ -220,6 +220,7 @@ describe("Sandbox extras", () => {
 
   it("drives the desktop helper and returns screenshot bytes", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    let hasStream = true;
     fake.onExec = (call) => {
       const command = call.argv[2] ?? "";
       const args = [...command.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? "");
@@ -231,6 +232,8 @@ describe("Sandbox extras", () => {
         return { stdout: '{"displays":[{"isActive":true,"width":1024,"height":768}]}\n' };
       if (args[0] === "start")
         return { stdout: '{"xvfb":true,"xfce4":true,"x11vnc":true,"novnc":true}\n' };
+      if (args[0] === "status" && hasStream) return { stdout: '{"running":true}\n' };
+      if (args[0] === "status") return { stdout: "", exitCode: 1 };
       return { stdout: "" };
     };
     const sandbox = await kumoba.create({ user: "kumoba" });
@@ -245,7 +248,19 @@ describe("Sandbox extras", () => {
         "/usr/local/bin/kumoba-desktop 'hotkey' 'ctrl+l'",
       ])
     );
-    expect((await sandbox.desktop.liveView()).path).toBe("/v1/preview/token-6080/");
+    expect(await sandbox.desktop.liveView()).toMatchObject({
+      path: "/v1/preview/token-6090/",
+      viewer: "stream",
+    });
+    expect(await sandbox.desktop.liveView({ viewer: "vnc" })).toMatchObject({
+      path: "/v1/preview/token-6080/",
+      viewer: "vnc",
+    });
+    hasStream = false;
+    expect(await sandbox.desktop.liveView()).toMatchObject({
+      path: "/v1/preview/token-6080/",
+      viewer: "vnc",
+    });
   });
 });
 

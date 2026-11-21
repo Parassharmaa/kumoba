@@ -17,6 +17,8 @@ const HELPER = "/usr/local/bin/kumoba-desktop";
 const SCRATCH = "/tmp/kumoba-desktop";
 /** Port of the noVNC websocket bridge the helper starts. */
 export const DESKTOP_VNC_PORT = 6080;
+/** Port of kumoba's own live view, which images built for 0.5 or later include. */
+export const DESKTOP_STREAM_PORT = 6090;
 
 const runningSchema = z.object({ running: z.boolean() });
 const startSchema = z.record(z.string(), z.boolean());
@@ -42,7 +44,17 @@ const nodeSchema: z.ZodType<AccessibilityNode> = z.lazy(() =>
 );
 const treeSchema = z.object({ root: nodeSchema.nullable(), truncated: z.boolean() });
 
-export type DesktopProcess = "xvfb" | "xfce4" | "x11vnc" | "novnc";
+export type DesktopProcess = "xvfb" | "xfce4" | "x11vnc" | "novnc" | "view";
+
+export type LiveView = Exposed & {
+  /** The viewer the link opens. */
+  viewer: "stream" | "vnc";
+};
+
+export type LiveViewOptions = ExposeOptions & {
+  /** `stream` is kumoba's own viewer and the default; `vnc` is the noVNC bridge. */
+  viewer?: "stream" | "vnc";
+};
 
 type Sh = (command: string, options?: { timeoutMs?: number }) => Promise<RunResult>;
 
@@ -81,7 +93,7 @@ export class Desktop {
     return schema.parse(JSON.parse(line));
   }
 
-  /** Start Xvfb, the window manager, x11vnc and the noVNC bridge if they are not running. */
+  /** Start Xvfb, the window manager and the live views if they are not running. */
   async start(): Promise<Record<string, boolean>> {
     return this.json(startSchema, ["start"], 60_000);
   }
@@ -192,10 +204,15 @@ export class Desktop {
   }
 
   /**
-   * A time-limited link to the noVNC websocket bridge, usable from a browser
-   * with a noVNC client. The desktop must be started first.
+   * A time-limited link to the live view, and which viewer it opens. `stream` is kumoba's
+   * own viewer and the link is its page. `vnc` is the noVNC bridge, where `vnc.html` under
+   * the link is the page; an image without the stream viewer gets it, and so does
+   * `viewer: "vnc"`. The desktop must be started first.
    */
-  async liveView(options?: ExposeOptions): Promise<Exposed> {
-    return this.expose(DESKTOP_VNC_PORT, options);
+  async liveView(options: LiveViewOptions = {}): Promise<LiveView> {
+    const { viewer, ...expose } = options;
+    const stream = viewer !== "vnc" && (await this.status("view").catch(() => false));
+    const link = await this.expose(stream ? DESKTOP_STREAM_PORT : DESKTOP_VNC_PORT, expose);
+    return { ...link, viewer: stream ? "stream" : "vnc" };
   }
 }

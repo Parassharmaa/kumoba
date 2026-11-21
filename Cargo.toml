@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kumoba", "crates/kumoba-guest", "crates/kumoba-protocol", "crates/kumobad"]
+members = ["crates/kumoba", "crates/kumoba-guest", "crates/kumoba-protocol", "crates/kumoba-view", "crates/kumoba-view-codec", "crates/kumoba-view-wasm", "crates/kumobad"]
 
 [workspace.package]
 version = "0.4.0"
