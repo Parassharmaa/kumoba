@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
 ### Added
 
 - A live view for macOS sandboxes. `kumoba desktop` on a macOS sandbox opens the same viewer Linux sandboxes have, with keyboard and mouse. The screen is read on your Mac from the VM's display, so nothing is installed or granted inside macOS. Not in it yet: a shared clipboard, characters outside the US keyboard layout, and the pointer shape macOS sets.
@@ -118,7 +120,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Parassharmaa/kumoba/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Parassharmaa/kumoba/compare/v0.2.2...v0.3.0

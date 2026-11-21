@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "kumoba"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aho-corasick",
  "base64",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "kumoba-guest"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "kumoba-protocol",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "kumoba-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "kumoba-view"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "kumoba-protocol",
@@ -617,18 +617,18 @@ dependencies = [
 
 [[package]]
 name = "kumoba-view-codec"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "kumoba-view-wasm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kumoba-view-codec",
 ]
 
 [[package]]
 name = "kumobad"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "block2",
