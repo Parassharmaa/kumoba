@@ -1,13 +1,63 @@
+use crate::clipboard::Clipboard;
+use crate::hints::Hints;
 use crate::keymap::{Keymap, Place, SHIFT_LEFT, SHIFT_RIGHT};
 use kumoba_view_codec::Rect;
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use x11rb::connection::Connection;
 use x11rb::protocol::{Event, damage, shm, xfixes, xproto, xtest};
 use x11rb::rust_connection::RustConnection;
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
+
+static KEYS: OnceLock<Mutex<Keymap>> = OnceLock::new();
+
+const CONTROL_LEFT: u32 = 0xffe3;
+const TERMINALS: [&str; 7] = [
+    "term",
+    "konsole",
+    "kitty",
+    "alacritty",
+    "tilix",
+    "foot",
+    "wezterm",
+];
+
+fn read_keys(
+    conn: &RustConnection,
+    root: xproto::Window,
+    codes: (u8, u8),
+) -> Result<Keymap, Failure> {
+    let mapping = xproto::get_keyboard_mapping(conn, codes.0, codes.1 - codes.0 + 1)?.reply()?;
+    let marker = xproto::intern_atom(conn, false, b"KUMOBA_VIEW_KEYS")?
+        .reply()?
+        .atom;
+    let owned = xproto::get_property(conn, false, root, marker, xproto::AtomEnum::CARDINAL, 0, 64)?
+        .reply()?
+        .value;
+    let layout = Keymap::new(
+        codes.0,
+        usize::from(mapping.keysyms_per_keycode),
+        &mapping.keysyms,
+        &owned,
+    );
+    if owned.is_empty() {
+        xproto::change_property(
+            conn,
+            xproto::PropMode::REPLACE,
+            root,
+            marker,
+            xproto::AtomEnum::CARDINAL,
+            8,
+            layout.spare().len() as u32,
+            layout.spare(),
+        )?
+        .check()?;
+    }
+    Ok(layout)
+}
 
 pub struct Screen {
     conn: RustConnection,
@@ -20,12 +70,16 @@ pub struct Screen {
     region: xfixes::Region,
     dirty: bool,
     cursor_changed: bool,
-    keys: Keymap,
+    keys: &'static Mutex<Keymap>,
+    codes: (u8, u8),
     shift: [u8; 2],
     shifted: [bool; 2],
     held: HashMap<u32, u8>,
     keys_down: Vec<u8>,
     buttons_down: Vec<u8>,
+    hints: Hints,
+    resized: bool,
+    clipboard: Clipboard,
 }
 
 pub struct Cursor {
@@ -84,17 +138,19 @@ impl Screen {
         if map == libc::MAP_FAILED {
             return Err(last_error());
         }
-        let (first, last) = (setup.min_keycode, setup.max_keycode);
-        let mapping = xproto::get_keyboard_mapping(&conn, first, last - first + 1)?.reply()?;
-        let keys = Keymap::new(
-            first,
-            usize::from(mapping.keysyms_per_keycode),
-            &mapping.keysyms,
-        );
-        let shift = [
-            keys.code(SHIFT_LEFT).unwrap_or(0),
-            keys.code(SHIFT_RIGHT).unwrap_or(0),
-        ];
+        let codes = (setup.min_keycode, setup.max_keycode);
+        if KEYS.get().is_none() {
+            let _ = KEYS.set(Mutex::new(read_keys(&conn, root, codes)?));
+        }
+        let keys = KEYS.get().ok_or("the keyboard layout could not be read")?;
+        let shift = {
+            let layout = keys.lock().unwrap_or_else(PoisonError::into_inner);
+            [
+                layout.code(SHIFT_LEFT).unwrap_or(0),
+                layout.code(SHIFT_RIGHT).unwrap_or(0),
+            ]
+        };
+        let clipboard = Clipboard::new(&conn, root)?;
         let segment = conn.generate_id()?;
         shm::attach_fd(&conn, segment, fd, false)?.check()?;
         let damage = conn.generate_id()?;
@@ -103,6 +159,14 @@ impl Screen {
         xfixes::create_region(&conn, region, &[])?.check()?;
         xfixes::select_cursor_input(&conn, root, xfixes::CursorNotifyMask::DISPLAY_CURSOR)?
             .check()?;
+        xproto::change_window_attributes(
+            &conn,
+            root,
+            &xproto::ChangeWindowAttributesAux::new().event_mask(
+                xproto::EventMask::SUBSTRUCTURE_NOTIFY | xproto::EventMask::STRUCTURE_NOTIFY,
+            ),
+        )?
+        .check()?;
         conn.flush()?;
         Ok(Self {
             conn,
@@ -116,11 +180,15 @@ impl Screen {
             dirty: true,
             cursor_changed: true,
             keys,
+            codes,
             shift,
             shifted: [false; 2],
             held: HashMap::new(),
             keys_down: Vec::new(),
             buttons_down: Vec::new(),
+            hints: Hints::default(),
+            resized: false,
+            clipboard,
         })
     }
 
@@ -140,9 +208,27 @@ impl Screen {
 
     pub fn drain(&mut self) -> Result<bool, Failure> {
         while let Some(event) = self.conn.poll_for_event()? {
+            self.clipboard.handle(&self.conn, &event)?;
             match event {
                 Event::DamageNotify(_) => self.dirty = true,
                 Event::XfixesCursorNotify(_) => self.cursor_changed = true,
+                Event::MappingNotify(change)
+                    if change.request == xproto::Mapping::KEYBOARD && self.foreign(&change) =>
+                {
+                    let fresh = read_keys(&self.conn, self.root, self.codes)?;
+                    self.shift = [
+                        fresh.code(SHIFT_LEFT).unwrap_or(0),
+                        fresh.code(SHIFT_RIGHT).unwrap_or(0),
+                    ];
+                    *self.layout() = fresh;
+                }
+                Event::ConfigureNotify(event) if event.window == self.root => {
+                    self.resized |= (event.width, event.height) != (self.width, self.height);
+                }
+                Event::ConfigureNotify(event) => {
+                    self.hints
+                        .window(event.window, i32::from(event.x), i32::from(event.y));
+                }
                 _ => {}
             }
         }
@@ -186,9 +272,126 @@ impl Screen {
         }))
     }
 
-    pub fn position(&self) -> Result<(u16, u16), Failure> {
+    pub fn position(&mut self) -> Result<(u16, u16), Failure> {
         let reply = xproto::query_pointer(&self.conn, self.root)?.reply()?;
+        self.hints
+            .pointer(i32::from(reply.root_x), i32::from(reply.root_y));
         Ok((reply.root_x.max(0) as u16, reply.root_y.max(0) as u16))
+    }
+
+    pub fn offer(&mut self, text: &[u8]) -> Result<(), Failure> {
+        self.clipboard.offer(&self.conn, text)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    pub fn expect_copy(&mut self) {
+        self.clipboard.expect_copy();
+    }
+
+    pub fn copied(&mut self) -> Option<Vec<u8>> {
+        self.clipboard.copied()
+    }
+
+    fn foreign(&self, change: &xproto::MappingNotifyEvent) -> bool {
+        let layout = self.layout();
+        (0..change.count).any(|offset| {
+            !layout
+                .spare()
+                .contains(&change.first_keycode.saturating_add(offset))
+        })
+    }
+
+    fn terminal_focused(&self) -> Result<bool, Failure> {
+        let mut window = xproto::get_input_focus(&self.conn)?.reply()?.focus;
+        for _ in 0..8 {
+            if window <= 1 || window == self.root {
+                break;
+            }
+            let Ok(class) = xproto::get_property(
+                &self.conn,
+                false,
+                window,
+                xproto::AtomEnum::WM_CLASS,
+                xproto::AtomEnum::STRING,
+                0,
+                64,
+            )?
+            .reply() else {
+                break;
+            };
+            if !class.value.is_empty() {
+                let name = String::from_utf8_lossy(&class.value).to_ascii_lowercase();
+                return Ok(TERMINALS.iter().any(|terminal| name.contains(terminal)));
+            }
+            let Ok(tree) = xproto::query_tree(&self.conn, window)?.reply() else {
+                break;
+            };
+            window = tree.parent;
+        }
+        Ok(false)
+    }
+
+    pub fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure> {
+        let terminal = self.terminal_focused()?;
+        if letter != b'v' {
+            self.clipboard.expect_copy();
+        }
+        let (control, key) = {
+            let layout = self.layout();
+            (layout.code(CONTROL_LEFT), layout.code(u32::from(letter)))
+        };
+        let (Some(control), Some(key)) = (control, key) else {
+            return Ok(());
+        };
+        let shift = (shift || (terminal && letter != b'x')) && self.shift[0] != 0;
+        self.press(control, true)?;
+        if shift {
+            self.press(self.shift[0], true)?;
+        }
+        self.press(key, true)?;
+        self.press(key, false)?;
+        if shift {
+            self.press(self.shift[0], false)?;
+        }
+        self.press(control, false)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    fn layout(&self) -> MutexGuard<'static, Keymap> {
+        self.keys.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn needs_key(&self, symbol: u32) -> bool {
+        self.layout().needs_key(symbol)
+    }
+
+    pub fn bind(&mut self, symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
+        let (binds, width) = {
+            let mut layout = self.layout();
+            (layout.plan(symbols), layout.width())
+        };
+        for &(code, symbol, _) in &binds {
+            xproto::change_keyboard_mapping(
+                &self.conn,
+                1,
+                code,
+                width as u8,
+                &vec![symbol; width],
+            )?
+            .check()?;
+        }
+        xproto::get_input_focus(&self.conn)?.reply()?;
+        Ok(binds.iter().any(|&(_, _, reused)| reused))
+    }
+
+    pub fn resized(&self) -> bool {
+        self.resized
+    }
+
+    pub fn moves(&mut self) -> Vec<(i32, i32)> {
+        self.hints.take()
     }
 
     pub fn grab(&mut self, full: bool) -> Result<Rect, Failure> {
@@ -336,24 +539,9 @@ impl Screen {
             }
             return Ok(());
         }
-        let (code, wanted) = match self.keys.place(symbol) {
-            None => return Ok(()),
-            Some(Place::Key(code, shifted)) => (code, shifted),
-            Some(Place::Bind(code)) => {
-                let symbols = vec![symbol; self.keys.width()];
-                xproto::change_keyboard_mapping(
-                    &self.conn,
-                    1,
-                    code,
-                    self.keys.width() as u8,
-                    &symbols,
-                )?
-                .check()?;
-                xproto::get_input_focus(&self.conn)?.reply()?;
-                (code, false)
-            }
+        let Some(Place::Key(code, wanted)) = self.layout().place(symbol) else {
+            return Ok(());
         };
-        debug_assert!(code >= self.keys.first());
         let active = self.shifted.iter().any(|down| *down);
         let (left, shift) = (self.shift[0], self.shift);
         if wanted && !active && left != 0 {

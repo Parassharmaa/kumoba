@@ -4,6 +4,23 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- Live view: paste with Ctrl+V or Cmd+V sends your clipboard's text to the sandbox and pastes it, with the terminal's own shortcut when a terminal has the focus. A copy shortcut pressed in the live view brings the sandbox's copied text to your clipboard; text leaves the sandbox only in the two seconds after that shortcut. On a Mac, Cmd+C and Cmd+X copy and cut in the sandbox.
+- Live view: text from an input method editor, such as Japanese, is typed into the sandbox when you confirm it.
+- Live view: the picture follows when the desktop changes size.
+
+### Changed
+
+- Live view: dragging a window is sent as a move, like scrolling. A scripted window drag took 2 to 4 Mbps where it took 18 Mbps before.
+- Live view: video and other busy regions need about a third fewer bits for the same picture, from motion search at half-pixel steps and a tighter code for the compressed blocks.
+
+### Fixed
+
+- Live view: a character that the sandbox's keyboard layout lacks could be dropped the first time it was typed.
+- Live view: a click could reach the sandbox before keys pressed just before it. Keyboard and pointer input now arrive in the order you made them.
+- Live view: the keyboard follows a layout change made in the sandbox, such as `setxkbmap`.
+
 ## [0.5.0] - 2026-11-21
 
 ### Added

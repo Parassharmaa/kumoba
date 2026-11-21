@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-pub const MAX_INCOMING: usize = 64 * 1024;
+pub const MAX_INCOMING: usize = 256 * 1024;
 const MAX_BUFFERED: usize = 1024 * 1024;
 
 pub fn accept_key(key: &str) -> String {
@@ -81,7 +81,16 @@ impl Reader {
                         4,
                     )
                 }
-                127 => return Err(io::Error::other("client frame is too large")),
+                127 => {
+                    if self.buffer.len() < 10 {
+                        return Ok(None);
+                    }
+                    let mut wide = [0u8; 8];
+                    wide.copy_from_slice(&self.buffer[2..10]);
+                    let length = usize::try_from(u64::from_be_bytes(wide))
+                        .map_err(|_| io::Error::other("client frame is too large"))?;
+                    (length, 10)
+                }
                 short => (usize::from(short), 2),
             };
             if length > MAX_INCOMING {
@@ -197,5 +206,36 @@ mod tests {
             _ => panic!("expected a message"),
         }
         assert!(reader.next().unwrap().is_none());
+    }
+
+    fn masked(body: &[u8]) -> Vec<u8> {
+        let mask = [9u8, 8, 7, 6];
+        let mut frame = vec![0x82, 0x80 | 127];
+        frame.extend_from_slice(&(body.len() as u64).to_be_bytes());
+        frame.extend_from_slice(&mask);
+        frame.extend(body.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+        frame
+    }
+
+    #[test]
+    fn reads_a_message_longer_than_a_short_frame_allows() {
+        let body: Vec<u8> = (0..70_000u32).map(|value| value as u8).collect();
+        let mut reader = Reader {
+            buffer: masked(&body),
+            ..Reader::default()
+        };
+        match reader.next().unwrap() {
+            Some(Message::Binary(payload)) => assert_eq!(payload, body),
+            _ => panic!("expected a message"),
+        }
+    }
+
+    #[test]
+    fn refuses_a_message_over_the_limit() {
+        let mut reader = Reader {
+            buffer: masked(&vec![0u8; MAX_INCOMING + 1])[..14].to_vec(),
+            ..Reader::default()
+        };
+        assert!(reader.next().is_err());
     }
 }

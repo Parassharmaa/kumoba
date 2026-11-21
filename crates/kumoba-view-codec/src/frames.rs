@@ -180,6 +180,72 @@ fn busy_regions_go_lossy_under_a_budget_and_end_exact() {
     }
 }
 
+fn texture(x: f64, y: f64) -> u32 {
+    let wave = |a: f64, b: f64, phase: f64| {
+        (128.0 + 90.0 * ((x * a + y * b + phase).sin() + (x * b * 0.7 - y * a * 1.3).cos()) / 2.0)
+            as u32
+    };
+    wave(0.21, 0.13, 0.0) << 16 | wave(0.17, 0.29, 1.0) << 8 | wave(0.33, 0.11, 2.0)
+}
+
+fn drifting(width: usize, height: usize, step: f64, random: &mut Random) -> Vec<Vec<u32>> {
+    (0..10)
+        .map(|frame| {
+            let mut pixels = vec![0x00ff_ffff; width * height];
+            for y in 4..height - 4 {
+                for x in 4..width - 4 {
+                    let grain = (random.next() & 0x0003_0303) ^ 0x0001_0101;
+                    let shifted = texture(
+                        x as f64 - step * f64::from(frame),
+                        y as f64 - step * f64::from(frame) / 2.0,
+                    );
+                    pixels[y * width + x] = shifted ^ grain;
+                }
+            }
+            pixels
+        })
+        .collect()
+}
+
+#[test]
+fn drifting_busy_content_is_predicted_from_the_last_frame_and_ends_exact() {
+    for (width, height, step) in [
+        (320, 240, 2.0),
+        (320, 240, 0.5),
+        (100, 75, 3.0),
+        (33, 49, 1.5),
+    ] {
+        let mut random = Random(17);
+        let frames = drifting(width, height, step, &mut random);
+        let mut encoder = Encoder::new(width, height);
+        let mut decoder = Decoder::new(width, height).unwrap();
+        let mut out = Vec::new();
+        let (mut lossy, mut moved) = (0, 0);
+        for frame in &frames {
+            let stats = encoder.encode(frame, FULL, &[], TIGHT, &mut out);
+            lossy += stats.lossy_blocks;
+            moved += stats.moved_blocks;
+            decoder.decode(&out).unwrap();
+            assert!(
+                shows(&decoder, encoder.reference()),
+                "{width}x{height} step {step}"
+            );
+        }
+        assert!(lossy > 0, "{width}x{height} step {step}");
+        assert!(moved > 0, "{width}x{height} step {step}");
+        let last = frames.last().unwrap();
+        let mut rounds = 0;
+        while encoder.pending() {
+            if encoder.encode(last, NOTHING, &[], TIGHT, &mut out).changed {
+                decoder.decode(&out).unwrap();
+            }
+            rounds += 1;
+            assert!(rounds < 10_000);
+        }
+        assert!(shows(&decoder, last));
+    }
+}
+
 #[test]
 fn a_change_next_to_a_lossy_region_keeps_both_correct() {
     let (width, height) = (160, 96);

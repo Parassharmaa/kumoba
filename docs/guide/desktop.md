@@ -30,14 +30,24 @@ The link expires after one hour. Run the same command again for a new one. Witho
 
 The live view is kumoba's own viewer. It sends the desktop to your browser only when the screen changes, so a still desktop uses no bandwidth and almost no CPU.
 
-- **Text and windows are exact.** Every pixel matches the desktop. Scrolling sends only the newly shown part.
+- **Text and windows are exact.** Every pixel matches the desktop. Scrolling and dragging a window send only the newly shown part.
 - **Video and animations are compressed.** A region that keeps changing, such as a playing video, is sent at lower quality so it stays smooth. It becomes exact again about a second after it stops.
 - **Slow connections get a lower rate.** The viewer measures the connection and lowers the quality of moving regions before it lowers the frame rate.
 - **The pointer follows whoever drives.** While an agent moves the pointer, you see it move. While you move it, the page shows the desktop's pointer shape under your own pointer.
 
 A tab in the background receives nothing until you return to it.
 
-The keyboard sends the characters you type, so it works with any keyboard layout on your side. Text from an input method editor and pasted text aren't sent yet; use `kumoba exec` or the SDK's `desktop.type` for those.
+If the desktop changes size, the live view follows.
+
+## Type, paste and copy
+
+- **Typing.** The keyboard sends the characters you type, so it works with any keyboard layout on your side. Text from an input method editor, such as Japanese, arrives when you confirm it. A character that the sandbox's own keyboard layout lacks takes a moment longer the first time.
+- **Paste.** Press Ctrl+V, or Cmd+V on a Mac. Your clipboard's text goes to the sandbox's clipboard, and the live view pastes it. It uses the terminal's own paste shortcut when a terminal has the focus.
+- **Copy.** On a Mac, press Cmd+C or Cmd+X; the live view sends the copy shortcut of the app that has the focus. On other systems the keys go to the sandbox as you press them: Ctrl+C in most apps, Ctrl+Shift+C in a terminal. The copied text then goes to your clipboard.
+
+Text leaves the sandbox only in the two seconds after you press a copy shortcut in the live view. Your browser must allow the page to write to the clipboard, which needs `https` or `localhost`.
+
+Only text is exchanged, up to 200,000 bytes.
 
 ## Use the noVNC viewer instead
 
