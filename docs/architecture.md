@@ -42,6 +42,13 @@ A preview link is a signed token for one sandbox, port and expiry. Requests to i
 - The browser decodes frames with the same Rust code, built as WebAssembly, and draws one whole frame per screen refresh.
 - The browser acknowledges every frame. From the delay of those acknowledgements the engine sets how many frames may be on the way and how many bytes a second it may send.
 
+A macOS sandbox has nothing inside it that may read the screen, so its engine runs on the host.
+
+- `kumoba-worker` puts the VM's display in a window that is never shown. When asked, it copies the current frame into shared memory, and it passes key and pointer events to the VM's keyboard and pointer.
+- `kumobad` starts `kumoba-view-host` on the first desktop link. It reads frames from the worker, encodes them the same way, and serves the viewer on a socket in the sandbox's private directory.
+- The desktop link's token says it is a live view, and `kumobad` relays it to that socket instead of a guest port. The engine exits when the sandbox stops.
+
+
 ## State directory
 
 ```

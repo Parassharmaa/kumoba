@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
-use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, WorkerConfig};
+use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, SCREEN_SOCKET, WorkerConfig};
 use objc2::{
     AllocAnyThread, DefinedClass, define_class, msg_send,
     rc::Retained,
@@ -506,13 +506,18 @@ pub fn run(config: &WorkerConfig, directory: &Path) -> Result<(), Failure> {
     }
     let vm = std::sync::Arc::new(vm);
     serve_agent(&vm, &config.socket)?;
+    crate::macos_screen::serve(&vm, &config.socket.with_file_name(SCREEN_SOCKET))?;
     watch_owner(events);
-    match receiver.recv() {
+    std::thread::spawn(move || match receiver.recv() {
         Ok(Event::Stopped(None)) => std::process::exit(0),
-        Ok(Event::Stopped(Some(error))) => Err(error.into()),
+        Ok(Event::Stopped(Some(error))) => {
+            eprintln!("kumoba-worker: {error}");
+            std::process::exit(125);
+        }
         Ok(Event::OwnerGone) | Err(_) => {
             let _ = vm.stop();
             std::process::exit(125);
         }
-    }
+    });
+    crate::macos_screen::run_main_loop()
 }

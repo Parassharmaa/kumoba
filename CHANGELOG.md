@@ -6,6 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Added
 
+- A live view for macOS sandboxes. `kumoba desktop` on a macOS sandbox opens the same viewer Linux sandboxes have, with keyboard and mouse. The screen is read on your Mac from the VM's display, so nothing is installed or granted inside macOS. Not in it yet: a shared clipboard, characters outside the US keyboard layout, and the pointer shape macOS sets.
 - Live view: paste with Ctrl+V or Cmd+V sends your clipboard's text to the sandbox and pastes it, with the terminal's own shortcut when a terminal has the focus. A copy shortcut pressed in the live view brings the sandbox's copied text to your clipboard; text leaves the sandbox only in the two seconds after that shortcut. On a Mac, Cmd+C and Cmd+X copy and cut in the sandbox.
 - Live view: text from an input method editor, such as Japanese, is typed into the sandbox when you confirm it.
 - Live view: the picture follows when the desktop changes size.

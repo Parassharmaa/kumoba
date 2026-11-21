@@ -11,6 +11,9 @@ if [[ "$host_os" == macos ]]; then
   cargo build --release --locked -p kumoba-guest
   cp target/release/kumoba-guest .local/bin/kumoba-guest-macos.next
   mv .local/bin/kumoba-guest-macos.next .local/bin/kumoba-guest-macos
+  cargo build --release --locked -p kumoba-view
+  cp target/release/kumoba-view .local/bin/kumoba-view-host.next
+  mv .local/bin/kumoba-view-host.next .local/bin/kumoba-view-host
 fi
 cp "target/$guest_target/release/kumoba-guest" .local/bin/kumoba-guest.next
 mv .local/bin/kumoba-guest.next .local/bin/kumoba-guest

@@ -3,7 +3,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::{Event, xfixes, xproto};
 use x11rb::rust_connection::RustConnection;
 
-type Failure = Box<dyn std::error::Error + Send + Sync>;
+use crate::screen::Failure;
 
 pub const MAX_TEXT: usize = 200_000;
 const COPY_WINDOW: Duration = Duration::from_secs(2);

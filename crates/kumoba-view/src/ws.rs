@@ -2,7 +2,6 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
 
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 pub const MAX_INCOMING: usize = 256 * 1024;
@@ -44,7 +43,7 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn fill(&mut self, stream: &mut TcpStream) -> io::Result<bool> {
+    pub fn fill(&mut self, stream: &mut impl Read) -> io::Result<bool> {
         let mut chunk = [0u8; 16 * 1024];
         loop {
             match stream.read(&mut chunk) {
@@ -151,7 +150,7 @@ impl Writer {
         self.queued
     }
 
-    pub fn flush(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+    pub fn flush(&mut self, stream: &mut impl Write) -> io::Result<()> {
         while let Some(front) = self.queue.front() {
             match stream.write(&front[self.offset..]) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),

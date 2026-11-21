@@ -54,6 +54,21 @@ Inside the sandbox:
 - Nobody is logged in to the desktop: the image turns automatic login off, because the login session's apps slowed the first commands after start by up to 17 seconds. The `kumoba` user's login keychain stays locked, so tools that keep credentials there need `security unlock-keychain` first.
 - Apple's Command Line Tools are installed, so `git`, `clang`, `make` and `python3` work. Xcode itself is not included.
 
+## See the screen
+
+```sh
+kumoba desktop "$id" --open
+```
+
+This opens the sandbox's screen in your browser, with keyboard and mouse working. It is the same [live view](/guide/desktop) Linux sandboxes have. The picture is read on your Mac from the VM's display, so nothing is installed or granted inside macOS.
+
+- The sandbox starts at the macOS login window, because nobody is logged in. Sign in as `kumoba` with the password in `~/.kumoba/images/macos/password`.
+- Keys are sent as a US keyboard. Characters outside that layout, and text from an input method editor, are not typed yet.
+- Copy and paste work inside the sandbox. Your Mac's clipboard and the sandbox's are not shared yet.
+- The pointer shows as your browser's arrow, not the shape macOS sets.
+- It needs `kumoba-view-host` next to `kumobad`. The install script puts it there; a `kumobad` built with `cargo install` does not have it.
+- `kumobad` has to run in your logged-in desktop session. Started over SSH or as a boot-time daemon, it has no desktop session to draw the VM's display in, and the live view fails to open.
+
 ## Network and secrets
 
 macOS sandboxes have no network card. All traffic leaves through kumobad's proxy, so [network rules](/guide/network), [secrets](/guide/secrets) and the access log work as they do on Linux.
@@ -64,7 +79,7 @@ Command-line tools that honour `HTTPS_PROXY`, such as `curl`, `pip` and `npm`, r
 
 - **Two at a time.** Apple allows at most two macOS VMs running on a Mac at once, and that includes VMs from other apps such as UTM or Tart. Starting a third fails with `running sandbox capacity exhausted`. Linux sandboxes don't count.
 - **Apple's license.** macOS may run in VMs only on Apple hardware, for software development, testing, macOS Server or personal non-commercial use. Read the macOS license before you build a service on it.
-- **Not yet supported:** the desktop live view, host directory mounts and snapshots.
+- **Not yet supported:** host directory mounts and snapshots.
 - **Local only.** Linux hosts and the release CI can't run macOS guests. Before a release, `scripts/macos-smoke.sh` checks macOS sandboxes on a Mac.
 
 ## Where things are

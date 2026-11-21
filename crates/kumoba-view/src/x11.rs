@@ -1,6 +1,7 @@
 use crate::clipboard::Clipboard;
 use crate::hints::Hints;
 use crate::keymap::{Keymap, Place, SHIFT_LEFT, SHIFT_RIGHT};
+use crate::screen::{Cursor, Failure, Screen};
 use kumoba_view_codec::Rect;
 use std::collections::HashMap;
 use std::io;
@@ -9,8 +10,6 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use x11rb::connection::Connection;
 use x11rb::protocol::{Event, damage, shm, xfixes, xproto, xtest};
 use x11rb::rust_connection::RustConnection;
-
-type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 static KEYS: OnceLock<Mutex<Keymap>> = OnceLock::new();
 
@@ -59,7 +58,7 @@ fn read_keys(
     Ok(layout)
 }
 
-pub struct Screen {
+pub struct X11 {
     conn: RustConnection,
     root: xproto::Window,
     width: u16,
@@ -82,23 +81,15 @@ pub struct Screen {
     clipboard: Clipboard,
 }
 
-pub struct Cursor {
-    pub width: u16,
-    pub height: u16,
-    pub hot_x: u16,
-    pub hot_y: u16,
-    pub rgba: Vec<u8>,
-}
-
 const MAX_CURSOR: u16 = 128;
 
-unsafe impl Send for Screen {}
+unsafe impl Send for X11 {}
 
 fn last_error() -> Failure {
     io::Error::last_os_error().into()
 }
 
-impl Screen {
+impl X11 {
     pub fn open() -> Result<Self, Failure> {
         let (conn, number) = RustConnection::connect(None)?;
         let setup = conn.setup();
@@ -192,107 +183,6 @@ impl Screen {
         })
     }
 
-    pub fn size(&self) -> (usize, usize) {
-        (usize::from(self.width), usize::from(self.height))
-    }
-
-    pub fn fd(&self) -> RawFd {
-        self.conn.stream().as_raw_fd()
-    }
-
-    pub fn pixels(&self) -> &[u32] {
-        unsafe {
-            std::slice::from_raw_parts(self.map, usize::from(self.width) * usize::from(self.height))
-        }
-    }
-
-    pub fn drain(&mut self) -> Result<bool, Failure> {
-        while let Some(event) = self.conn.poll_for_event()? {
-            self.clipboard.handle(&self.conn, &event)?;
-            match event {
-                Event::DamageNotify(_) => self.dirty = true,
-                Event::XfixesCursorNotify(_) => self.cursor_changed = true,
-                Event::MappingNotify(change)
-                    if change.request == xproto::Mapping::KEYBOARD && self.foreign(&change) =>
-                {
-                    let fresh = read_keys(&self.conn, self.root, self.codes)?;
-                    self.shift = [
-                        fresh.code(SHIFT_LEFT).unwrap_or(0),
-                        fresh.code(SHIFT_RIGHT).unwrap_or(0),
-                    ];
-                    *self.layout() = fresh;
-                }
-                Event::ConfigureNotify(event) if event.window == self.root => {
-                    self.resized |= (event.width, event.height) != (self.width, self.height);
-                }
-                Event::ConfigureNotify(event) => {
-                    self.hints
-                        .window(event.window, i32::from(event.x), i32::from(event.y));
-                }
-                _ => {}
-            }
-        }
-        Ok(self.dirty)
-    }
-
-    pub fn cursor(&mut self) -> Result<Option<Cursor>, Failure> {
-        if !self.cursor_changed {
-            return Ok(None);
-        }
-        self.cursor_changed = false;
-        let image = xfixes::get_cursor_image(&self.conn)?.reply()?;
-        let pixels = usize::from(image.width) * usize::from(image.height);
-        if image.width == 0
-            || image.height == 0
-            || image.width > MAX_CURSOR
-            || image.height > MAX_CURSOR
-            || image.cursor_image.len() < pixels
-        {
-            return Ok(None);
-        }
-        let mut rgba = Vec::with_capacity(pixels * 4);
-        for &pixel in &image.cursor_image[..pixels] {
-            let alpha = pixel >> 24;
-            for shift in [16, 8, 0] {
-                let value = (pixel >> shift) & 0xff;
-                rgba.push(
-                    (value * 255)
-                        .checked_div(alpha)
-                        .map_or(0, |straight| straight.min(255) as u8),
-                );
-            }
-            rgba.push(alpha as u8);
-        }
-        Ok(Some(Cursor {
-            width: image.width,
-            height: image.height,
-            hot_x: image.xhot.min(image.width - 1),
-            hot_y: image.yhot.min(image.height - 1),
-            rgba,
-        }))
-    }
-
-    pub fn position(&mut self) -> Result<(u16, u16), Failure> {
-        let reply = xproto::query_pointer(&self.conn, self.root)?.reply()?;
-        self.hints
-            .pointer(i32::from(reply.root_x), i32::from(reply.root_y));
-        Ok((reply.root_x.max(0) as u16, reply.root_y.max(0) as u16))
-    }
-
-    pub fn offer(&mut self, text: &[u8]) -> Result<(), Failure> {
-        self.clipboard.offer(&self.conn, text)?;
-        self.conn.flush()?;
-        Ok(())
-    }
-
-    pub fn expect_copy(&mut self) {
-        self.clipboard.expect_copy();
-    }
-
-    pub fn copied(&mut self) -> Option<Vec<u8>> {
-        self.clipboard.copied()
-    }
-
     fn foreign(&self, change: &xproto::MappingNotifyEvent) -> bool {
         let layout = self.layout();
         (0..change.count).any(|offset| {
@@ -332,7 +222,152 @@ impl Screen {
         Ok(false)
     }
 
-    pub fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure> {
+    fn layout(&self) -> MutexGuard<'static, Keymap> {
+        self.keys.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn click(&self, button: u8, down: bool) -> Result<(), Failure> {
+        let kind = if down {
+            xproto::BUTTON_PRESS_EVENT
+        } else {
+            xproto::BUTTON_RELEASE_EVENT
+        };
+        xtest::fake_input(
+            &self.conn,
+            kind,
+            button,
+            x11rb::CURRENT_TIME,
+            self.root,
+            0,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    fn press(&self, keycode: u8, down: bool) -> Result<(), Failure> {
+        let kind = if down {
+            xproto::KEY_PRESS_EVENT
+        } else {
+            xproto::KEY_RELEASE_EVENT
+        };
+        xtest::fake_input(
+            &self.conn,
+            kind,
+            keycode,
+            x11rb::CURRENT_TIME,
+            self.root,
+            0,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+}
+
+impl Screen for X11 {
+    fn size(&self) -> (usize, usize) {
+        (usize::from(self.width), usize::from(self.height))
+    }
+
+    fn fd(&self) -> RawFd {
+        self.conn.stream().as_raw_fd()
+    }
+
+    fn pixels(&self) -> &[u32] {
+        unsafe {
+            std::slice::from_raw_parts(self.map, usize::from(self.width) * usize::from(self.height))
+        }
+    }
+
+    fn drain(&mut self) -> Result<bool, Failure> {
+        while let Some(event) = self.conn.poll_for_event()? {
+            self.clipboard.handle(&self.conn, &event)?;
+            match event {
+                Event::DamageNotify(_) => self.dirty = true,
+                Event::XfixesCursorNotify(_) => self.cursor_changed = true,
+                Event::MappingNotify(change)
+                    if change.request == xproto::Mapping::KEYBOARD && self.foreign(&change) =>
+                {
+                    let fresh = read_keys(&self.conn, self.root, self.codes)?;
+                    self.shift = [
+                        fresh.code(SHIFT_LEFT).unwrap_or(0),
+                        fresh.code(SHIFT_RIGHT).unwrap_or(0),
+                    ];
+                    *self.layout() = fresh;
+                }
+                Event::ConfigureNotify(event) if event.window == self.root => {
+                    self.resized |= (event.width, event.height) != (self.width, self.height);
+                }
+                Event::ConfigureNotify(event) => {
+                    self.hints
+                        .window(event.window, i32::from(event.x), i32::from(event.y));
+                }
+                _ => {}
+            }
+        }
+        Ok(self.dirty)
+    }
+
+    fn cursor(&mut self) -> Result<Option<Cursor>, Failure> {
+        if !self.cursor_changed {
+            return Ok(None);
+        }
+        self.cursor_changed = false;
+        let image = xfixes::get_cursor_image(&self.conn)?.reply()?;
+        let pixels = usize::from(image.width) * usize::from(image.height);
+        if image.width == 0
+            || image.height == 0
+            || image.width > MAX_CURSOR
+            || image.height > MAX_CURSOR
+            || image.cursor_image.len() < pixels
+        {
+            return Ok(None);
+        }
+        let mut rgba = Vec::with_capacity(pixels * 4);
+        for &pixel in &image.cursor_image[..pixels] {
+            let alpha = pixel >> 24;
+            for shift in [16, 8, 0] {
+                let value = (pixel >> shift) & 0xff;
+                rgba.push(
+                    (value * 255)
+                        .checked_div(alpha)
+                        .map_or(0, |straight| straight.min(255) as u8),
+                );
+            }
+            rgba.push(alpha as u8);
+        }
+        Ok(Some(Cursor {
+            width: image.width,
+            height: image.height,
+            hot_x: image.xhot.min(image.width - 1),
+            hot_y: image.yhot.min(image.height - 1),
+            rgba,
+        }))
+    }
+
+    fn position(&mut self) -> Result<(u16, u16), Failure> {
+        let reply = xproto::query_pointer(&self.conn, self.root)?.reply()?;
+        self.hints
+            .pointer(i32::from(reply.root_x), i32::from(reply.root_y));
+        Ok((reply.root_x.max(0) as u16, reply.root_y.max(0) as u16))
+    }
+
+    fn offer(&mut self, text: &[u8]) -> Result<(), Failure> {
+        self.clipboard.offer(&self.conn, text)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    fn expect_copy(&mut self) {
+        self.clipboard.expect_copy();
+    }
+
+    fn copied(&mut self) -> Option<Vec<u8>> {
+        self.clipboard.copied()
+    }
+
+    fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure> {
         let terminal = self.terminal_focused()?;
         if letter != b'v' {
             self.clipboard.expect_copy();
@@ -359,15 +394,11 @@ impl Screen {
         Ok(())
     }
 
-    fn layout(&self) -> MutexGuard<'static, Keymap> {
-        self.keys.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub fn needs_key(&self, symbol: u32) -> bool {
+    fn needs_key(&self, symbol: u32) -> bool {
         self.layout().needs_key(symbol)
     }
 
-    pub fn bind(&mut self, symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
+    fn bind(&mut self, symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
         let (binds, width) = {
             let mut layout = self.layout();
             (layout.plan(symbols), layout.width())
@@ -386,15 +417,15 @@ impl Screen {
         Ok(binds.iter().any(|&(_, _, reused)| reused))
     }
 
-    pub fn resized(&self) -> bool {
+    fn resized(&self) -> bool {
         self.resized
     }
 
-    pub fn moves(&mut self) -> Vec<(i32, i32)> {
+    fn moves(&mut self) -> Vec<(i32, i32)> {
         self.hints.take()
     }
 
-    pub fn grab(&mut self, full: bool) -> Result<Rect, Failure> {
+    fn grab(&mut self, full: bool) -> Result<Rect, Failure> {
         let (width, height) = self.size();
         let mut area = Rect {
             x: 0,
@@ -453,7 +484,7 @@ impl Screen {
         Ok(area)
     }
 
-    pub fn pointer(&self, x: i16, y: i16) -> Result<(), Failure> {
+    fn pointer(&mut self, x: i16, y: i16) -> Result<(), Failure> {
         xtest::fake_input(
             &self.conn,
             xproto::MOTION_NOTIFY_EVENT,
@@ -468,7 +499,7 @@ impl Screen {
         Ok(())
     }
 
-    pub fn button(&mut self, button: u8, down: bool) -> Result<(), Failure> {
+    fn button(&mut self, button: u8, down: bool) -> Result<(), Failure> {
         self.buttons_down.retain(|held| *held != button);
         if down {
             self.buttons_down.push(button);
@@ -478,45 +509,7 @@ impl Screen {
         Ok(())
     }
 
-    fn click(&self, button: u8, down: bool) -> Result<(), Failure> {
-        let kind = if down {
-            xproto::BUTTON_PRESS_EVENT
-        } else {
-            xproto::BUTTON_RELEASE_EVENT
-        };
-        xtest::fake_input(
-            &self.conn,
-            kind,
-            button,
-            x11rb::CURRENT_TIME,
-            self.root,
-            0,
-            0,
-            0,
-        )?;
-        Ok(())
-    }
-
-    fn press(&self, keycode: u8, down: bool) -> Result<(), Failure> {
-        let kind = if down {
-            xproto::KEY_PRESS_EVENT
-        } else {
-            xproto::KEY_RELEASE_EVENT
-        };
-        xtest::fake_input(
-            &self.conn,
-            kind,
-            keycode,
-            x11rb::CURRENT_TIME,
-            self.root,
-            0,
-            0,
-            0,
-        )?;
-        Ok(())
-    }
-
-    pub fn key(&mut self, keycode: u8, down: bool) -> Result<(), Failure> {
+    fn key(&mut self, keycode: u8, down: bool) -> Result<(), Failure> {
         self.keys_down.retain(|held| *held != keycode);
         if down {
             self.keys_down.push(keycode);
@@ -531,7 +524,7 @@ impl Screen {
         Ok(())
     }
 
-    pub fn symbol(&mut self, symbol: u32, down: bool) -> Result<(), Failure> {
+    fn symbol(&mut self, symbol: u32, down: bool) -> Result<(), Failure> {
         if !down {
             if let Some(code) = self.held.remove(&symbol) {
                 self.press(code, false)?;
@@ -569,7 +562,7 @@ impl Screen {
     }
 }
 
-impl Drop for Screen {
+impl Drop for X11 {
     fn drop(&mut self) {
         for &code in self.held.values().chain(&self.keys_down) {
             let _ = self.press(code, false);

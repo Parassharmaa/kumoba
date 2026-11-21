@@ -12,6 +12,8 @@ pub struct PreviewClaims {
     pub sandbox_id: String,
     pub port: u16,
     pub exp_ms: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_view: bool,
 }
 
 pub struct PreviewKey(Vec<u8>);
@@ -77,6 +79,7 @@ mod tests {
             sandbox_id: "s1".into(),
             port: 6081,
             exp_ms,
+            host_view: false,
         }
     }
 
@@ -103,5 +106,21 @@ mod tests {
         assert_eq!(key.verify(&format!("{forged}.{signature}"), 1_000), None);
         assert_eq!(PreviewKey::from_bytes(&[8; 32]).verify(&token, 1_000), None);
         assert_eq!(key.verify(payload, 1_000), None);
+    }
+
+    #[test]
+    fn a_live_view_token_says_so_and_older_tokens_stay_guest_ports() {
+        let key = PreviewKey::from_bytes(&[7; 32]);
+        let live = PreviewClaims {
+            host_view: true,
+            ..claims(2_000)
+        };
+        assert_eq!(key.verify(&key.sign(&live), 1_000), Some(live));
+        let older = URL_SAFE_NO_PAD.encode(r#"{"sandboxId":"s1","port":6081,"expMs":2000}"#);
+        let signature = URL_SAFE_NO_PAD.encode(key.mac(&older).finalize().into_bytes());
+        assert_eq!(
+            key.verify(&format!("{older}.{signature}"), 1_000),
+            Some(claims(2_000))
+        );
     }
 }

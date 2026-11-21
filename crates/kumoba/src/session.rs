@@ -457,6 +457,15 @@ impl Sandbox {
         Ok(())
     }
 
+    pub fn screen_socket(&self) -> Option<PathBuf> {
+        match &self.phase {
+            Phase::Running(vm) if !vm.tainted && crate::runtime::is_machine(&self.directory) => {
+                Some(vm.socket.with_file_name(kumoba_protocol::SCREEN_SOCKET))
+            }
+            _ => None,
+        }
+    }
+
     fn is_macos(&self) -> bool {
         matches!(&self.phase, Phase::Running(vm) if vm.os == "macos")
     }

@@ -65,6 +65,31 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 const RESTART_DELETE_GRACE_MS: u64 = 60 * 60 * 1000;
 
+async fn screen_answers(screen: &std::path::Path) -> Result<(), String> {
+    use kumoba_protocol::screen::{HELLO, Parser, REFUSED};
+    use tokio::io::AsyncReadExt;
+    let silent = || "the sandbox's screen did not answer".to_string();
+    let greeting = async {
+        let mut stream = tokio::net::UnixStream::connect(screen).await.ok()?;
+        let mut parser = Parser::default();
+        let mut chunk = [0u8; 512];
+        loop {
+            if let Some(message) = parser.take() {
+                return Some(message);
+            }
+            match stream.read(&mut chunk).await {
+                Ok(count) if count > 0 => parser.push(&chunk[..count]),
+                _ => return None,
+            }
+        }
+    };
+    match tokio::time::timeout(LIVE_START, greeting).await {
+        Ok(Some((HELLO, _))) => Ok(()),
+        Ok(Some((REFUSED, reason))) => Err(String::from_utf8_lossy(&reason).into_owned()),
+        _ => Err(silent()),
+    }
+}
+
 pub fn now_ms() -> u64 {
     crate::access_log::epoch_ms(SystemTime::now())
 }
@@ -163,7 +188,11 @@ impl Entry {
 pub struct ServiceConfig {
     pub state_dir: PathBuf,
     pub images: BTreeMap<String, PathBuf>,
+    pub view: PathBuf,
 }
+
+const LIVE_SOCKET: &str = "live.sock";
+const LIVE_START: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct DroppedRecords(Arc<std::sync::Mutex<HashMap<String, u64>>>);
@@ -623,6 +652,58 @@ impl Service {
         entry.sandbox.lock().await.supports_shell()
     }
 
+    pub async fn live_view(
+        &self,
+        id: &str,
+        start: bool,
+    ) -> ApiResult<Option<(Arc<Entry>, PathBuf)>> {
+        let entry = self.entry(id).await?;
+        let sandbox = entry.sandbox.lock().await;
+        let Some(screen) = sandbox.screen_socket() else {
+            return Ok(None);
+        };
+        let live = screen.with_file_name(LIVE_SOCKET);
+        let unavailable = |detail: String| {
+            ApiError::Status(422, format!("the live view did not start ({detail})"))
+        };
+        if start {
+            screen_answers(&screen).await.map_err(unavailable)?;
+        }
+        if start && tokio::net::UnixStream::connect(&live).await.is_err() {
+            if !self.config.view.is_file() {
+                return Err(unavailable(format!(
+                    "{} is missing; install it next to kumobad or set KUMOBAD_VIEW",
+                    self.config.view.display()
+                )));
+            }
+            let mut child = tokio::process::Command::new(&self.config.view)
+                .arg("--screen")
+                .arg(&screen)
+                .arg("--listen")
+                .arg(format!("unix:{}", live.display()))
+                .arg("--owned")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|error| unavailable(error.to_string()))?;
+            let owner = child.stdin.take();
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+                drop(owner);
+            });
+            let deadline = tokio::time::Instant::now() + LIVE_START;
+            while tokio::net::UnixStream::connect(&live).await.is_err() {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(unavailable("it did not start listening".into()));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        drop(sandbox);
+        Ok(Some((entry, live)))
+    }
+
     pub async fn running_agent(
         &self,
         id: &str,
@@ -734,6 +815,37 @@ pub(crate) fn log(event: &str, id: &str, error: Option<ApiError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn screen_that_says(message: Option<Vec<u8>>) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("view.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            if let Some(message) = message {
+                for byte in message {
+                    stream.write_all(&[byte]).await.unwrap();
+                }
+            }
+        });
+        screen_answers(&path).await
+    }
+
+    #[tokio::test]
+    async fn a_desktop_link_waits_for_the_screen_and_passes_on_a_refusal() {
+        use kumoba_protocol::screen::{HELLO, REFUSED, frame, size};
+        let hello = frame(HELLO, &size(1280, 800));
+        assert_eq!(screen_that_says(Some(hello)).await, Ok(()));
+        let refusal = frame(REFUSED, b"no desktop session");
+        assert_eq!(
+            screen_that_says(Some(refusal)).await,
+            Err("no desktop session".into())
+        );
+        assert!(screen_that_says(None).await.is_err());
+        let missing = std::path::Path::new("/nonexistent/view.sock");
+        assert!(screen_answers(missing).await.is_err());
+    }
 
     fn meta(auto_stop_minutes: u32, auto_delete_minutes: Option<u32>) -> Meta {
         Meta {

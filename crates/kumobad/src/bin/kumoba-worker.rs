@@ -9,6 +9,9 @@ mod macos_compact;
 #[cfg(target_os = "macos")]
 #[path = "kumoba-worker/macos_image.rs"]
 mod macos_image;
+#[cfg(target_os = "macos")]
+#[path = "kumoba-worker/macos_screen.rs"]
+mod macos_screen;
 use kumoba_protocol::{AGENT_PORT, EGRESS_PORT, VERSION, WorkerConfig};
 use libloading::Library;
 use std::{
@@ -23,6 +26,15 @@ fn main() {
     #[cfg(target_os = "macos")]
     if std::env::args().nth(1).as_deref() == Some("macos-image") {
         if let Err(error) = macos_image::main(std::env::args().skip(2).collect()) {
+            eprintln!("kumoba-worker: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("screen-check") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        if let Err(error) = macos_screen::check(&args) {
             eprintln!("kumoba-worker: {error}");
             std::process::exit(1);
         }
