@@ -29,7 +29,7 @@ kumoba commands --json       # every command with its full JSON Schema, for agen
 kumoba version               # this CLI and the daemon
 ```
 
-The commands a 0.2 daemon serves:
+The commands the daemon serves:
 
 | Command | What it does |
 | --- | --- |
