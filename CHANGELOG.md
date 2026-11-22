@@ -4,6 +4,12 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- Live view of macOS sandboxes: your clipboard and the sandbox's are shared. Paste with Cmd+V, or Ctrl+V from Windows or Linux, and copy with Cmd+C or Ctrl+C. Copied text reaches your clipboard only in the two seconds after a copy shortcut, as on Linux.
+- Live view of macOS sandboxes: characters outside the US keyboard layout and text from an input method editor, such as Japanese, are typed. They go in through the sandbox's clipboard, whose earlier text is put back a second later.
+- Live view of macOS sandboxes: the pointer takes the shape macOS sets, such as the text cursor over a text field.
+
 ## [0.6.1] - 2026-11-21
 
 ### Fixed

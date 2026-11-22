@@ -74,7 +74,7 @@ async fn screen_answers(screen: &std::path::Path) -> Result<(), String> {
         let mut parser = Parser::default();
         let mut chunk = [0u8; 512];
         loop {
-            if let Some(message) = parser.take() {
+            if let Some(message) = parser.take().ok()? {
                 return Some(message);
             }
             match stream.read(&mut chunk).await {

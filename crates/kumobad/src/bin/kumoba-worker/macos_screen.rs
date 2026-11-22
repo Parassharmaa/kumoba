@@ -1,8 +1,9 @@
 use crate::macos::{Event, Failure, Shared, Vm, url};
+use crate::macos_clipboard::{Action, clipboard};
 use dispatch2::DispatchQueue;
 use kumoba_protocol::screen::{
-    DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_SIDE, MIDDLE, POINTER, Parser, REFUSED, RIGHT,
-    WHEEL, frame, pair, size,
+    CLIPBOARD, CLIPBOARD_SET, COPY, DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_CURSOR, MAX_SIDE,
+    MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, cursor, frame, pair, size, text,
 };
 use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly,
@@ -35,10 +36,10 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const MAX_VIEWERS: usize = 8;
@@ -52,6 +53,12 @@ const KEY_DOWN: isize = 0;
 const KEY_UP: isize = 1;
 const READ_ONLY: u32 = 1;
 const FD_BYTES: u32 = i32::BITS / 8;
+const CURSOR_EVERY: u32 = 4;
+const COMMAND: u16 = 55;
+const V: u16 = 9;
+const RESTORE_AFTER: Duration = Duration::from_secs(1);
+const PASTE_SETTLE: Duration = Duration::from_millis(250);
+const PREMULTIPLIED_RGBA: u32 = 1 | (4 << 12);
 
 #[link(name = "IOSurface", kind = "framework")]
 unsafe extern "C" {
@@ -71,6 +78,19 @@ unsafe extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
+    fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
+    fn CGColorSpaceRelease(space: *mut c_void);
+    fn CGBitmapContextCreate(
+        data: *mut c_void,
+        width: usize,
+        height: usize,
+        bits: usize,
+        row: usize,
+        space: *mut c_void,
+        info: u32,
+    ) -> *mut c_void;
+    fn CGContextDrawImage(context: *mut c_void, rect: NSRect, image: *mut CGImage);
+    fn CGContextRelease(context: *mut c_void);
     fn CGEventCreateScrollWheelEvent2(
         source: *const c_void,
         units: u32,
@@ -285,6 +305,117 @@ impl Drop for Surface {
     fn drop(&mut self) {
         unsafe { CFRelease(self.0) };
     }
+}
+
+#[repr(C)]
+struct CGImage {
+    opaque: [u8; 0],
+}
+
+unsafe impl RefEncode for CGImage {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGImage", &[]));
+}
+
+unsafe fn framebuffer_view(view: *mut AnyObject, class: &AnyClass) -> Option<*mut AnyObject> {
+    let kind: bool = unsafe { msg_send![view, isKindOfClass: class] };
+    if kind {
+        return Some(view);
+    }
+    let children: *mut AnyObject = unsafe { msg_send![view, subviews] };
+    unsafe { objects(children) }
+        .into_iter()
+        .find_map(|child| unsafe { framebuffer_view(child, class) })
+}
+
+fn unpremultiply(rgba: &mut [u8]) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(pixel[3]);
+        if alpha == 0 || alpha == 255 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            let plain = (u16::from(*channel) * 255 + alpha / 2) / alpha;
+            *channel = u8::try_from(plain.min(255)).unwrap_or(u8::MAX);
+        }
+    }
+}
+
+fn pointer_shape() -> Option<Vec<u8>> {
+    let class = AnyClass::get(c"_VZFramebufferView")?;
+    DISPLAY.with_borrow(|display| unsafe {
+        let display = display.as_ref()?;
+        let view: *const VZVirtualMachineView = &raw const *display.view;
+        let framebuffer = framebuffer_view(view.cast_mut().cast(), class)?;
+        let able: bool = msg_send![framebuffer, respondsToSelector: sel!(cursor)];
+        if !able {
+            return None;
+        }
+        let shape: *mut AnyObject = msg_send![framebuffer, cursor];
+        let cursors = AnyClass::get(c"NSCursor")?;
+        if shape.is_null() || !msg_send![shape, isKindOfClass: cursors] {
+            return None;
+        }
+        let image: *mut AnyObject = msg_send![shape, image];
+        if image.is_null() {
+            return None;
+        }
+        let extent: NSSize = msg_send![image, size];
+        let hot: NSPoint = msg_send![shape, hotSpot];
+        let whole = |value: f64| {
+            let rounded = value.round();
+            (1.0..=f64::from(MAX_CURSOR))
+                .contains(&rounded)
+                .then(|| rounded.to_int_unchecked::<u16>())
+        };
+        let (width, height) = (whole(extent.width)?, whole(extent.height)?);
+        let inside = |value: f64, limit: u16| {
+            if !value.is_finite() {
+                return 0;
+            }
+            let clamped = value.floor().clamp(0.0, f64::from(limit - 1));
+            clamped.to_int_unchecked::<u16>()
+        };
+        let (hot_x, hot_y) = (inside(hot.x, width), inside(hot.y, height));
+        let picture: *mut CGImage = msg_send![
+            image,
+            CGImageForProposedRect: std::ptr::null_mut::<NSRect>(),
+            context: std::ptr::null_mut::<AnyObject>(),
+            hints: std::ptr::null_mut::<AnyObject>()
+        ];
+        if picture.is_null() {
+            return None;
+        }
+        let (columns, rows) = (usize::from(width), usize::from(height));
+        let mut rgba = vec![0u8; columns * rows * 4];
+        let space = CGColorSpaceCreateDeviceRGB();
+        let context = CGBitmapContextCreate(
+            rgba.as_mut_ptr().cast(),
+            columns,
+            rows,
+            8,
+            columns * 4,
+            space,
+            PREMULTIPLIED_RGBA,
+        );
+        CGColorSpaceRelease(space);
+        if context.is_null() {
+            return None;
+        }
+        let area = NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(f64::from(width), f64::from(height)),
+        );
+        CGContextDrawImage(context, area, picture);
+        CGContextRelease(context);
+        unpremultiply(&mut rgba);
+        cursor(width, height, hot_x, hot_y, &rgba)
+    })
+}
+
+static SHAPE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+fn shape() -> std::sync::MutexGuard<'static, Option<Vec<u8>>> {
+    SHAPE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn stamp() -> Option<(u32, u32)> {
@@ -532,14 +663,17 @@ fn display_size(vm: &Vm) -> Option<(u16, u16)> {
 struct Viewer {
     writer: Mutex<UnixStream>,
     told: AtomicBool,
+    greeted: AtomicBool,
 }
 
 impl Viewer {
     fn write(&self, message: &[u8]) -> std::io::Result<()> {
-        self.writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .write_all(message)
+        let mut writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let written = writer.write_all(message);
+        if written.is_err() {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        written
     }
 }
 
@@ -560,14 +694,28 @@ fn viewers() -> std::sync::MutexGuard<'static, Viewers> {
 
 fn watch() {
     let mut last = None;
+    let mut tick = 0u32;
     loop {
         std::thread::sleep(WATCH_EVERY);
-        let seen = on_main(|_| stamp());
+        tick = tick.wrapping_add(1);
+        let looking = tick.is_multiple_of(CURSOR_EVERY);
+        let (seen, pointer) = on_main(|_| (stamp(), looking.then(pointer_shape).flatten()));
         let mut viewers = viewers();
         if viewers.open.is_empty() {
             viewers.watching = false;
             on_main(|_| hide());
             return;
+        }
+        if let Some(pointer) = pointer {
+            let mut current = shape();
+            if current.as_ref() != Some(&pointer) {
+                for viewer in &viewers.open {
+                    if viewer.greeted.load(Ordering::Acquire) {
+                        let _ = viewer.write(&pointer);
+                    }
+                }
+                *current = Some(pointer);
+            }
         }
         if seen == last {
             continue;
@@ -579,6 +727,124 @@ fn watch() {
             }
         }
     }
+}
+
+struct Typing {
+    saved: Option<Vec<u8>>,
+    last: String,
+    until: Instant,
+}
+
+static TYPING: Mutex<Option<Typing>> = Mutex::new(None);
+static CLIPBOARD_TURN: AtomicU64 = AtomicU64::new(0);
+
+fn typing() -> std::sync::MutexGuard<'static, Option<Typing>> {
+    TYPING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn restore(vm: &Vm, done: Typing) {
+    let Some(saved) = done.saved else {
+        return;
+    };
+    if let Err(error) = clipboard(vm, Action::Restore, &saved, &done.last) {
+        eprintln!("kumoba-worker: restoring the clipboard failed: {error}");
+    }
+}
+
+fn restore_later(vm: Arc<Vm>) {
+    std::thread::spawn(move || {
+        loop {
+            let wait = match typing().as_ref() {
+                Some(state) => state.until.saturating_duration_since(Instant::now()),
+                None => return,
+            };
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+                continue;
+            }
+            let mut state = typing();
+            let Some(done) = state.take_if(|state| Instant::now() >= state.until) else {
+                continue;
+            };
+            restore(&vm, done);
+            drop(state);
+            return;
+        }
+    });
+}
+
+fn settle_typing(vm: &Vm, restoring: bool) {
+    let mut state = typing();
+    if let Some(done) = state.take()
+        && restoring
+    {
+        restore(vm, done);
+    }
+}
+
+fn type_text(vm: &Arc<Vm>, typed: &[u8]) {
+    CLIPBOARD_TURN.fetch_add(1, Ordering::AcqRel);
+    let typed = String::from_utf8_lossy(text(typed)).into_owned();
+    let mut state = typing();
+    let first = state.is_none();
+    let placed = if first {
+        clipboard(vm, Action::Swap, typed.as_bytes(), "").map(|saved| {
+            *state = Some(Typing {
+                saved: saved.filter(|saved| saved.whole).map(|saved| saved.text),
+                last: String::new(),
+                until: Instant::now(),
+            });
+        })
+    } else {
+        clipboard(vm, Action::Set, typed.as_bytes(), "").map(|_| ())
+    };
+    if let Err(error) = placed {
+        eprintln!("kumoba-worker: typing through the clipboard failed: {error}");
+        return;
+    }
+    send(vm, |machine| {
+        for (code, down) in [(COMMAND, true), (V, true), (V, false), (COMMAND, false)] {
+            key(machine, code, down);
+        }
+    });
+    std::thread::sleep(PASTE_SETTLE);
+    if let Some(current) = state.as_mut() {
+        current.last = typed;
+        current.until = Instant::now() + RESTORE_AFTER;
+    }
+    drop(state);
+    if first {
+        restore_later(vm.clone());
+    }
+}
+
+fn offer(vm: &Vm, offered: &[u8]) {
+    CLIPBOARD_TURN.fetch_add(1, Ordering::AcqRel);
+    settle_typing(vm, false);
+    if let Err(error) = clipboard(vm, Action::Set, text(offered), "") {
+        eprintln!("kumoba-worker: pasting into the sandbox failed: {error}");
+    }
+}
+
+fn watch_copy(vm: &Arc<Vm>, viewer: &Arc<Viewer>) {
+    settle_typing(vm, true);
+    let turn = CLIPBOARD_TURN.fetch_add(1, Ordering::AcqRel) + 1;
+    let count = match clipboard(vm, Action::Count, &[], "") {
+        Ok(Some(count)) => String::from_utf8_lossy(&count.text).trim().to_string(),
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("kumoba-worker: copying from the sandbox failed: {error}");
+            return;
+        }
+    };
+    let (vm, viewer) = (vm.clone(), viewer.clone());
+    std::thread::spawn(move || match clipboard(&vm, Action::Copied, &[], &count) {
+        Ok(Some(copied)) if CLIPBOARD_TURN.load(Ordering::Acquire) == turn => {
+            let _ = viewer.write(&frame(CLIPBOARD, text(&copied.text)));
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("kumoba-worker: copying from the sandbox failed: {error}"),
+    });
 }
 
 fn join(vm: &Vm, viewer: &Arc<Viewer>, width: u16, height: u16) -> bool {
@@ -623,6 +889,7 @@ fn attend(vm: &Arc<Vm>, mut stream: UnixStream) -> Result<(), Failure> {
     let viewer = Arc::new(Viewer {
         writer: Mutex::new(stream.try_clone()?),
         told: AtomicBool::new(true),
+        greeted: AtomicBool::new(false),
     });
     let memory = match admit(vm, &viewer) {
         Ok(memory) => memory,
@@ -636,53 +903,84 @@ fn attend(vm: &Arc<Vm>, mut stream: UnixStream) -> Result<(), Failure> {
     result
 }
 
+fn act(vm: &Arc<Vm>, viewer: &Arc<Viewer>, size: (f64, f64), kind: u8, payload: &[u8]) {
+    match (kind, payload) {
+        (KEY, &[low, high, down]) => {
+            let code = u16::from_le_bytes([low, high]);
+            send(vm, move |machine| key(machine, code, down != 0));
+        }
+        (POINTER, &[_, _, _, _, buttons]) => {
+            let Some((x, y)) = pair(payload) else {
+                return;
+            };
+            let (x, y) = ((f64::from(x) + 0.5) / size.0, (f64::from(y) + 0.5) / size.1);
+            send(vm, move |machine| {
+                point(machine, x.min(1.0), y.min(1.0), buttons);
+            });
+        }
+        (WHEEL, &[x_low, x_high, y_low, y_high]) => {
+            let (dx, dy) = (
+                i32::from(i16::from_le_bytes([x_low, x_high])) * WHEEL_LINES,
+                i32::from(i16::from_le_bytes([y_low, y_high])) * WHEEL_LINES,
+            );
+            send(vm, move |machine| wheel(machine, dx, dy));
+        }
+        (PASTE, typed) => type_text(vm, typed),
+        (CLIPBOARD_SET, offered) => offer(vm, offered),
+        (COPY, _) => watch_copy(vm, viewer),
+        _ => {}
+    }
+}
+
 fn converse(
     vm: &Arc<Vm>,
     stream: &mut UnixStream,
-    viewer: &Viewer,
+    viewer: &Arc<Viewer>,
     memory: &Memory,
 ) -> Result<(), Failure> {
     greet(stream, memory)?;
+    if let Some(pointer) = shape().clone() {
+        viewer.write(&pointer)?;
+    }
+    viewer.greeted.store(true, Ordering::Release);
+    let (input, inputs) = mpsc::channel::<(u8, Vec<u8>)>();
+    let scale = (f64::from(memory.width), f64::from(memory.height));
+    let acting = {
+        let (vm, viewer) = (vm.clone(), viewer.clone());
+        std::thread::spawn(move || {
+            for (kind, payload) in inputs {
+                act(&vm, &viewer, scale, kind, &payload);
+            }
+        })
+    };
     let mut parser = Parser::default();
-    let mut chunk = [0u8; 1024];
-    let (width, height) = (f64::from(memory.width), f64::from(memory.height));
-    loop {
-        let count = stream.read(&mut chunk)?;
-        if count == 0 {
-            return Ok(());
-        }
+    let mut chunk = [0u8; 16 * 1024];
+    let result = loop {
+        let count = match stream.read(&mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(count) => count,
+            Err(error) => break Err(error.into()),
+        };
         parser.push(&chunk[..count]);
-        while let Some((kind, payload)) = parser.take() {
-            match (kind, payload.as_slice()) {
-                (GRAB, _) => {
+        let handled = (|| -> Result<(), Failure> {
+            while let Some((kind, payload)) = parser.take()? {
+                if kind == GRAB {
                     viewer.told.store(false, Ordering::Release);
                     let (width, height) = on_main(|_| memory.fill());
                     viewer.write(&frame(GRABBED, &size(width, height)))?;
+                } else if input.send((kind, payload)).is_err() {
+                    return Err("the sandbox stopped taking input".into());
                 }
-                (KEY, &[low, high, down]) => {
-                    let code = u16::from_le_bytes([low, high]);
-                    send(vm, move |machine| key(machine, code, down != 0));
-                }
-                (POINTER, &[_, _, _, _, buttons]) => {
-                    let Some((x, y)) = pair(&payload) else {
-                        continue;
-                    };
-                    let (x, y) = ((f64::from(x) + 0.5) / width, (f64::from(y) + 0.5) / height);
-                    send(vm, move |machine| {
-                        point(machine, x.min(1.0), y.min(1.0), buttons);
-                    });
-                }
-                (WHEEL, &[x_low, x_high, y_low, y_high]) => {
-                    let (dx, dy) = (
-                        i32::from(i16::from_le_bytes([x_low, x_high])) * WHEEL_LINES,
-                        i32::from(i16::from_le_bytes([y_low, y_high])) * WHEEL_LINES,
-                    );
-                    send(vm, move |machine| wheel(machine, dx, dy));
-                }
-                _ => {}
             }
+            Ok(())
+        })();
+        if let Err(error) = handled {
+            break Err(error);
         }
-    }
+    };
+    drop(input);
+    let _ = acting.join();
+    result
 }
 
 fn send(vm: &Vm, work: impl FnOnce(&VZVirtualMachine) + Send + 'static) {
@@ -811,6 +1109,18 @@ mod tests {
         ] {
             assert_eq!(side(refused), None, "{refused} was accepted");
         }
+    }
+
+    #[test]
+    fn pointer_pixels_lose_their_premultiplied_alpha() {
+        let mut rgba = vec![0, 0, 0, 0, 255, 128, 0, 255, 64, 32, 0, 128, 10, 10, 10, 20];
+        unpremultiply(&mut rgba);
+        assert_eq!(
+            rgba,
+            [
+                0, 0, 0, 0, 255, 128, 0, 255, 128, 64, 0, 128, 128, 128, 128, 20
+            ]
+        );
     }
 
     #[test]

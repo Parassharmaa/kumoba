@@ -156,6 +156,7 @@ pub fn run<S: Screen>(
     hello.extend_from_slice(&(width as u16).to_le_bytes());
     hello.extend_from_slice(&(height as u16).to_le_bytes());
     hello.extend_from_slice(&(settings.fps as u16).to_le_bytes());
+    hello.push(u8::from(screen.chords()));
     writer.push(&hello);
     let started = Instant::now();
     let mut pace = Pace::new(settings.fps, started);
