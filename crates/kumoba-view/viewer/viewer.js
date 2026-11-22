@@ -36,6 +36,7 @@ const MAX_TEXT = 200000;
 const PASTE_WAIT_MS = 120;
 const PASTE_GAP_MS = 300;
 const APPLE = /Mac|iPhone|iPad/.test(navigator.platform);
+let chords = APPLE;
 const COPY_WINDOW_MS = 2000;
 
 const MODIFIERS = [
@@ -497,7 +498,7 @@ keys.addEventListener("keydown", (event) => {
   }
   event.preventDefault();
   if (event.repeat) return;
-  if (clipboard && APPLE) {
+  if (clipboard && chords) {
     copyUntil = performance.now() + COPY_WINDOW_MS;
     sendChord(clipboard, event.shiftKey);
     return;
@@ -576,6 +577,7 @@ function connect() {
     if (type === SERVER_HELLO && view.byteLength >= 5) {
       const width = view.getUint16(1, true);
       const height = view.getUint16(3, true);
+      chords = APPLE || (view.byteLength >= 8 && (view.getUint8(7) & 1) === 1);
       if (!codec.kv_open(width, height)) return fail("The desktop size is not supported");
       canvas.width = width;
       canvas.height = height;

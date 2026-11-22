@@ -47,6 +47,8 @@ If the desktop changes size, the live view follows.
 - **Paste.** Press Ctrl+V, or Cmd+V on a Mac. Your clipboard's text goes to the sandbox's clipboard, and the live view pastes it. It uses the terminal's own paste shortcut when a terminal has the focus.
 - **Copy.** On a Mac, press Cmd+C or Cmd+X; the live view sends the copy shortcut of the app that has the focus. On other systems the keys go to the sandbox as you press them: Ctrl+C in most apps, Ctrl+Shift+C in a terminal. The copied text then goes to your clipboard.
 
+In a macOS sandbox the copy and paste shortcuts are always sent as Cmd+C, Cmd+X and Cmd+V, whatever system you are on. From Windows or Linux that means Ctrl+C, Ctrl+X and Ctrl+V never reach the sandbox as Control keys, so Control+C can't stop a command in Terminal from there.
+
 Text leaves the sandbox only in the two seconds after you press a copy shortcut in the live view. Your browser must allow the page to write to the clipboard, which needs `https` or `localhost`.
 
 Only text is exchanged, up to 200,000 bytes.

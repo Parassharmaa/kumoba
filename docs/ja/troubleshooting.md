@@ -59,6 +59,8 @@ macOS サンドボックスで `kumoba desktop` を実行すると、`the live v
 - **`the live view needs kumobad to run inside a logged-in desktop session`**: `kumobad` を SSH から起動したか、起動時のデーモンとして動かしています。ログイン中のデスクトップセッションのターミナルから起動してください。
 - **`too many live views are open on this sandbox`**: 1 つの macOS サンドボックスを同時に見られるページは 8 つまでです。いくつか閉じてください。
 
+貼り付け、コピー、US 配列にない文字の入力には、サンドボックスのデスクトップに誰かがログインしている必要があります。ログイン前は何も起きず、`~/.kumoba/state/runtime/sandboxes/<id>/worker.log` に `nobody is signed in to the sandbox's desktop` と記録されます。
+
 ページが開いて macOS のログイン画面が表示される場合、それがサンドボックスの画面です。まだ誰もログインしていません。`~/.kumoba/images/macos/password` のパスワードで `kumoba` としてログインしてください。
 
 ## macOS サンドボックスの起動で `running sandbox capacity exhausted` になる

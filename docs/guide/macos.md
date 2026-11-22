@@ -64,9 +64,9 @@ This opens the sandbox's screen in your browser, with keyboard and mouse working
 
 - From code, `await sandbox.desktop.liveView()` returns the same link. The other `sandbox.desktop` methods, such as `screenshot` and `click`, need the desktop helper of the Linux images and don't work here.
 - The sandbox starts at the macOS login window, because nobody is logged in. Sign in as `kumoba` with the password in `~/.kumoba/images/macos/password`.
-- Keys are sent as a US keyboard. Characters outside that layout, and text from an input method editor, are not typed yet.
-- Copy and paste work inside the sandbox. Your Mac's clipboard and the sandbox's are not shared yet.
-- The pointer shows as your browser's arrow, not the shape macOS sets.
+- Keys are sent as a US keyboard. Characters outside that layout, and text from an input method editor such as Japanese, are typed by pasting them: the live view puts them on the sandbox's clipboard, presses Cmd+V, and puts the clipboard's earlier text back a second later. Anything on that clipboard that isn't text, such as an image, is replaced.
+- Paste and copy work as described in [Type, paste and copy](/guide/desktop#type-paste-and-copy). Ctrl+V and Ctrl+C from Windows or Linux arrive in the sandbox as Cmd+V and Cmd+C, so they don't reach it as Control keys. Both need someone signed in to the sandbox's desktop.
+- The pointer takes the shape macOS sets, such as the text cursor over a text field.
 - It needs `kumoba-view-host` next to `kumobad`. The install script puts it there; a `kumobad` built with `cargo install` does not have it.
 - `kumobad` has to run in your logged-in desktop session. Started over SSH or as a boot-time daemon, it has no desktop session to draw the VM's display in, and the live view fails to open.
 

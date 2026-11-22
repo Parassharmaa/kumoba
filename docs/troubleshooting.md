@@ -42,6 +42,8 @@ Another program uses port 7789, so kumobad couldn't serve browser links. Free th
 - **`the live view needs kumobad to run inside a logged-in desktop session`**: `kumobad` was started over SSH or as a boot-time daemon. Start it from a terminal in your desktop session.
 - **`too many live views are open on this sandbox`**: eight pages can watch one macOS sandbox at a time. Close some.
 
+Paste, copy and characters outside the US layout need someone signed in to the sandbox's desktop. Before that they do nothing, and `~/.kumoba/state/runtime/sandboxes/<id>/worker.log` says `nobody is signed in to the sandbox's desktop`.
+
 If the page opens and shows the macOS login window, that is the sandbox's screen: nobody is logged in yet. Sign in as `kumoba` with the password in `~/.kumoba/images/macos/password`.
 
 ## `stop the sandbox before changing its network`

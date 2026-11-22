@@ -1,8 +1,8 @@
 use crate::mackeys::{self, COMMAND, SHIFT, SHIFT_RIGHT};
 use crate::screen::{Cursor, Failure, Screen};
 use kumoba_protocol::screen::{
-    DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_SIDE, MIDDLE, POINTER, Parser, REFUSED, RIGHT,
-    WHEEL, frame, pair,
+    CLIPBOARD, CLIPBOARD_SET, COPY, CURSOR, DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_SIDE,
+    MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, frame, pair, text,
 };
 use kumoba_view_codec::Rect;
 use std::collections::HashMap;
@@ -17,6 +17,8 @@ const GRAB_WAIT: Duration = Duration::from_secs(5);
 const COLOUR: u32 = 0x00ff_ffff;
 const LIVELY: u32 = 30;
 const STILL_LOOK: Duration = Duration::from_millis(100);
+const COPY_WINDOW: Duration = Duration::from_secs(2);
+const GATHER: Duration = Duration::from_millis(150);
 const NOTHING: Rect = Rect {
     x: 0,
     y: 0,
@@ -165,6 +167,11 @@ pub struct Remote {
     pressed: [bool; 2],
     typed: HashMap<u32, u16>,
     down: Vec<u16>,
+    pending: String,
+    pending_at: Instant,
+    copy_until: Option<Instant>,
+    copied: Option<Vec<u8>>,
+    shape: Option<Cursor>,
 }
 
 unsafe impl Send for Remote {}
@@ -184,7 +191,7 @@ impl Remote {
             if let Some(fd) = receive(&socket, true, &mut parser)? {
                 passed = Some(fd);
             }
-            if let Some((kind, payload)) = parser.take() {
+            if let Some((kind, payload)) = parser.take()? {
                 if kind == REFUSED {
                     return Err(String::from_utf8_lossy(&payload).into_owned().into());
                 }
@@ -220,6 +227,11 @@ impl Remote {
             pressed: [false; 2],
             typed: HashMap::new(),
             down: Vec::new(),
+            pending: String::new(),
+            pending_at: Instant::now(),
+            copy_until: None,
+            copied: None,
+            shape: None,
         })
     }
 
@@ -253,8 +265,7 @@ impl Remote {
         if down {
             self.down.push(key);
         }
-        let code = key.to_le_bytes();
-        self.send(KEY, &[code[0], code[1], u8::from(down)])
+        self.raw(key, down)
     }
 
     fn point(&mut self) -> Result<(), Failure> {
@@ -291,11 +302,57 @@ impl Remote {
         Ok(())
     }
 
-    fn note(&mut self, kind: u8) {
-        if kind == DAMAGE {
-            self.dirty = true;
+    fn note(&mut self, kind: u8, payload: Vec<u8>) {
+        match kind {
+            DAMAGE => self.dirty = true,
+            CURSOR => self.shape = shape(&payload),
+            CLIPBOARD if self.copy_until.is_some_and(|until| Instant::now() <= until) => {
+                self.copy_until = None;
+                self.copied = Some(payload);
+            }
+            _ => {}
         }
     }
+
+    fn flush(&mut self) -> Result<(), Failure> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let typed = std::mem::take(&mut self.pending);
+        let held = self.down.clone();
+        for key in held.iter().rev() {
+            self.raw(*key, false)?;
+        }
+        self.send(PASTE, typed.as_bytes())?;
+        for key in held {
+            self.raw(key, true)?;
+        }
+        Ok(())
+    }
+
+    fn raw(&mut self, key: u16, down: bool) -> Result<(), Failure> {
+        let code = key.to_le_bytes();
+        self.send(KEY, &[code[0], code[1], u8::from(down)])
+    }
+
+    fn watch_copy(&mut self) -> Result<(), Failure> {
+        self.copy_until = Some(Instant::now() + COPY_WINDOW);
+        self.copied = None;
+        self.send(COPY, &[])
+    }
+}
+
+fn shape(payload: &[u8]) -> Option<Cursor> {
+    let (width, height) = pair(payload)?;
+    let (hot_x, hot_y) = pair(payload.get(4..)?)?;
+    let rgba = payload.get(8..)?.to_vec();
+    (rgba.len() == usize::from(width) * usize::from(height) * 4).then_some(Cursor {
+        width,
+        height,
+        hot_x,
+        hot_y,
+        rgba,
+    })
 }
 
 impl Screen for Remote {
@@ -312,9 +369,12 @@ impl Screen for Remote {
     }
 
     fn drain(&mut self) -> Result<bool, Failure> {
+        if !self.pending.is_empty() && self.pending_at.elapsed() >= GATHER {
+            self.flush()?;
+        }
         loop {
-            while let Some((kind, _)) = self.parser.take() {
-                self.note(kind);
+            while let Some((kind, payload)) = self.parser.take()? {
+                self.note(kind, payload);
             }
             let mut probe = [libc::pollfd {
                 fd: self.socket.as_raw_fd(),
@@ -322,7 +382,8 @@ impl Screen for Remote {
                 revents: 0,
             }];
             if unsafe { libc::poll(probe.as_mut_ptr(), 1, 0) } <= 0 {
-                return Ok(self.dirty || Instant::now() >= self.look);
+                let gathered = !self.pending.is_empty() && self.pending_at.elapsed() >= GATHER;
+                return Ok(self.dirty || gathered || Instant::now() >= self.look);
             }
             receive(&self.socket, false, &mut self.parser)?;
         }
@@ -336,9 +397,9 @@ impl Screen for Remote {
         self.dirty = false;
         self.send(GRAB, &[])?;
         let size = loop {
-            match self.parser.take() {
+            match self.parser.take()? {
                 Some((GRABBED, payload)) => break pair(&payload),
-                Some((kind, _)) => self.note(kind),
+                Some((kind, payload)) => self.note(kind, payload),
                 None => {
                     receive(&self.socket, true, &mut self.parser)?;
                 }
@@ -369,7 +430,7 @@ impl Screen for Remote {
     }
 
     fn cursor(&mut self) -> Result<Option<Cursor>, Failure> {
-        Ok(None)
+        Ok(self.shape.take())
     }
 
     fn position(&mut self) -> Result<(u16, u16), Failure> {
@@ -377,11 +438,13 @@ impl Screen for Remote {
     }
 
     fn pointer(&mut self, x: i16, y: i16) -> Result<(), Failure> {
+        self.flush()?;
         self.at = (x.max(0) as u16, y.max(0) as u16);
         self.point()
     }
 
     fn button(&mut self, button: u8, down: bool) -> Result<(), Failure> {
+        self.flush()?;
         let bit = match button {
             1 => LEFT,
             2 => MIDDLE,
@@ -407,6 +470,7 @@ impl Screen for Remote {
     }
 
     fn key(&mut self, keycode: u8, down: bool) -> Result<(), Failure> {
+        self.flush()?;
         let Some(key) = mackeys::for_code(u16::from(keycode).saturating_sub(8)) else {
             return Ok(());
         };
@@ -426,9 +490,22 @@ impl Screen for Remote {
             }
             return self.settle();
         }
-        let Some((key, shifted)) = mackeys::for_symbol(symbol) else {
+        let character = match symbol {
+            0..=0xff => char::from_u32(symbol),
+            0x0100_0000.. => char::from_u32(symbol - 0x0100_0000),
+            _ => None,
+        }
+        .filter(|character| !character.is_control());
+        let layout = mackeys::for_symbol(symbol);
+        let gathering = !self.pending.is_empty() && character.is_some();
+        let (Some((key, shifted)), false) = (layout, gathering) else {
+            if let Some(character) = character {
+                self.pending.push(character);
+                self.pending_at = Instant::now();
+            }
             return Ok(());
         };
+        self.flush()?;
         if let Some(held) = self.typed.insert(symbol, key) {
             self.press(held, false)?;
         }
@@ -448,6 +525,10 @@ impl Screen for Remote {
         let Some((key, _)) = mackeys::for_symbol(u32::from(letter)) else {
             return Ok(());
         };
+        self.flush()?;
+        if letter != b'v' {
+            self.watch_copy()?;
+        }
         self.press(COMMAND, true)?;
         self.shift(shift)?;
         self.press(key, true)?;
@@ -456,14 +537,21 @@ impl Screen for Remote {
         self.press(COMMAND, false)
     }
 
-    fn offer(&mut self, _text: &[u8]) -> Result<(), Failure> {
-        Ok(())
+    fn offer(&mut self, offered: &[u8]) -> Result<(), Failure> {
+        self.flush()?;
+        self.send(CLIPBOARD_SET, text(offered))
     }
 
-    fn expect_copy(&mut self) {}
+    fn expect_copy(&mut self) {
+        let _ = self.watch_copy();
+    }
 
     fn copied(&mut self) -> Option<Vec<u8>> {
-        None
+        self.copied.take()
+    }
+
+    fn chords(&self) -> bool {
+        true
     }
 }
 
@@ -513,7 +601,7 @@ mod tests {
         fn heard(&mut self) -> (u8, Vec<u8>) {
             let mut chunk = [0u8; 64];
             loop {
-                if let Some(message) = self.parser.take() {
+                if let Some(message) = self.parser.take().unwrap() {
                     return message;
                 }
                 let count = self.peer.read(&mut chunk).unwrap();
@@ -679,8 +767,6 @@ mod tests {
             sandbox.keys(4),
             [(SHIFT, true), (44, true), (44, false), (SHIFT, false)]
         );
-        remote.symbol(0x3042 + 0x0100_0000, true).unwrap();
-        remote.symbol(0x3042 + 0x0100_0000, false).unwrap();
         remote.chord(b'v', false).unwrap();
         assert_eq!(
             sandbox.keys(4),
@@ -793,6 +879,114 @@ mod tests {
         accept.join().unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(refusal.as_deref(), Some("no desktop session"));
+    }
+
+    #[test]
+    fn a_run_of_text_that_starts_off_the_layout_is_typed_through_the_clipboard_in_one_go() {
+        let (remote, mut sandbox) = connected("pasted", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        for (symbol, down) in [
+            (u32::from('a'), true),
+            (u32::from('a'), false),
+            (0xe9, true),
+            (0xe9, false),
+            (0x0100_0000 + 0x65e5, true),
+            (0x0100_0000 + 0x65e5, false),
+            (u32::from('b'), true),
+            (u32::from('b'), false),
+            (0xfc, true),
+            (0xfc, false),
+        ] {
+            remote.symbol(symbol, down).unwrap();
+        }
+        remote.drain().unwrap();
+        assert_eq!(sandbox.keys(2), [(0, true), (0, false)]);
+        std::thread::sleep(GATHER);
+        remote.drain().unwrap();
+        assert_eq!(sandbox.heard(), (PASTE, "é日bü".as_bytes().to_vec()));
+        remote.symbol(0xff0d, true).unwrap();
+        remote.symbol(0xff0d, false).unwrap();
+        remote.symbol(0x0100_0000 + 0x3042, true).unwrap();
+        remote.symbol(0xff0d, true).unwrap();
+        remote.symbol(0xff0d, false).unwrap();
+        remote.symbol(0x0a, true).unwrap();
+        assert_eq!(sandbox.keys(2), [(36, true), (36, false)]);
+        assert_eq!(sandbox.heard(), (PASTE, "あ".as_bytes().to_vec()));
+        assert_eq!(sandbox.keys(2), [(36, true), (36, false)]);
+    }
+
+    #[test]
+    fn keys_held_down_are_lifted_while_text_is_pasted_and_pressed_again_after() {
+        let (remote, mut sandbox) = connected("held", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        remote.key(42 + 8, true).unwrap();
+        remote.symbol(0xdc, true).unwrap();
+        remote.symbol(0xdc, false).unwrap();
+        std::thread::sleep(GATHER);
+        remote.drain().unwrap();
+        assert_eq!(sandbox.keys(2), [(SHIFT, true), (SHIFT, false)]);
+        assert_eq!(sandbox.heard(), (PASTE, "Ü".as_bytes().to_vec()));
+        assert_eq!(sandbox.keys(1), [(SHIFT, true)]);
+    }
+
+    #[test]
+    fn a_paste_offers_the_text_and_a_copy_brings_back_only_what_arrives_in_time() {
+        let (remote, mut sandbox) = connected("clipboard", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        assert!(remote.chords());
+        remote.offer("from the host".as_bytes()).unwrap();
+        remote.chord(b'v', false).unwrap();
+        assert_eq!(sandbox.heard(), (CLIPBOARD_SET, b"from the host".to_vec()));
+        assert_eq!(
+            sandbox.keys(4),
+            [(COMMAND, true), (9, true), (9, false), (COMMAND, false)]
+        );
+        sandbox.say(CLIPBOARD, b"not asked for");
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert_eq!(remote.copied(), None);
+        remote.chord(b'c', false).unwrap();
+        assert_eq!(sandbox.heard(), (COPY, Vec::new()));
+        assert_eq!(
+            sandbox.keys(4),
+            [(COMMAND, true), (8, true), (8, false), (COMMAND, false)]
+        );
+        sandbox.say(CLIPBOARD, "copied in the sandbox".as_bytes());
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert_eq!(remote.copied(), Some(b"copied in the sandbox".to_vec()));
+        sandbox.say(CLIPBOARD, b"a second answer");
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert_eq!(remote.copied(), None);
+    }
+
+    #[test]
+    fn the_sandbox_pointer_shape_reaches_the_viewer_once() {
+        let (remote, mut sandbox) = connected("shape", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        let rgba = vec![200u8; 2 * 3 * 4];
+        sandbox
+            .peer
+            .write_all(&kumoba_protocol::screen::cursor(2, 3, 1, 2, &rgba).unwrap())
+            .unwrap();
+        sandbox.say(CURSOR, &[9, 9]);
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert!(remote.cursor().unwrap().is_none());
+        sandbox
+            .peer
+            .write_all(&kumoba_protocol::screen::cursor(2, 3, 1, 2, &rgba).unwrap())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        let shown = remote.cursor().unwrap().unwrap();
+        assert_eq!(
+            (shown.width, shown.height, shown.hot_x, shown.hot_y),
+            (2, 3, 1, 2)
+        );
+        assert_eq!(shown.rgba, rgba);
+        assert!(remote.cursor().unwrap().is_none());
     }
 
     #[test]

@@ -47,6 +47,7 @@ A macOS sandbox has nothing inside it that may read the screen, so its engine ru
 - `kumoba-worker` puts the VM's display in a window that is never shown. When asked, it copies the current frame into shared memory, and it passes key and pointer events to the VM's keyboard and pointer.
 - `kumobad` starts `kumoba-view-host` on the first desktop link. It reads frames from the worker, encodes them the same way, and serves the viewer on a socket in the sandbox's private directory.
 - The desktop link's token says it is a live view, and `kumobad` relays it to that socket instead of a guest port. The engine exits when the sandbox stops.
+- The worker also sends the pointer shape macOS sets, read from the same hidden view. For paste, copy and characters the US keyboard layout lacks, it reads and writes the signed-in user's clipboard by running `pbcopy` and `pbpaste` through the guest agent.
 
 
 ## State directory
