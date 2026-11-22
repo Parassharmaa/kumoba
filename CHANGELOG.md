@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-22
+
 ### Added
 
 - Live view of macOS sandboxes: your clipboard and the sandbox's are shared. Paste with Cmd+V, or Ctrl+V from Windows or Linux, and copy with Cmd+C or Ctrl+C. Copied text reaches your clipboard only in the two seconds after a copy shortcut, as on Linux.
@@ -132,7 +134,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Parassharmaa/kumoba/compare/v0.4.0...v0.5.0
