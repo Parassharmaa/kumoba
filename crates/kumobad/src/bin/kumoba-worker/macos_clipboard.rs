@@ -29,6 +29,7 @@ restore) if [ "$(desk /usr/bin/pbpaste)" = "$KUMOBA_VALUE" ]; then desk /usr/bin
 esac"##;
 const WAIT: Duration = Duration::from_secs(10);
 const LIMIT: usize = 1 << 20;
+const ERRORS: usize = 4 * 1024;
 const NOTHING_NEW: i32 = 4;
 
 #[derive(Clone, Copy)]
@@ -107,17 +108,20 @@ pub fn run(
         user: None,
     });
     write(&mut stream, &request).map_err(failed)?;
-    let (mut text, mut errors) = (Vec::new(), Vec::new());
+    let (mut text, mut errors, mut dropped) = (Vec::new(), Vec::new(), false);
     loop {
         let event: ExecEvent = read(&mut stream).map_err(failed)?;
         stream.write_all(&[1]).map_err(failed)?;
         match event {
             ExecEvent::Output { stream: kind, data } => {
                 let data = STANDARD.decode(data).map_err(|error| error.to_string())?;
-                match kind {
-                    OutputKind::Stdout => text.extend_from_slice(&data),
-                    OutputKind::Stderr => errors.extend_from_slice(&data),
-                }
+                let (target, cap) = match kind {
+                    OutputKind::Stdout => (&mut text, LIMIT),
+                    OutputKind::Stderr => (&mut errors, ERRORS),
+                };
+                let room = cap.saturating_sub(target.len());
+                dropped |= matches!(kind, OutputKind::Stdout) && data.len() > room;
+                target.extend_from_slice(&data[..data.len().min(room)]);
             }
             ExecEvent::Finished {
                 code: Some(0),
@@ -126,7 +130,7 @@ pub fn run(
             } => {
                 return Ok(Some(Output {
                     text,
-                    whole: !truncated,
+                    whole: !truncated && !dropped,
                 }));
             }
             ExecEvent::Finished {
@@ -235,6 +239,21 @@ mod tests {
         let (host, fake) = agent(vec![output(OutputKind::Stdout, "part"), finished(0, true)]);
         let answer = run(host, Action::Swap, b"", "").unwrap().unwrap();
         fake.join().unwrap();
+        assert!(!answer.whole);
+    }
+
+    #[test]
+    fn a_guest_that_sends_more_than_allowed_is_cut_off_on_the_host() {
+        let chunk = "x".repeat(MAX_EXEC_FRAME / 2);
+        let mut events: Vec<ExecEvent> = (0..LIMIT / chunk.len() + 2)
+            .map(|_| output(OutputKind::Stdout, &chunk))
+            .collect();
+        events.extend((0..4).map(|_| output(OutputKind::Stderr, &chunk)));
+        events.push(finished(0, false));
+        let (host, fake) = agent(events);
+        let answer = run(host, Action::Swap, b"", "").unwrap().unwrap();
+        fake.join().unwrap();
+        assert_eq!(answer.text.len(), LIMIT);
         assert!(!answer.whole);
     }
 
