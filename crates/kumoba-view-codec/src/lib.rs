@@ -72,6 +72,35 @@ pub(crate) struct Move {
     pub dy: i32,
 }
 
+const LANES: usize = 16;
+
+#[inline]
+pub(crate) fn common_prefix(left: &[u32], right: &[u32]) -> usize {
+    let limit = left.len().min(right.len());
+    let (left, right) = (&left[..limit], &right[..limit]);
+    let mut at = 0;
+    for (a, b) in left
+        .as_chunks::<LANES>()
+        .0
+        .iter()
+        .zip(right.as_chunks::<LANES>().0)
+    {
+        if a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) != 0 {
+            break;
+        }
+        at += LANES;
+    }
+    while at < limit && left[at] == right[at] {
+        at += 1;
+    }
+    at
+}
+
+#[inline]
+pub(crate) fn same(left: &[u32], right: &[u32]) -> bool {
+    left.len() == right.len() && common_prefix(left, right) == left.len()
+}
+
 #[inline]
 pub(crate) fn cache_slot(pixel: u32) -> usize {
     (pixel.wrapping_mul(0x9e37_79b1) >> 26) as usize
@@ -96,5 +125,31 @@ pub(crate) fn apply_moves(
             let from = from_y * width + from_x;
             pixels[to..to + step.width].copy_from_slice(&scratch[from..from + step.width]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_prefix_finds_the_first_difference_at_any_position() {
+        let left: Vec<u32> = (0..53).collect();
+        assert_eq!(common_prefix(&left, &left), 53);
+        for at in 0..53 {
+            let mut right = left.clone();
+            right[at] ^= 0x0100;
+            assert_eq!(common_prefix(&left, &right), at);
+            assert!(!same(&left, &right));
+        }
+    }
+
+    #[test]
+    fn common_prefix_stops_at_the_shorter_slice() {
+        let left: Vec<u32> = (0..40).collect();
+        assert_eq!(common_prefix(&left, &left[..17]), 17);
+        assert_eq!(common_prefix(&left[..0], &left), 0);
+        assert!(!same(&left, &left[..39]));
+        assert!(same(&left[3..35], &left[3..35]));
     }
 }

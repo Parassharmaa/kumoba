@@ -144,6 +144,27 @@ fn a_scrolled_page_costs_far_less_than_a_new_page() {
 }
 
 #[test]
+fn a_scroll_that_changes_speed_stays_cheap_and_exact() {
+    let mut random = Random(17);
+    let (width, height) = (640, 480);
+    let mut frame = page(width, height, &mut random);
+    let mut encoder = Encoder::new(width, height);
+    let mut decoder = Decoder::new(width, height).unwrap();
+    let mut out = Vec::new();
+    encoder.encode(&frame, FULL, &[], Budget::UNLIMITED, &mut out);
+    let whole = out.len();
+    decoder.decode(&out).unwrap();
+    for (step, rows) in [3, 3, 3, 3, 9, 9, 2, 2, 40, 3].into_iter().enumerate() {
+        frame = scrolled(&frame, width, rows, &mut random);
+        let stats = encoder.encode(&frame, FULL, &[], Budget::UNLIMITED, &mut out);
+        decoder.decode(&out).unwrap();
+        assert!(stats.moves > 0, "step {step}");
+        assert!(out.len() * 8 < whole, "step {step}: {} bytes", out.len());
+        assert!(shows(&decoder, &frame), "step {step}");
+    }
+}
+
+#[test]
 fn busy_regions_go_lossy_under_a_budget_and_end_exact() {
     for (width, height) in [(320, 240), (100, 75)] {
         let mut random = Random(5);

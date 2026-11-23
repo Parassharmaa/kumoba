@@ -5,7 +5,7 @@ use crate::motion::Finder;
 use crate::stream::{put_signed, put_varint};
 use crate::{
     BAND, BLOCK, FLAG_KEY, Move, RUN_INLINE, Rect, TAG_ABOVE, TAG_DIFF, TAG_INDEX, TAG_LUMA,
-    TAG_RGB, TAG_RUN, TAG_SKIP, apply_moves, cache_slot,
+    TAG_RGB, TAG_RUN, TAG_SKIP, apply_moves, cache_slot, common_prefix, same,
 };
 
 const SETTLE_FRAMES: u32 = 4;
@@ -74,7 +74,10 @@ fn block_hash(pixels: &[u32], stride: usize, at: Place) -> u64 {
 fn block_equal(left: &[u32], right: &[u32], stride: usize, at: Place) -> bool {
     (0..at.height).all(|row| {
         let start = (at.y + row) * stride + at.x;
-        left[start..start + at.width] == right[start..start + at.width]
+        same(
+            &left[start..start + at.width],
+            &right[start..start + at.width],
+        )
     })
 }
 
@@ -91,22 +94,6 @@ fn new_pixels(current: &[u32], reference: &[u32], stride: usize, at: Place) -> u
         }
     }
     count
-}
-
-#[inline]
-fn run_equal(left: &[u32], right: &[u32]) -> usize {
-    let limit = left.len().min(right.len());
-    let mut at = 0;
-    while at + 8 <= limit {
-        if left[at..at + 8] != right[at..at + 8] {
-            break;
-        }
-        at += 8;
-    }
-    while at < limit && left[at] == right[at] {
-        at += 1;
-    }
-    at
 }
 
 #[inline]
@@ -149,12 +136,12 @@ fn encode_band(
         while x < rect.width {
             let pixel = source[x];
             let skip = if target[x] == pixel {
-                run_equal(&source[x..], &target[x..])
+                common_prefix(&source[x..], &target[x..])
             } else {
                 0
             };
             let up = match above {
-                Some(above) if above[x] == pixel => run_equal(&source[x..], &above[x..]),
+                Some(above) if above[x] == pixel => common_prefix(&source[x..], &above[x..]),
                 _ => 0,
             };
             let same = if pixel == prev {
@@ -488,7 +475,7 @@ impl Encoder {
             for y in y0..y1 {
                 let new = &source[y * width + left..y * width + right];
                 let old = &self.reference[y * width + left..y * width + right];
-                let first = run_equal(new, old);
+                let first = common_prefix(new, old);
                 if first == new.len() {
                     continue;
                 }
