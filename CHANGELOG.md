@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-23
+
 ### Added
 
 - `kumoba/view`, a browser client for the live view in the `kumoba` npm package: `connectViewer(canvas, url)` shows the stream of a `kumoba-view` engine in your own page, with the decoder built in. The engine's viewer page now runs the same client. See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere#show-it-in-your-own-page).
@@ -153,7 +155,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...v0.6.1

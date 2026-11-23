@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/kumoba", "crates/kumoba-guest", "crates/kumoba-protocol", "crates/kumoba-view", "crates/kumoba-view-codec", "crates/kumoba-view-wasm", "crates/kumobad"]
 
 [workspace.package]
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -24,7 +24,7 @@ sha2 = "0.11"
 fs2 = "0.4"
 libloading = "0.9"
 tempfile = "3"
-kumoba-protocol = { version = "0.6.3", path = "crates/kumoba-protocol" }
+kumoba-protocol = { version = "0.6.4", path = "crates/kumoba-protocol" }
 zeroize = "1"
 bytes = "1"
 http-body-util = "0.1"
