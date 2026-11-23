@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run by hand on a clean main checkout to cut a release: sets the shared version in the
-# Cargo workspace and the npm package, turns the Unreleased changelog section into the
+# Cargo workspace and the npm package, rebuilds the browser client (its decoder changes with
+# the version), turns the Unreleased changelog section into the
 # release section, commits and tags. Pushing the tag starts .github/workflows/release.yml.
 #   scripts/release.sh <version>      e.g. scripts/release.sh 0.1.0
 set -euo pipefail
@@ -20,6 +21,7 @@ perl -pi -e "s/^(kumoba-protocol = \{ version = )\"[^\"]+\"/\$1\"$version\"/" Ca
 perl -pi -e "s/^(kumoba = \{ version = )\"[^\"]+\"/\$1\"$version\"/" crates/kumobad/Cargo.toml
 cargo update --workspace --offline --quiet
 (cd sdk/typescript && npm version "$version" --no-git-tag-version --allow-same-version >/dev/null)
+bash scripts/build-view.sh >/dev/null
 
 perl -pi -e "s/^## \[Unreleased\]\$/## [Unreleased]\n\n## [$version] - $today/" CHANGELOG.md
 if [[ -n "$previous" ]]; then
@@ -29,7 +31,7 @@ else
 fi
 
 scripts/release-check.sh "v$version"
-git add Cargo.toml Cargo.lock crates/kumobad/Cargo.toml CHANGELOG.md sdk/typescript/package.json sdk/typescript/package-lock.json
+git add Cargo.toml Cargo.lock crates/kumobad/Cargo.toml CHANGELOG.md sdk/typescript/package.json sdk/typescript/package-lock.json sdk/typescript/src/view/codec.ts crates/kumoba-view/viewer/view.js
 git commit --quiet -m "Release v$version"
 git tag -a "v$version" -m "kumoba v$version"
 printf 'Tagged v%s. Publish with:\n  git push origin main v%s\n' "$version" "$version"
