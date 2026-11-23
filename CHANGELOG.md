@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-23
+
 ### Added
 
 - The live view engine on its own: from this release on, every release has `kumoba-view` for Linux on x86_64 and arm64, a static binary that shows any X display in the browser, as a replacement for VNC in Docker containers and other sandboxes. `--listen` on an address other than loopback protects the stream with a token, from `KUMOBA_VIEW_TOKEN` or `--token-file`, or made up and printed on a terminal or written to `~/.kumoba-view-token-PORT`. See [Use the live view in any container](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere).
@@ -142,7 +144,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/Parassharmaa/kumoba/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Parassharmaa/kumoba/compare/v0.5.0...v0.6.0
