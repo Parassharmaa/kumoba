@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency updates: `uuid` 1.29.3, `libloading` 0.9.1, `zeroize` 1.9.2, `bytes` 1.12.2 and `url` 2.5.9, which fixes RUSTSEC-2026-0592 (a stack overflow on some URLs).
+
 ## [0.6.2] - 2026-11-22
 
 ### Added
