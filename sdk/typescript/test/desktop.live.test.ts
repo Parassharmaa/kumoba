@@ -1,25 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Kumoba } from "../src/index.js";
+import { createDecoder } from "../src/view/decoder.js";
 
 const live = process.env.KUMOBA_DESKTOP_LIVE === "1";
 
-type Wasm = { instantiate(bytes: ArrayBuffer): Promise<{ instance: { exports: unknown } }> };
-
-type Codec = {
-  memory: { buffer: ArrayBuffer };
-  kv_open(width: number, height: number): number;
-  kv_input(length: number): number;
-  kv_decode(): number;
-  kv_pixels(): number;
-};
-
 async function firstFrame(base: string) {
-  const wasm = (globalThis as unknown as { WebAssembly: Wasm }).WebAssembly;
-  const module = await wasm.instantiate(
-    await (await fetch(new URL("codec.wasm", base))).arrayBuffer()
-  );
-  const codec = module.instance.exports as Codec;
+  const codec = await createDecoder();
   const url = new URL("stream", base);
   url.protocol = "ws:";
   const socket = new WebSocket(url);

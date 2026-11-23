@@ -27,8 +27,8 @@ scripts/serve.sh                 # kumobad with the built images
 | `crates/kumoba-protocol` | Host-guest wire protocol |
 | `crates/kumoba-view` | Live view engine and its browser viewer. It runs in a Linux guest, and on the host for a macOS sandbox |
 | `crates/kumoba-view-codec` | Screen codec the engine encodes with and the viewer decodes with |
-| `crates/kumoba-view-wasm` | The decoder built as WebAssembly for the viewer |
-| `sdk/typescript` | `kumoba` npm package: SDK and CLI |
+| `crates/kumoba-view-wasm` | The decoder built as WebAssembly for the browser client; `scripts/build-view.sh` writes it into `sdk/typescript/src/view/codec.ts` and bundles the client into `crates/kumoba-view/viewer/view.js` |
+| `sdk/typescript` | `kumoba` npm package: SDK, CLI and the browser client `kumoba/view` |
 | `images/` | Guest image recipes |
 | `docs/` | This site |
 | `patches/` | libkrun patches |

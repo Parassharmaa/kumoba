@@ -48,7 +48,7 @@ impl Link for UnixStream {
 
 const PAGE: &[u8] = include_bytes!("../viewer/index.html");
 const SCRIPT: &[u8] = include_bytes!("../viewer/viewer.js");
-const CODEC: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/codec.wasm"));
+const CLIENT: &[u8] = include_bytes!("../viewer/view.js");
 const MAX_HEAD: usize = 16 * 1024;
 const MAX_WAITING: usize = 32;
 const MAX_STREAMS: usize = 16;
@@ -257,7 +257,12 @@ fn handle(
             "text/javascript; charset=utf-8",
             SCRIPT,
         )?,
-        "/codec.wasm" => respond(&mut stream, "200 OK", "application/wasm", CODEC)?,
+        "/view.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            CLIENT,
+        )?,
         "/stream" => {
             let upgrade = request.header("upgrade").unwrap_or("");
             let Some(key) = request.header("sec-websocket-key") else {
@@ -440,6 +445,7 @@ mod tests {
         let at = |target: &str| format!("GET {target} HTTP/1.1\r\nhost: 172.17.0.2:16090\r\n\r\n");
         assert_eq!(answer(guard(), &at("/")), "HTTP/1.1 200 OK");
         assert_eq!(answer(guard(), &at("/viewer.js")), "HTTP/1.1 200 OK");
+        assert_eq!(answer(guard(), &at("/view.js")), "HTTP/1.1 200 OK");
         assert_eq!(answer(guard(), &at("/stream")), "HTTP/1.1 403 Forbidden");
         assert_eq!(
             answer(guard(), &at("/stream?token=s3cre")),

@@ -51,6 +51,20 @@ npx kumoba desktop <id> --user kumoba --open
 
 See [docs/cli.md](https://github.com/Parassharmaa/kumoba/blob/main/docs/cli.md).
 
+## Live view in your own page
+
+`kumoba/view` shows the live view of a desktop in a canvas of your page, for a sandbox or any machine running `kumoba-view`. It runs in the browser, with the decoder built in:
+
+```ts
+import { connectViewer } from "kumoba/view";
+
+const viewer = connectViewer(canvas, "wss://desktop.example/stream?token=change-me");
+addEventListener("keydown", (event) => viewer.key(event));
+addEventListener("keyup", (event) => viewer.key(event));
+```
+
+See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere#show-it-in-your-own-page).
+
 ## Connecting
 
 `new Kumoba()` with no options finds a zero-config `kumobad` through `~/.kumoba/kumobad.sock` and `~/.kumoba/token`. Each setting can be passed in or set in the environment:

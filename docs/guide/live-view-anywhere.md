@@ -57,3 +57,30 @@ docker run --rm --init -p 6090:6090 -e KUMOBA_VIEW_TOKEN=change-me desktop
 ```
 
 Then open `http://localhost:6090/?token=change-me`. `--init` lets Ctrl+C and `docker stop` end the container at once. Install your own desktop and apps in place of Openbox and xterm, for example `xfce4` or a browser.
+
+## Show it in your own page
+
+The viewer page is one way to watch the stream. To put the desktop inside your own web app, use the browser client from the `kumoba` npm package. It is the client the viewer page runs, with the decoder built in, so there is no file to host next to it:
+
+```sh
+npm install kumoba
+```
+
+```ts
+import { connectViewer } from "kumoba/view";
+
+const canvas = document.querySelector("canvas")!;
+const viewer = connectViewer(canvas, "wss://desktop.example/stream?token=change-me", {
+  onConnect: () => console.log("the first frame is on screen"),
+  onClose: ({ connected, error }) => console.log("the stream ended", connected, error),
+  onClipboard: (text) => navigator.clipboard.writeText(text),
+});
+addEventListener("keydown", (event) => viewer.key(event));
+addEventListener("keyup", (event) => viewer.key(event));
+```
+
+- **Versions.** Use the `kumoba` package from the same release as the engine. The stream format can change between releases.
+- **Size.** The canvas takes the desktop's size in pixels. Size it with CSS; with `object-fit: contain` it keeps its shape and pointer positions still land where you point.
+- **Input.** Mouse buttons and the wheel come from the canvas, keys from what you pass to `viewer.key`. `typeText` types text, such as what an input method commits, and `paste` puts text on the desktop's clipboard and presses the paste shortcut. `releaseHeldInput` lets go of keys and buttons still held, for example when your page loses focus.
+- **Watching only.** `viewOnly: true` shows the stream and sends no input; `setViewOnly` changes that later.
+- **Content Security Policy.** The decoder is WebAssembly, so a page with a policy needs `'wasm-unsafe-eval'` in `script-src`.

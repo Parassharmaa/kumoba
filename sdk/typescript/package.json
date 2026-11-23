@@ -1,7 +1,7 @@
 {
   "name": "kumoba",
   "version": "0.6.3",
-  "description": "TypeScript SDK and CLI for kumoba: fast sandboxes for AI agents",
+  "description": "TypeScript SDK, CLI and browser live view client for kumoba: fast sandboxes for AI agents",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Parassharmaa/kumoba/tree/main/sdk/typescript",
   "bugs": "https://github.com/Parassharmaa/kumoba/issues",
@@ -29,7 +29,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./view": {
+      "types": "./dist/view/index.d.ts",
+      "import": "./dist/view/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -56,6 +61,8 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
+    "happy-dom": "^21.0.4",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }
