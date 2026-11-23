@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Called by .github/workflows/ci.yml and scripts/ci-release.sh, and by hand before a pull
-# request: formatting, clippy with warnings denied (host crates and the musl guest), rustdoc,
-# the cargo-deny supply-chain checks, shellcheck, actionlint, the SDK's Biome checks and a
-# build of the docs site, which fails on dead links.
+# request: formatting, that the committed browser client matches scripts/build-view.sh,
+# clippy with warnings denied (host crates and the musl guest), rustdoc, the cargo-deny
+# supply-chain checks, shellcheck, actionlint, the SDK's Biome checks and a build of the docs
+# site, which fails on dead links.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/host-env.sh
 cargo fmt --all --check
+bash scripts/build-view.sh
+git diff --exit-code -- sdk/typescript/src/view/codec.ts crates/kumoba-view/viewer/view.js || { echo 'run scripts/build-view.sh and commit its output' >&2; exit 1; }
 cargo clippy --workspace --all-targets --locked -- -D warnings
 if [[ "$host_os" == linux ]]; then
   rustup target add "$guest_target" >/dev/null

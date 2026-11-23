@@ -4,9 +4,14 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- `kumoba/view`, a browser client for the live view in the `kumoba` npm package: `connectViewer(canvas, url)` shows the stream of a `kumoba-view` engine in your own page, with the decoder built in. The engine's viewer page now runs the same client. See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere#show-it-in-your-own-page).
+
 ### Changed
 
 - Live view: the engine uses about half as much CPU while a page scrolls and about a third less on animation. Static Linux builds compared pixels through musl's byte-by-byte `memcmp`; the codec now compares them itself. During a steady scroll it also checks last frame's shift before hashing rows to find a new one.
+- Live view: a wheel notch scrolls one step for mice that report lines, instead of three, and characters typed with AltGr or Option reach the desktop without the held modifiers.
 
 ## [0.6.3] - 2026-11-23
 

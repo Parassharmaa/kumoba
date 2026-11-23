@@ -47,7 +47,7 @@ url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.std
 page=$(curl -fsS -D - "$url")
 grep -qi '^content-type: text/html' <<<"$page" || { echo "FAIL desktop live view is not a page: $view" >&2; exit 1; }
 grep -q viewer.js <<<"$page" || { echo "FAIL desktop live view is not the stream viewer: $view" >&2; exit 1; }
-curl -fsS -o /dev/null "${url}codec.wasm" || { echo "FAIL desktop live view has no decoder: $view" >&2; exit 1; }
+curl -fsS "${url}view.js" | grep -q CODEC || { echo "FAIL desktop live view has no decoder: $view" >&2; exit 1; }
 echo "ok   desktop live view"
 view=$(KUMOBA_HOME="$home" "$cli" desktop "$id" --user kumoba --viewer vnc --json)
 url=$(printf '%s' "$view" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')

@@ -57,3 +57,30 @@ docker run --rm --init -p 6090:6090 -e KUMOBA_VIEW_TOKEN=change-me desktop
 ```
 
 そのあと`http://localhost:6090/?token=change-me`を開きます。`--init`を付けると、Ctrl+Cや`docker stop`ですぐに終了します。Openboxとxtermの代わりに、`xfce4`やブラウザなど、使いたいデスクトップとアプリを入れてください。
+
+## 自分のページに表示する
+
+ビューアーのページは、ストリームを見る方法の1つです。自分のWebアプリの中にデスクトップを表示するときは、`kumoba` npmパッケージのブラウザクライアントを使います。ビューアーのページと同じクライアントで、デコーダーを内蔵しているので、横に置くファイルはありません:
+
+```sh
+npm install kumoba
+```
+
+```ts
+import { connectViewer } from "kumoba/view";
+
+const canvas = document.querySelector("canvas")!;
+const viewer = connectViewer(canvas, "wss://desktop.example/stream?token=change-me", {
+  onConnect: () => console.log("the first frame is on screen"),
+  onClose: ({ connected, error }) => console.log("the stream ended", connected, error),
+  onClipboard: (text) => navigator.clipboard.writeText(text),
+});
+addEventListener("keydown", (event) => viewer.key(event));
+addEventListener("keyup", (event) => viewer.key(event));
+```
+
+- **バージョン。** エンジンと同じリリースの`kumoba`パッケージを使ってください。ストリームの形式はリリースの間で変わることがあります。
+- **サイズ。** キャンバスはデスクトップのピクセルサイズになります。大きさはCSSで決めます。`object-fit: contain`なら縦横比を保ち、ポインターの位置もずれません。
+- **入力。** マウスのボタンとホイールはキャンバスから、キーは`viewer.key`に渡したものから送ります。`typeText`は入力メソッドが確定したテキストなどを入力し、`paste`はテキストをデスクトップのクリップボードに置いて貼り付けのショートカットを押します。`releaseHeldInput`は、ページからフォーカスが外れたときなどに、押したままのキーとボタンを離します。
+- **見るだけ。** `viewOnly: true`ではストリームを表示し、入力は送りません。あとから`setViewOnly`で切り替えられます。
+- **Content Security Policy。** デコーダーはWebAssemblyなので、ポリシーのあるページでは`script-src`に`'wasm-unsafe-eval'`が必要です。
