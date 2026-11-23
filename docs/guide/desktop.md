@@ -53,6 +53,10 @@ Text leaves the sandbox only in the two seconds after you press a copy shortcut 
 
 Only text is exchanged, up to 200,000 bytes.
 
+## Use it outside kumoba
+
+The live view's engine also runs on its own, in any Linux container or VM with an X display. See [Use the live view in any container](/guide/live-view-anywhere).
+
 ## Use the noVNC viewer instead
 
 Images built for kumoba 0.4 or earlier don't include the viewer, so `kumoba desktop` opens noVNC for them. To get noVNC on a newer image, ask for it:

@@ -17,7 +17,7 @@
 - **Real VMs.** Each sandbox has its own kernel, not a shared one.
 - **Built for agents.** A CLI and SDKs where every command has a JSON Schema and returns the guest's exit code.
 - **Safe by default.** Egress allowlists, secrets that never enter the VM, a log of every connection.
-- **Live desktop.** Watch and drive a sandbox's desktop from your browser in kumoba's own viewer. Text stays sharp, scrolling and video stay smooth, and Linux and macOS sandboxes both have it.
+- **Live desktop.** Watch and drive a sandbox's desktop from your browser in kumoba's own viewer. Text stays sharp, scrolling and video stay smooth, and Linux and macOS sandboxes both have it. The engine also [runs on its own](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere) as a VNC replacement in any container.
 - **macOS too.** On an Apple silicon Mac, sandboxes can run macOS as well as Linux. A macOS sandbox boots in about 10 to 25 seconds.
 - **Runs anywhere.** Your laptop, your servers, your cloud. Apache-2.0.
 

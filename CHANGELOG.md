@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- The live view engine on its own: from this release on, every release has `kumoba-view` for Linux on x86_64 and arm64, a static binary that shows any X display in the browser, as a replacement for VNC in Docker containers and other sandboxes. `--listen` on an address other than loopback protects the stream with a token, from `KUMOBA_VIEW_TOKEN` or `--token-file`, or made up and printed on a terminal or written to `~/.kumoba-view-token-PORT`. See [Use the live view in any container](https://parassharmaa.github.io/kumoba/guide/live-view-anywhere).
+
 ### Changed
 
 - Dependency updates: `uuid` 1.29.3, `libloading` 0.9.1, `zeroize` 1.9.2, `bytes` 1.12.2 and `url` 2.5.9, which fixes RUSTSEC-2026-0592 (a stack overflow on some URLs).

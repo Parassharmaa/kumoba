@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Called by .github/workflows/release.yml on each release runner (Linux x86_64, Linux arm64,
-# macOS arm64): builds the binaries for this host and packs them with scripts/package.sh.
+# macOS arm64): builds the binaries for this host and packs them with scripts/package.sh. On
+# Linux it also leaves the static live view engine beside the tarball for use outside kumoba.
 #   scripts/release-assets.sh <version> [output-dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -15,3 +16,6 @@ else
 fi
 bash scripts/build.sh
 bash scripts/package.sh "$version" "$output_dir"
+if [[ "$host_os" == linux ]]; then
+  install -m 0755 .local/bin/kumoba-view "$output_dir/kumoba-view-linux-$image_arch"
+fi

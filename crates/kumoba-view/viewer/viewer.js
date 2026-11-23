@@ -563,7 +563,7 @@ addEventListener("resize", placePointer);
 function connect() {
   const url = new URL("stream", location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.search = "";
+  url.search = location.search;
   url.hash = "";
   const current = new WebSocket(url);
   current.binaryType = "arraybuffer";
