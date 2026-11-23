@@ -9,11 +9,11 @@ tag=${1:?usage: publish-release.sh <tag> <assets-dir>}
 assets=${2:?usage: publish-release.sh <tag> <assets-dir>}
 version=${tag#v}
 bash scripts/release-notes.sh "$version" > "$assets/notes.md"
-(cd "$assets" && sha256sum kumoba-*.tar.zst kumoba-image-*.raw.zst > SHA256SUMS)
+(cd "$assets" && sha256sum kumoba-*.tar.zst kumoba-image-*.raw.zst kumoba-view-linux-* > SHA256SUMS)
 if gh release view "$tag" >/dev/null 2>&1; then
   printf 'release %s exists; uploading assets\n' "$tag"
-  gh release upload "$tag" --clobber "$assets"/kumoba-*.tar.zst "$assets"/kumoba-image-*.raw.zst "$assets/SHA256SUMS"
+  gh release upload "$tag" --clobber "$assets"/kumoba-*.tar.zst "$assets"/kumoba-image-*.raw.zst "$assets"/kumoba-view-linux-* "$assets/SHA256SUMS"
   exit 0
 fi
 gh release create "$tag" --verify-tag --title "kumoba $tag" --notes-file "$assets/notes.md" --generate-notes \
-  "$assets"/kumoba-*.tar.zst "$assets"/kumoba-image-*.raw.zst "$assets/SHA256SUMS"
+  "$assets"/kumoba-*.tar.zst "$assets"/kumoba-image-*.raw.zst "$assets"/kumoba-view-linux-* "$assets/SHA256SUMS"

@@ -33,6 +33,7 @@ pub struct Config {
     pub max_mbps: u32,
     pub screen: Option<PathBuf>,
     pub owned: bool,
+    pub token: Option<String>,
 }
 
 impl Default for Config {
@@ -43,6 +44,7 @@ impl Default for Config {
             max_mbps: 30,
             screen: None,
             owned: false,
+            token: None,
         }
     }
 }
@@ -89,6 +91,7 @@ pub fn serve(config: &Config) -> io::Result<()> {
     };
     http::serve(
         &config.listen,
+        config.token.as_deref(),
         session::Settings {
             fps: config.fps.clamp(1, 120),
             max_mbps: config.max_mbps.clamp(1, 1000),

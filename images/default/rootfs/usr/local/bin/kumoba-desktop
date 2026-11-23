@@ -50,6 +50,7 @@ BUTTONS = {"left": "1", "middle": "2", "right": "3"}
 
 def env():
     values = dict(os.environ, DISPLAY=DISPLAY)
+    values.pop("KUMOBA_VIEW_TOKEN", None)
     bus = STATE / "dbus.env"
     if bus.is_file():
         for line in bus.read_text().splitlines():
