@@ -1,10 +1,12 @@
-use crate::{BLOCK, Move, Rect};
+use crate::{BLOCK, Move, Rect, same};
+use std::ops::Range;
 
 const STRIPS: usize = 8;
 const MIN_VOTES: u32 = 12;
 const MAX_CANDIDATES: usize = 3;
 const MAX_MOVES: usize = 512;
 const MIN_CHANGED_ROWS: usize = 24;
+const REPEAT_SHARE: (u32, u32) = (9, 10);
 
 #[inline]
 fn hash_row(row: &[u32]) -> (u64, bool) {
@@ -31,6 +33,7 @@ pub(crate) struct Finder {
     cells: Vec<u8>,
     runs: Vec<(u16, u16, u8)>,
     open: Vec<(u16, u16, u8, usize)>,
+    recent: Vec<i32>,
 }
 
 impl Finder {
@@ -44,6 +47,7 @@ impl Finder {
         moves: &mut Vec<Move>,
     ) {
         moves.clear();
+        let recent = std::mem::take(&mut self.recent);
         if area.width < BLOCK * 2 || area.height < MIN_CHANGED_ROWS {
             return;
         }
@@ -65,15 +69,10 @@ impl Finder {
         while strip_left < right {
             let strip_right = (strip_left + strip_width).min(right);
             if strip_right - strip_left >= BLOCK {
-                self.vote(
-                    reference,
-                    current,
-                    width,
-                    top,
-                    bottom,
-                    strip_left,
-                    strip_right,
-                );
+                let (strip, rows) = (strip_left..strip_right, top..bottom);
+                if !self.repeat(reference, current, width, &rows, &strip, &recent) {
+                    self.vote(reference, current, width, rows, strip);
+                }
             }
             strip_left = strip_right;
         }
@@ -105,11 +104,11 @@ impl Finder {
         let mut matched = 0usize;
         for y in top..bottom {
             let row = &current[y * width..(y + 1) * width];
-            let same = &reference[y * width..(y + 1) * width];
+            let unmoved = &reference[y * width..(y + 1) * width];
             for column in 0..columns {
                 let x0 = left + column * BLOCK;
                 let x1 = (x0 + BLOCK).min(right);
-                let changed = row[x0..x1] != same[x0..x1];
+                let changed = !same(&row[x0..x1], &unmoved[x0..x1]);
                 for (index, &(dx, dy)) in candidates.iter().enumerate() {
                     let from_y = y as i64 - i64::from(dy);
                     let from_x0 = x0 as i64 - i64::from(dx);
@@ -122,7 +121,10 @@ impl Finder {
                         continue;
                     }
                     let base = from_y as usize * width;
-                    if row[x0..x1] == reference[base + from_x0 as usize..base + from_x1 as usize] {
+                    if same(
+                        &row[x0..x1],
+                        &reference[base + from_x0 as usize..base + from_x1 as usize],
+                    ) {
                         self.cells[(y - top) * columns + column] = index as u8 + 1;
                         matched += usize::from(changed);
                         break;
@@ -185,19 +187,68 @@ impl Finder {
                 return;
             }
         }
+        for step in moves.iter() {
+            if step.dx == 0 && !self.recent.contains(&step.dy) {
+                self.recent.push(step.dy);
+            }
+        }
+        self.recent.truncate(MAX_CANDIDATES);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn repeat(
+        &mut self,
+        reference: &[u32],
+        current: &[u32],
+        width: usize,
+        rows: &Range<usize>,
+        strip: &Range<usize>,
+        recent: &[i32],
+    ) -> bool {
+        if recent.is_empty() {
+            return false;
+        }
+        let height = reference.len() / width;
+        let mut changed = 0u32;
+        let mut found = [0u32; MAX_CANDIDATES];
+        for y in rows.clone() {
+            let row = &current[y * width + strip.start..y * width + strip.end];
+            if same(
+                row,
+                &reference[y * width + strip.start..y * width + strip.end],
+            ) {
+                continue;
+            }
+            changed += 1;
+            let hit = recent.iter().position(|&dy| {
+                let from = y as i64 - i64::from(dy);
+                (0..height as i64).contains(&from) && {
+                    let base = from as usize * width;
+                    same(row, &reference[base + strip.start..base + strip.end])
+                }
+            });
+            if let Some(index) = hit {
+                found[index] += 1;
+            }
+        }
+        let matched: u32 = found.iter().sum();
+        if matched < MIN_VOTES || matched * REPEAT_SHARE.1 < changed * REPEAT_SHARE.0 {
+            return false;
+        }
+        for (&dy, &count) in recent.iter().zip(&found) {
+            self.votes[(i64::from(dy) + height as i64) as usize] += count;
+        }
+        true
+    }
+
     fn vote(
         &mut self,
         reference: &[u32],
         current: &[u32],
         width: usize,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
+        rows: Range<usize>,
+        strip: Range<usize>,
     ) {
+        let (top, bottom, left, right) = (rows.start, rows.end, strip.start, strip.end);
         self.table.clear();
         for y in top..bottom {
             let (hash, flat) = hash_row(&reference[y * width + left..y * width + right]);
@@ -212,7 +263,7 @@ impl Finder {
         let height = reference.len() / width;
         for y in top..bottom {
             let row = &current[y * width + left..y * width + right];
-            if row == &reference[y * width + left..y * width + right] {
+            if same(row, &reference[y * width + left..y * width + right]) {
                 continue;
             }
             let (hash, flat) = hash_row(row);

@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- Live view: the engine uses about half as much CPU while a page scrolls and about a third less on animation. Static Linux builds compared pixels through musl's byte-by-byte `memcmp`; the codec now compares them itself. During a steady scroll it also checks last frame's shift before hashing rows to find a new one.
+
 ## [0.6.3] - 2026-11-23
 
 ### Added
