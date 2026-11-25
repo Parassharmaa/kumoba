@@ -309,6 +309,7 @@ var MODIFIER_KEYS = [
 
 // src/view/client.ts
 var POINTER_BUTTONS = [1, 2, 3, 8, 9];
+var BUTTON_BITS = [1, 4, 2, 8, 16];
 var WHEEL_LINES_PER_NOTCH = 3;
 var WHEEL_PIXELS_PER_NOTCH = 100;
 var WHEEL_STEP = 120;
@@ -373,9 +374,10 @@ function connectViewer(canvas, url, options = {}) {
   const modifiers = /* @__PURE__ */ new Set();
   const buttons = /* @__PURE__ */ new Set();
   const wheelRemainder = { vertical: 0, horizontal: 0 };
+  const pageTouchAction = canvas.style.touchAction;
   const applyCursor = () => {
     canvas.style.cursor = viewOnly ? "default" : remoteCursor;
-    canvas.style.touchAction = viewOnly ? "" : "none";
+    canvas.style.touchAction = viewOnly ? pageTouchAction : "none";
   };
   applyCursor();
   const transmit = (message2) => {
@@ -572,6 +574,16 @@ function connectViewer(canvas, url, options = {}) {
   const moveTo = ({ x, y }) => send({ type: "pointer", x, y });
   const onPointerMove = (event) => {
     const place = locate(event);
+    const chord = POINTER_BUTTONS[event.button];
+    if (chord && buttons.size > 0) {
+      const down = (event.buttons & (BUTTON_BITS[event.button] ?? 0)) !== 0;
+      if (down === buttons.has(chord)) return;
+      moveTo(place);
+      if (down) buttons.add(chord);
+      else buttons.delete(chord);
+      send({ type: "button", button: chord, down });
+      return;
+    }
     if (place.inside || buttons.size > 0) moveTo(place);
   };
   const onPointerDown = (event) => {
@@ -629,6 +641,7 @@ function connectViewer(canvas, url, options = {}) {
     canvas.removeEventListener("pointercancel", releaseButtons);
     canvas.removeEventListener("wheel", onWheel);
     canvas.removeEventListener("contextmenu", onContextMenu);
+    canvas.style.touchAction = pageTouchAction;
     queue = [];
     stats.waiting = 0;
     pressed.clear();
@@ -714,12 +727,11 @@ function connectViewer(canvas, url, options = {}) {
     stats,
     viewOnly: () => viewOnly,
     setViewOnly: (next) => {
-      viewOnly = next;
       if (next) {
-        pressed.clear();
-        modifiers.clear();
-        buttons.clear();
+        releaseKeys();
+        releaseButtons();
       }
+      viewOnly = next;
       applyCursor();
     },
     key: (event) => {

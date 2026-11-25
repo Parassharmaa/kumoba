@@ -288,10 +288,14 @@ describe("viewer input", () => {
     const { socket, canvas } = await liveControl();
     canvas.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 100 });
     canvas.setPointerCapture = vi.fn();
-    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 50 }));
-    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, clientY: 50 }));
+    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 50, button: -1 }));
+    canvas.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 150, clientY: 50, button: -1 })
+    );
     canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: 150, clientY: 50, button: 0 }));
-    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 50 }));
+    canvas.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 50, clientY: 50, button: -1, buttons: 1 })
+    );
     canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: 10, clientY: 50, button: 0 }));
     expect(socket.input()).toEqual([
       [2, 1, 0, 1, 0],
@@ -307,21 +311,79 @@ describe("viewer input", () => {
     const { socket, canvas } = await liveControl();
     canvas.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 100 });
     canvas.setPointerCapture = vi.fn();
-    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 149, clientY: 99 }));
-    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 299, clientY: 0 }));
+    canvas.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 149, clientY: 99, button: -1 })
+    );
+    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 299, clientY: 0, button: -1 }));
     expect(socket.input()).toEqual([
       [2, 0, 0, 1, 0],
       [2, 3, 0, 0, 0],
     ]);
   });
 
+  it("ignores a press above or below a desktop narrower than the view", async () => {
+    const { socket, canvas } = await liveControl();
+    canvas.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 40, height: 100 });
+    canvas.setPointerCapture = vi.fn();
+    for (const clientY of [10, 39, 60, 90]) {
+      canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: 20, clientY, button: 0 }));
+      canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: 20, clientY, button: 0 }));
+    }
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: 20, clientY: 50, button: 0 }));
+    expect(socket.input()).toEqual([
+      [2, 2, 0, 1, 0],
+      [3, 1, 1],
+    ]);
+  });
+
+  it("presses and releases a second button held together with the first", async () => {
+    const { socket, canvas } = await liveControl();
+    canvas.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 4, height: 2 });
+    canvas.setPointerCapture = vi.fn();
+    const at = { clientX: 1, clientY: 1 };
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { ...at, button: 0, buttons: 1 }));
+    canvas.dispatchEvent(new PointerEvent("pointermove", { ...at, button: 2, buttons: 3 }));
+    canvas.dispatchEvent(new PointerEvent("pointermove", { ...at, button: 0, buttons: 2 }));
+    canvas.dispatchEvent(new PointerEvent("pointerup", { ...at, button: 2, buttons: 0 }));
+    expect(socket.input()).toEqual([
+      [2, 1, 0, 1, 0],
+      [3, 1, 1],
+      [2, 1, 0, 1, 0],
+      [3, 3, 1],
+      [2, 1, 0, 1, 0],
+      [3, 1, 0],
+      [2, 1, 0, 1, 0],
+      [3, 3, 0],
+    ]);
+  });
+
+  it("lets go of held keys and buttons when control is given up", async () => {
+    const { socket, client, canvas } = await liveControl();
+    canvas.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 4, height: 2 });
+    canvas.setPointerCapture = vi.fn();
+    client.key(key("keydown", { key: "Shift", code: "ShiftLeft", shiftKey: true }));
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: 1, clientY: 1, button: 0 }));
+    socket.sent.length = 0;
+    client.setViewOnly(true);
+    canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: 1, clientY: 1, button: 0 }));
+    expect(socket.input()).toEqual([
+      [4, 42, 0, 0],
+      [3, 1, 0],
+    ]);
+  });
+
   it("keeps touch drags for the desktop only while in control", async () => {
-    const { client, canvas } = await liveClient();
-    expect(canvas.style.touchAction).toBe("");
+    const canvas = document.createElement("canvas");
+    canvas.style.touchAction = "pan-y";
+    const client = connectViewer(canvas, "wss://gateway.example/stream", { viewOnly: true });
+    expect(canvas.style.touchAction).toBe("pan-y");
     client.setViewOnly(false);
     expect(canvas.style.touchAction).toBe("none");
     client.setViewOnly(true);
-    expect(canvas.style.touchAction).toBe("");
+    expect(canvas.style.touchAction).toBe("pan-y");
+    client.setViewOnly(false);
+    client.close();
+    expect(canvas.style.touchAction).toBe("pan-y");
   });
 
   it("lets go of a held button when the browser cancels the press", async () => {
