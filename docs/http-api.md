@@ -56,7 +56,7 @@ The new sandbox is **stopped**. Returns a summary:
 
 ### List, get, update, delete
 
-- `GET /v1/sandboxes?label=key:value&label=k2:v2&limit=100` → `{"sandboxes": [...], "truncated": false}`. Every `label` filter must match. Newest first. A `label` that is not `key:value` with a non-empty key, such as `key=value`, is answered with 400 `invalid_request`.
+- `GET /v1/sandboxes?label=key:value&label=k2:v2&limit=100` → `{"sandboxes": [...], "truncated": false}`. Every `label` filter must match. Newest first, by creation time; with more matches than `limit` (default 1000), the newest `limit` come back and `truncated` is true. A `label` that is not `key:value` with a non-empty key, such as `key=value`, is answered with 400 `invalid_request`.
 - `GET /v1/sandboxes/{id}` → summary.
 - `PATCH /v1/sandboxes/{id}` with `{"labels": {...}, "autoStopMinutes": 30, "network": {...}}` (all optional) → summary. `network` can only change while the sandbox is stopped (409 otherwise) and takes effect on the next start; the disk is kept.
 - `DELETE /v1/sandboxes/{id}` → `{"deleted": true}`. Stops the VM if needed and removes its disk.
