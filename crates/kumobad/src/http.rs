@@ -240,7 +240,7 @@ async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResu
         }
         Operation::Expose => {
             let body: crate::model::PreviewRequest = read_json(request.into_body()).await?;
-            service.entry(&id).await?;
+            service.entry(&id).await?.touch();
             let exp_ms =
                 crate::service::now_ms() + u64::from(body.ttl_seconds.clamp(1, 3600)) * 1000;
             let token = service.preview_key.sign(&crate::preview::PreviewClaims {
@@ -863,6 +863,7 @@ async fn preview(
         .verify(token, crate::service::now_ms())
         .ok_or_else(|| ApiError::Status(403, "preview token is invalid or expired".into()))?;
     let (entry, agent, _) = service.running_agent(&claims.sandbox_id, None).await?;
+    let operation = entry.begin();
     let mut tunnel = if claims.host_view {
         let Some((_, live)) = service.live_view(&claims.sandbox_id, false).await? else {
             return Err(ApiError::Status(409, "sandbox is not started".into()));
@@ -955,7 +956,7 @@ async fn preview(
     }
     let upgrade = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
-        let _operation = entry.begin();
+        let _operation = operation;
         let Ok(upgraded) = upgrade.await else {
             return;
         };

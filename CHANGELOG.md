@@ -8,6 +8,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 - `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, `--label '[]'` or `--args '{"label":[]}'`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
 - Writing a file to a path that is a named pipe (FIFO) fails at once with `guest operation failed: only regular files are supported` (HTTP 422, `guest_error`) instead of hanging. Each such write used to leave a guest connection stuck for good, and after 64 of them commands, file transfers, previews and the desktop on that sandbox stopped responding.
+- `kumobad`: listing files, opening a preview link and every preview request now count as activity for auto-stop, as the HTTP API guide says. A sandbox could be stopped while someone was only browsing its preview or file list, and a preview request that was still being answered could be cut off.
 
 ## [0.6.6] - 2026-11-25
 
