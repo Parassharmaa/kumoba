@@ -1705,6 +1705,57 @@ mod tests {
         }
     }
 
+    async fn api_error<B>(request: Request<B>) -> (u16, serde_json::Value)
+    where
+        B: hyper::body::Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        use hyper_util::rt::TokioIo;
+        let daemon = crate::testing::Daemon::new();
+        let service = daemon.service(daemon.runtime().await).await;
+        let (server, client) = UnixStream::pair().unwrap();
+        crate::serve(
+            server,
+            service,
+            Arc::new(b"token".to_vec()),
+            super::Listener::Api,
+        );
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_request_body_over_the_limit_is_request_too_large() {
+        let request = Request::post("/v1/sandboxes")
+            .header("authorization", "Bearer token")
+            .body(Full::new(Bytes::from(vec![b' '; super::JSON_LIMIT + 1])))
+            .unwrap();
+        let (status, body) = api_error(request).await;
+        assert_eq!(status, 413);
+        assert_eq!(body["error"], "request_too_large");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_body_that_never_arrives_is_request_timeout() {
+        let (_open, receiver) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(1);
+        let request = Request::post("/v1/sandboxes")
+            .header("authorization", "Bearer token")
+            .body(StreamBody::new(
+                tokio_stream::wrappers::ReceiverStream::new(receiver),
+            ))
+            .unwrap();
+        let (status, body) = api_error(request).await;
+        assert_eq!(status, 408);
+        assert_eq!(body["error"], "request_timeout");
+    }
+
     #[test]
     fn the_desktop_link_prefers_the_stream_viewer_only_when_it_runs() {
         use super::{STREAM_VIEW, VNC_VIEW, desktop_view};

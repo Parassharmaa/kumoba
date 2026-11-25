@@ -18,7 +18,7 @@ Read the [changelog](/changelog) first. While kumoba is alpha, a minor version (
 ## Install a specific version
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/install.sh | KUMOBA_VERSION=0.2.2 bash
+curl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/install.sh | KUMOBA_VERSION=@version@ bash
 ```
 
 ## Uninstall

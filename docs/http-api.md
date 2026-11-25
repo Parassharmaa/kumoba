@@ -8,9 +8,24 @@ curl --unix-socket ~/.kumoba/kumobad.sock -H "authorization: Bearer $(cat ~/.kum
 
 ## Commands
 
-`GET /v1/commands` → `{"version": "0.2.2", "commands": [...]}` describes every route below in machine-readable form: `name`, `summary`, `method`, `path`, the `positional` path arguments, the `rest` argument that takes a trailing list, `input` (`none`, `json` or `bytes`), `output` (`json`, `events` or `bytes`), `in` (whether each argument goes in the path, query, JSON body or raw body) and `inputSchema`, a JSON Schema covering all of them. The `kumoba` CLI is built on this route alone, and the schemas can be handed to a model as tool definitions.
+`GET /v1/commands` → `{"version": "@version@", "commands": [...]}` describes every route below in machine-readable form: `name`, `summary`, `method`, `path`, the `positional` path arguments, the `rest` argument that takes a trailing list, `input` (`none`, `json` or `bytes`), `output` (`json`, `events`, `bytes` or `terminal`), `in` (whether each argument goes in the path, query, JSON body or raw body) and `inputSchema`, a JSON Schema covering all of them. The `kumoba` CLI is built on this route alone, and the schemas can be handed to a model as tool definitions.
 
-Errors are JSON: `{"error": "<code>", "message": "<detail>"}` with an HTTP status. Codes include `unauthorized` (401), `not_found` (404), `invalid_request` (400), `capacity` (429, `KUMOBAD_MAX_RUNNING` reached) and `guest_error` (422, the command or file operation failed inside the VM).
+Errors are JSON: `{"error": "<code>", "message": "<detail>"}` with an HTTP status. `error` is one of these codes:
+
+| Status | `error` | When |
+| --- | --- | --- |
+| 400 | `invalid_request` | The body, a path or query argument, a cursor or a `label` filter is not valid, or the daemon refuses a value, such as an unknown image |
+| 401 | `unauthorized` | The bearer token is missing or wrong. This reply has no `message` |
+| 404 | `not_found` | No such sandbox or route. The preview listener answers this for anything but a preview |
+| 408 | `request_timeout` | The request body did not arrive in time: 30 s for a JSON or preview body, and an upload that sends nothing for 60 s |
+| 409 | `conflict` | The sandbox is in the wrong state for the call: not started, busy with another operation, or started when its network is changed |
+| 413 | `request_too_large` | The request body is over its limit: 1 MiB for a JSON body, 10 MiB for a preview |
+| 422 | `guest_error` | The command or file operation failed inside the VM, or the image lacks what the call needs, such as a desktop or shell support |
+| 426 | `upgrade_required` | A `shell` request without the `kumoba-shell.v1` upgrade |
+| 429 | `capacity` | `KUMOBAD_MAX_RUNNING` sandboxes are already running |
+| 500 | `internal` | The daemon failed, such as a guest connection that broke |
+
+Preview requests can also fail with 403 (the token is invalid or expired), 502 (the port or live view in the sandbox could not be reached, or sent a reply kumobad cannot read) and 504 (no response headers within 30 s); those replies also carry `internal`. Later releases may add codes; go by the status for one you do not know.
 
 ## Images
 
