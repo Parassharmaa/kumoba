@@ -12,6 +12,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - Writing a file to a path that is a named pipe (FIFO) fails at once with `guest operation failed: only regular files are supported` (HTTP 422, `guest_error`) instead of hanging. Each such write used to leave a guest connection stuck for good, and after 64 of them commands, file transfers, previews and the desktop on that sandbox stopped responding.
 - `kumobad`: `autoDeleteMinutes` now also deletes a sandbox whose VM stopped on its own, for example after `poweroff`, a kernel panic, running out of memory or a crashed worker. The clock starts when kumobad first sees it stopped. Such a sandbox used to show `stopped` forever and keep its disk.
 - `kumobad`: listing files, opening a preview link and every preview request now count as activity for auto-stop, as the HTTP API guide says. A sandbox could be stopped while someone was only browsing its preview or file list, and a preview request that was still being answered could be cut off.
+- `kumobad`: `GET /v1/sandboxes`, `GET /v1/sandboxes/{id}`, `kumoba list`, `kumoba get` and `kumoba.list()` answer at once while a sandbox is booting, which takes up to 5 minutes for macOS. They used to wait for the boot to finish, and auto-stop and auto-delete for every other sandbox waited as long. A booting sandbox is listed as `stopped` until its boot completes, and auto-stop and auto-delete leave it alone until then.
 
 ## [0.6.6] - 2026-11-25
 
