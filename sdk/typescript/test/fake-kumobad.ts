@@ -58,6 +58,8 @@ export type FakeKumobad = {
   accessPageSize: number;
   execs: FakeExecCall[];
   listFilters: string[][];
+  downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
+  downloadsClosed: number;
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -92,6 +94,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     accessPageSize: 1000,
     execs: [],
     listFilters: [],
+    downloadCut: undefined,
+    downloadsClosed: 0,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -326,8 +330,19 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           send(response, 422, { error: "guest_error", message: "No such file or directory" });
           return;
         }
-        response.writeHead(200, { "content-type": "application/octet-stream" });
-        response.end(content);
+        const cut = fake.downloadCut;
+        response.on("close", () => {
+          fake.downloadsClosed += 1;
+        });
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "x-file-size": String(content.length),
+          ...(cut && cut.finish !== "end" ? { "content-length": String(content.length) } : {}),
+        });
+        response.write(content.subarray(0, cut?.bytes ?? content.length), () => {
+          if (cut?.finish === "abort") response.destroy();
+          else if (cut?.finish !== "hang") response.end();
+        });
       } else {
         send(response, 404, { error: "not_found", message: "route not found" });
       }
