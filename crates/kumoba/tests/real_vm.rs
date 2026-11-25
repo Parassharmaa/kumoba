@@ -142,6 +142,17 @@ async fn real_vm_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
             .await?
             .success()
     );
+    assert!(matches!(
+        sandbox.exec(Command::new("/usr/bin/kumoba-missing")).await,
+        Err(Error::Guest(_))
+    ));
+    assert_eq!(sandbox.state()?, State::Running);
+    assert!(
+        sandbox
+            .exec(Command::new("/bin/echo").arg("still running after a failed start"))
+            .await?
+            .success()
+    );
     let mut stream = sandbox.connect(8080).await?;
     stream
         .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
