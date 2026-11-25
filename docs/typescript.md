@@ -100,7 +100,7 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 
 ## Errors
 
-Failures throw `KumobaError` with a `code`, a `retryable` flag and, when the daemon answered, its HTTP `status`. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks and local file errors in `files.upload()` and `files.download()`, such as a missing local path; those reach you unchanged.
+Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style `status`: the daemon's own when it answered with an error, 502 or 503 for a failure the SDK detected in its reply or connection, and 0 when no request was made. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks, local file errors in `files.upload()` and `files.download()` such as a missing local path, and errors from a stream you pass to `files.write()`; those reach you unchanged.
 
 | `code` | When | `retryable` |
 | --- | --- | --- |
@@ -111,7 +111,7 @@ Failures throw `KumobaError` with a `code`, a `retryable` flag and, when the dae
 | `command_failed` | A shell helper such as `files.mkdir()`, `files.remove()` or a `desktop` method exited non-zero. For `mkdir` and `remove`, `result` holds the command's `RunResult`. | `false` |
 | `invalid_request` | The SDK refused the arguments before asking kumobad, such as an empty command. | `false` |
 
-Other codes, such as `not_found`, `capacity` or `guest_error`, are the daemon's own and come with its HTTP status (see the [HTTP API](/http-api)).
+Other codes, such as `not_found`, `capacity` or `guest_error`, are the daemon's own and come with its HTTP status (see the [HTTP API](/http-api)). An error reply without a code is `daemon_error`. Errors from the daemon are retryable when the status is 429 or 5xx.
 
 A `run()` that fails with `unreachable` or `protocol` after kumobad accepted it may have started the command, so retry only commands that are safe to run twice.
 

@@ -61,6 +61,7 @@ export type FakeKumobad = {
   listFilters: string[][];
   downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
   downloadsClosed: number;
+  imagesCut: boolean;
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -116,6 +117,7 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     listFilters: [],
     downloadCut: undefined,
     downloadsClosed: 0,
+    imagesCut: false,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
@@ -186,6 +188,11 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         return;
       }
       if (method === "GET" && url.pathname === "/v1/images") {
+        if (fake.imagesCut) {
+          response.writeHead(200, { "content-type": "application/json", "content-length": "64" });
+          response.write('{"images":["def', () => response.destroy());
+          return;
+        }
         send(response, 200, { images: ["default", "test"] });
         return;
       }

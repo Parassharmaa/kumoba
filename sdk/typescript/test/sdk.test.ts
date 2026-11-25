@@ -238,6 +238,13 @@ describe("run failures", () => {
     expect(await failure(kumoba.run("sleep 99"))).toMatchObject({ code: "unreachable" });
   });
 
+  it("reports a reply cut off mid-body as unreachable", async () => {
+    fake.imagesCut = true;
+    const lost = await failure(kumoba.images());
+    expect(lost).toMatchObject({ code: "unreachable", retryable: true });
+    expect(lost.message).toMatch(/^Lost the connection to kumobad/);
+  });
+
   it("rejects a run whose output ends without an exit status", async () => {
     fake.onExec = () => ({ stdout: "partial", cut: "end" });
     const sandbox = await kumoba.create();
