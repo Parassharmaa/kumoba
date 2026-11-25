@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
 Upgrade notes: `GET /v1/sandboxes` now lists the newest sandboxes first and refuses a `label` filter that is not `key:value`; the access log has a new `failed` decision, which TypeScript SDKs before this release reject; and the TypeScript SDK needs Node 20.3 or later.
 
 ### Added
@@ -206,7 +208,8 @@ The first release with these changes; the v0.6.4 tag was never published.
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Parassharmaa/kumoba/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/Parassharmaa/kumoba/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...v0.6.5
 [0.6.3]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...v0.6.3
