@@ -16,7 +16,7 @@ class FakeSocket {
   binaryType = "blob";
   sent: number[][] = [];
   onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   constructor(public url: string) {
     fake.sockets.push(this);
   }
@@ -29,9 +29,9 @@ class FakeSocket {
   receive(data: ArrayBuffer) {
     this.onmessage?.({ data });
   }
-  drop() {
+  drop(code = 1006, reason = "") {
     this.readyState = FakeSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code, reason });
   }
   of(type: number) {
     return this.sent.filter((message) => message[0] === type);
@@ -235,6 +235,20 @@ describe("viewer stream", () => {
     expect(first.handlers.onClose).toHaveBeenCalledWith({ connected: false });
     const second = await liveControl();
     second.socket.drop();
+    expect(second.handlers.onClose).toHaveBeenCalledWith({ connected: true });
+  });
+
+  it("reports the reason the engine gave for closing the stream", async () => {
+    const reason = "The X display has depth 16; the live view needs depth 24";
+    const handlers = events();
+    connectViewer(document.createElement("canvas"), "wss://gateway.example/stream", handlers);
+    fake.sockets.at(-1)?.drop(1011, reason);
+    expect(handlers.onClose).toHaveBeenCalledWith({
+      connected: false,
+      error: new Error(reason),
+    });
+    const second = await liveControl();
+    second.socket.drop(1000, "");
     expect(second.handlers.onClose).toHaveBeenCalledWith({ connected: true });
   });
 
