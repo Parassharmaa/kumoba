@@ -949,7 +949,7 @@ mod tests {
         assert!(service.entry(&run.to_string()).await.is_err());
         let adopted = service.entry(&kept.to_string()).await.unwrap();
         assert!(!adopted.meta().ephemeral);
-        let summary = serde_json::to_value(service.summary(&adopted).await.unwrap()).unwrap();
+        let summary = serde_json::to_value(service.summary(&adopted).unwrap()).unwrap();
         assert!(summary.get("ephemeral").is_none());
     }
 
@@ -1066,15 +1066,18 @@ mod tests {
         .await
         .unwrap();
         let created = service
-            .create(CreateRequest {
-                image: "test".into(),
-                labels: BTreeMap::new(),
-                cpu: 1,
-                memory_mib: 512,
-                auto_stop_minutes: 1,
-                auto_delete_minutes: Some(1),
-                network: crate::model::NetworkSpec::default(),
-            })
+            .create(
+                CreateRequest {
+                    image: "test".into(),
+                    labels: BTreeMap::new(),
+                    cpu: 1,
+                    memory_mib: 512,
+                    auto_stop_minutes: 1,
+                    auto_delete_minutes: Some(1),
+                    network: crate::model::NetworkSpec::default(),
+                },
+                false,
+            )
             .await
             .unwrap();
         (service, created.meta.id)
