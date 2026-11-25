@@ -65,7 +65,12 @@ impl AccessEntry {
             labels,
             host: record.host,
             port: record.port,
-            decision: if record.allowed { "allowed" } else { "denied" }.to_string(),
+            decision: match record.decision {
+                kumoba::AccessDecision::Allowed => "allowed",
+                kumoba::AccessDecision::Denied => "denied",
+                kumoba::AccessDecision::Failed => "failed",
+            }
+            .to_string(),
             bytes_in: record.bytes_in,
             bytes_out: record.bytes_out,
             started_at_ms: epoch_ms(record.started),
@@ -414,12 +419,26 @@ mod tests {
         let record = kumoba::AccessRecord {
             host: "api.example".into(),
             port: 443,
-            allowed: false,
+            decision: kumoba::AccessDecision::Denied,
             bytes_in: 0,
             bytes_out: 0,
             started,
             completed: started + Duration::from_millis(7),
         };
+        for (decision, expected) in [
+            (kumoba::AccessDecision::Allowed, "allowed"),
+            (kumoba::AccessDecision::Failed, "failed"),
+        ] {
+            let entry = AccessEntry::new(
+                "sbx".into(),
+                BTreeMap::new(),
+                kumoba::AccessRecord {
+                    decision,
+                    ..record.clone()
+                },
+            );
+            assert_eq!(entry.decision, expected);
+        }
         let entry = AccessEntry::new("sbx".into(), BTreeMap::new(), record);
         assert_eq!(entry.decision, "denied");
         assert_eq!((entry.started_at_ms, entry.completed_at_ms), (1_000, 1_007));

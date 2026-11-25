@@ -199,6 +199,51 @@ describe("Sandbox.files", () => {
     });
   });
 
+  it.each([
+    ["ends cleanly", "end"],
+    ["drops the connection", "abort"],
+  ] as const)("rejects a download that %s before the declared file size", async (_name, finish) => {
+    const sandbox = await kumoba.create();
+    await sandbox.files.write("/workspace/c.bin", Buffer.alloc(10, 7));
+    fake.downloadCut = { bytes: 3, finish };
+    const truncated = { code: "protocol", retryable: true };
+    await expect(sandbox.files.read("/workspace/c.bin")).rejects.toMatchObject(truncated);
+    const consume = async () => {
+      for await (const _chunk of await sandbox.files.stream("/workspace/c.bin"));
+    };
+    await expect(consume()).rejects.toMatchObject(truncated);
+    const directory = mkdtempSync(join(tmpdir(), "kumoba-download-"));
+    try {
+      await expect(
+        sandbox.files.download("/workspace/c.bin", join(directory, "c.bin"))
+      ).rejects.toMatchObject(truncated);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    fake.downloadCut = undefined;
+    expect((await sandbox.files.read("/workspace/c.bin")).length).toBe(10);
+  });
+
+  it("closes the connection when a caller stops a stalled stream", async () => {
+    const sandbox = await kumoba.create();
+    await sandbox.files.write("/workspace/c.bin", Buffer.alloc(10, 7));
+    fake.downloadCut = { bytes: 3, finish: "hang" };
+    const closed = async (count: number) => {
+      while (fake.downloadsClosed < count) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const unread = await sandbox.files.stream("/workspace/c.bin");
+    unread.destroy();
+    await closed(1);
+    const reading = await sandbox.files.stream("/workspace/c.bin");
+    const errors: unknown[] = [];
+    reading.on("error", (error) => errors.push(error));
+    await new Promise((resolve) => reading.once("data", resolve));
+    reading.destroy(new Error("stopped"));
+    await closed(2);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(errors).toMatchObject([{ message: "stopped" }]);
+  });
+
   it("implements mkdir, remove and exists through the shell as the configured user", async () => {
     fake.onExec = (call) => ({ exitCode: call.argv[2]?.startsWith("test -e") ? 1 : 0 });
     const sandbox = await kumoba.create({ user: "kumoba" });
@@ -340,6 +385,22 @@ describe("Kumoba.accessLog", () => {
         startedAtMs: 3,
         completedAtMs: 30,
       },
+      {
+        ...base,
+        host: "silent.example",
+        decision: "failed",
+        bytesIn: 0,
+        bytesOut: 0,
+        startedAtMs: 31,
+        completedAtMs: 36,
+      },
+      {
+        ...base,
+        host: "future.example",
+        decision: "rerouted",
+        startedAtMs: 37,
+        completedAtMs: 38,
+      },
       { ...base, host: "late.example", startedAtMs: 4, completedAtMs: 40 },
     ];
     const seen = [];
@@ -349,6 +410,8 @@ describe("Kumoba.accessLog", () => {
       ["a.example", "allowed"],
       ["b.example", "allowed"],
       ["169.254.169.254", "denied"],
+      ["silent.example", "failed"],
+      ["future.example", "rerouted"],
     ]);
     expect(seen[0]?.completedAt).toEqual(new Date(10));
   });

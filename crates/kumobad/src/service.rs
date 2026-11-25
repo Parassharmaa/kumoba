@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -99,6 +99,7 @@ pub struct Entry {
     pub sandbox: Mutex<Sandbox>,
     activity_ms: AtomicU64,
     stopped_at_ms: AtomicU64,
+    started: AtomicBool,
     operations: AtomicUsize,
     secrets: std::sync::Mutex<BTreeMap<String, (SecretId, Vec<String>)>>,
 }
@@ -107,6 +108,7 @@ pub struct Entry {
 pub struct EntrySnapshot {
     pub activity_ms: u64,
     pub stopped_at_ms: u64,
+    pub started: bool,
     pub operations: usize,
 }
 
@@ -141,6 +143,10 @@ pub fn reap_action(
     }
 }
 
+pub fn exit_stamp(state: State, snapshot: EntrySnapshot, now_ms: u64) -> Option<u64> {
+    (state == State::Stopped && snapshot.started && snapshot.stopped_at_ms == 0).then_some(now_ms)
+}
+
 pub struct OperationGuard(Arc<Entry>);
 
 impl Drop for OperationGuard {
@@ -157,6 +163,7 @@ impl Entry {
             sandbox: Mutex::new(sandbox),
             activity_ms: AtomicU64::new(now_ms()),
             stopped_at_ms: AtomicU64::new(stopped_at_ms),
+            started: AtomicBool::new(false),
             operations: AtomicUsize::new(0),
             secrets: std::sync::Mutex::new(BTreeMap::new()),
         })
@@ -166,8 +173,21 @@ impl Entry {
         EntrySnapshot {
             activity_ms: self.activity_ms.load(Ordering::SeqCst),
             stopped_at_ms: self.stopped_at_ms.load(Ordering::SeqCst),
+            started: self.started.load(Ordering::SeqCst),
             operations: self.operations.load(Ordering::SeqCst),
         }
+    }
+
+    async fn observed_state(&self) -> kumoba::Result<State> {
+        let mut sandbox = self.sandbox.lock().await;
+        let state = sandbox.state()?;
+        if let Some(stamp) = exit_stamp(state, self.snapshot(), now_ms()) {
+            let _ =
+                self.stopped_at_ms
+                    .compare_exchange(0, stamp, Ordering::SeqCst, Ordering::SeqCst);
+        }
+        drop(sandbox);
+        Ok(state)
     }
 
     pub fn touch(&self) {
@@ -445,7 +465,7 @@ impl Service {
     }
 
     pub async fn summary(&self, entry: &Arc<Entry>) -> ApiResult<Summary> {
-        let state = entry.sandbox.lock().await.state()?;
+        let state = entry.observed_state().await?;
         Ok(Summary {
             meta: entry.meta(),
             state: state_name(state),
@@ -534,6 +554,7 @@ impl Service {
             if sandbox.state()? != State::Running {
                 sandbox.start().await?;
             }
+            entry.started.store(true, Ordering::SeqCst);
             entry.stopped_at_ms.store(0, Ordering::SeqCst);
         }
         entry.touch();
@@ -750,7 +771,7 @@ impl Service {
         let now = now_ms();
         for (id, entry) in entries {
             let meta = entry.meta();
-            let Ok(state) = entry.sandbox.lock().await.state() else {
+            let Ok(state) = entry.observed_state().await else {
                 continue;
             };
             match reap_action(state, &meta, entry.snapshot(), now) {
@@ -941,7 +962,27 @@ mod tests {
         EntrySnapshot {
             activity_ms,
             stopped_at_ms,
+            started: false,
             operations,
+        }
+    }
+
+    fn tick(
+        state: State,
+        meta: &Meta,
+        snapshot: &mut EntrySnapshot,
+        now_ms: u64,
+    ) -> Option<ReapAction> {
+        if let Some(stamp) = exit_stamp(state, *snapshot, now_ms) {
+            snapshot.stopped_at_ms = stamp;
+        }
+        reap_action(state, meta, *snapshot, now_ms)
+    }
+
+    fn started() -> EntrySnapshot {
+        EntrySnapshot {
+            started: true,
+            ..snapshot(0, 0, 0)
         }
     }
 
@@ -1060,6 +1101,60 @@ mod tests {
             ),
             Some(ReapAction::Delete)
         );
+    }
+
+    #[test]
+    fn a_sandbox_that_exits_on_its_own_is_deleted_after_its_limit() {
+        let m = meta(0, Some(30));
+        let mut entry = started();
+        assert_eq!(tick(State::Running, &m, &mut entry, MINUTE), None);
+        assert_eq!(tick(State::Stopped, &m, &mut entry, 2 * MINUTE), None);
+        assert_eq!(tick(State::Stopped, &m, &mut entry, 31 * MINUTE), None);
+        assert_eq!(
+            tick(State::Stopped, &m, &mut entry, 32 * MINUTE),
+            Some(ReapAction::Delete)
+        );
+    }
+
+    #[test]
+    fn the_exit_time_is_recorded_once_per_run_and_only_after_a_start() {
+        let mut never_started = snapshot(0, 0, 0);
+        let m = meta(0, Some(30));
+        assert_eq!(tick(State::Stopped, &m, &mut never_started, u64::MAX), None);
+        assert_eq!(never_started.stopped_at_ms, 0);
+
+        let mut entry = started();
+        tick(State::Stopped, &m, &mut entry, 2 * MINUTE);
+        tick(State::Stopped, &m, &mut entry, 10 * MINUTE);
+        assert_eq!(entry.stopped_at_ms, 2 * MINUTE);
+
+        entry.stopped_at_ms = 0;
+        tick(State::Running, &m, &mut entry, 20 * MINUTE);
+        assert_eq!(entry.stopped_at_ms, 0);
+        tick(State::Stopped, &m, &mut entry, 40 * MINUTE);
+        assert_eq!(entry.stopped_at_ms, 40 * MINUTE);
+        assert_eq!(tick(State::Stopped, &m, &mut entry, 69 * MINUTE), None);
+        assert_eq!(
+            tick(State::Stopped, &m, &mut entry, 70 * MINUTE),
+            Some(ReapAction::Delete)
+        );
+
+        let mut stopped_by_hand = EntrySnapshot {
+            stopped_at_ms: 5 * MINUTE,
+            ..started()
+        };
+        tick(State::Stopped, &m, &mut stopped_by_hand, 50 * MINUTE);
+        assert_eq!(stopped_by_hand.stopped_at_ms, 5 * MINUTE);
+
+        let mut kept = started();
+        let keep = meta(0, None);
+        assert_eq!(tick(State::Stopped, &keep, &mut kept, 3 * MINUTE), None);
+        assert_eq!(kept.stopped_at_ms, 3 * MINUTE);
+        assert_eq!(tick(State::Stopped, &keep, &mut kept, u64::MAX), None);
+
+        let mut deleted = started();
+        tick(State::Deleted, &m, &mut deleted, 3 * MINUTE);
+        assert_eq!(deleted.stopped_at_ms, 0);
     }
 
     fn listed(id: &str, created_at_ms: u64) -> Summary {

@@ -118,7 +118,7 @@ Closing the connection ends the shell. A request without the upgrade gets `426 u
 ## Files
 
 - `PUT /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` with the raw bytes as the body → `{"written": <bytes>}`. Parent directories must exist. The file is created `0644` as `user`.
-- `GET /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` → the raw bytes, `application/octet-stream`.
+- `GET /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` → the raw bytes, `application/octet-stream`. `Content-Length` and `x-file-size` carry the file's size. If reading the file fails partway, for example because the sandbox stops, kumobad closes the connection before that many bytes, so the client sees a failed transfer instead of a short file. Daemons before this release ended the body cleanly instead; compare the bytes received with `x-file-size` to catch that.
 - `GET /v1/sandboxes/{id}/files/list?path=/abs/dir[&user=name]` → `{"entries": [{"name": "a.txt", "kind": "file", "size": 5}, ...]}`. `kind` is `file`, `directory` or `other`.
 
 Reads and lists run with the user's permissions when `user` is given.
@@ -171,7 +171,7 @@ Every connection the egress proxy handled, in the order it was recorded (close t
 }
 ```
 
-`decision` is `denied` for allowlist misses and for attempts at private, link-local or metadata addresses; those carry zero bytes. A sandbox gets at most 10000 records per hour; beyond that, and whenever the daemon cannot keep up, the gap is reported as a `dropped` marker (`"decision": "dropped"`, empty host, port 0, `"dropped": <count>`) rather than lost silently. `bytesIn` is what reached the guest, `bytesOut` what it sent. Defaults: the last two hours, 10000 entries; `limit` caps at 50000. When `truncated` is true, repeat the call with `cursor=<nextCursor>` and the same window to get the next page; the cursor is a position in the log, so pages never skip or repeat entries. The cap is 10000 allowed and 10000 denied records per sandbox per hour, so a flood of permitted traffic cannot push denials out of the log. kumobad keeps 72 hours of entries as hourly files under `<state>/access`.
+`decision` is `denied` for allowlist misses and for attempts at private, link-local or metadata addresses, and `failed` when the destination was allowed but could not be reached: its DNS lookup failed or got no answer within 5 seconds, the connection failed, or the upstream proxy failed. Both carry zero bytes. A sandbox gets at most 10000 records per hour; beyond that, and whenever the daemon cannot keep up, the gap is reported as a `dropped` marker (`"decision": "dropped"`, empty host, port 0, `"dropped": <count>`) rather than lost silently. `bytesIn` is what reached the guest, `bytesOut` what it sent. Defaults: the last two hours, 10000 entries; `limit` caps at 50000. When `truncated` is true, repeat the call with `cursor=<nextCursor>` and the same window to get the next page; the cursor is a position in the log, so pages never skip or repeat entries. The cap is 10000 records per decision (`allowed`, `denied`, `failed`) per sandbox per hour, so a flood of permitted traffic cannot push denials out of the log. kumobad keeps 72 hours of entries as hourly files under `<state>/access`.
 
 ## Health
 

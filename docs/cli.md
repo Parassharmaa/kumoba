@@ -70,7 +70,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 | --- | --- | --- |
 | JSON | most | Pretty JSON on a terminal, one line of JSON when piped or with `--json`. `-q` prints only the `id`s, one per line |
 | Stream | `run`, `exec` | The guest's stdout and stderr on yours, as they arrive |
-| Bytes | `read-file` | The file on stdout, or into `-o FILE` |
+| Bytes | `read-file` | The file on stdout, or into `-o FILE` as it arrives. Exits 1 if the transfer ends before the whole file arrived, and removes a partial `-o FILE` |
 
 `write-file` reads the file content from `content=@path`, or from stdin when it is piped.
 
