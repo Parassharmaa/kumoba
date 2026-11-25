@@ -35,6 +35,7 @@ export type ViewerStats = {
 export type Viewer = {
   readonly stats: ViewerStats;
   viewOnly(): boolean;
+  watchOnly(): boolean;
   setViewOnly(viewOnly: boolean): void;
   key(event: KeyboardEvent): void;
   typeText(text: string): void;
@@ -107,6 +108,7 @@ export function connectViewer(
   };
   let chords = apple;
   let viewOnly = options.viewOnly ?? false;
+  let watchOnly = false;
   let closed = false;
   let connected = false;
   let decoder: Decoder | null = null;
@@ -265,6 +267,11 @@ export function connectViewer(
       canvas.height = message.height;
       image = null;
       chords = apple || message.chords;
+      if (message.watchOnly) {
+        watchOnly = true;
+        viewOnly = true;
+        applyCursor();
+      }
       transmit({ type: "pause", paused: document.hidden });
       return;
     }
@@ -501,7 +508,9 @@ export function connectViewer(
   return {
     stats,
     viewOnly: () => viewOnly,
+    watchOnly: () => watchOnly,
     setViewOnly: (next) => {
+      if (watchOnly) return;
       if (next) {
         releaseKeys();
         releaseButtons();

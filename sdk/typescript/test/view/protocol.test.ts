@@ -17,14 +17,26 @@ function encoded(input: Parameters<typeof encodeMessage>[0]) {
 }
 
 describe("parseMessage", () => {
-  it("reads the hello with the desktop size and chord flag", () => {
+  it("reads the hello with the desktop size, chord flag and watch-only flag", () => {
     expect(parseMessage(bytes(1, 0x00, 0x04, 0x00, 0x03, 60, 0, 1))).toEqual({
       type: "hello",
       width: 1024,
       height: 768,
       chords: true,
+      watchOnly: false,
     });
-    expect(parseMessage(bytes(1, 0x00, 0x04, 0x00, 0x03))).toMatchObject({ chords: false });
+    expect(parseMessage(bytes(1, 0x00, 0x04, 0x00, 0x03, 60, 0, 2))).toMatchObject({
+      chords: false,
+      watchOnly: true,
+    });
+    expect(parseMessage(bytes(1, 0x00, 0x04, 0x00, 0x03, 60, 0, 3))).toMatchObject({
+      chords: true,
+      watchOnly: true,
+    });
+    expect(parseMessage(bytes(1, 0x00, 0x04, 0x00, 0x03))).toMatchObject({
+      chords: false,
+      watchOnly: false,
+    });
   });
 
   it("reads a frame's sequence, capture time and payload", () => {

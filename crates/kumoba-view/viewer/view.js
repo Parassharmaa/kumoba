@@ -59,7 +59,8 @@ function parseMessage(buffer) {
       type: "hello",
       width: view.getUint16(1, true),
       height: view.getUint16(3, true),
-      chords: buffer.byteLength >= 8 && (view.getUint8(7) & 1) === 1
+      chords: buffer.byteLength >= 8 && (view.getUint8(7) & 1) === 1,
+      watchOnly: buffer.byteLength >= 8 && (view.getUint8(7) & 2) === 2
     };
   }
   if (type === SERVER.frame) {
@@ -362,6 +363,7 @@ function connectViewer(canvas, url, options = {}) {
   };
   let chords = apple;
   let viewOnly = options.viewOnly ?? false;
+  let watchOnly = false;
   let closed = false;
   let connected = false;
   let decoder = null;
@@ -499,6 +501,11 @@ function connectViewer(canvas, url, options = {}) {
       canvas.height = message2.height;
       image = null;
       chords = apple || message2.chords;
+      if (message2.watchOnly) {
+        watchOnly = true;
+        viewOnly = true;
+        applyCursor();
+      }
       transmit({ type: "pause", paused: document.hidden });
       return;
     }
@@ -729,7 +736,9 @@ function connectViewer(canvas, url, options = {}) {
   return {
     stats,
     viewOnly: () => viewOnly,
+    watchOnly: () => watchOnly,
     setViewOnly: (next) => {
+      if (watchOnly) return;
       if (next) {
         releaseKeys();
         releaseButtons();

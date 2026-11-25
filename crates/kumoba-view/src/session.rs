@@ -22,6 +22,8 @@ const CLIENT_TEXT: u8 = 8;
 const CLIENT_CLIPBOARD: u8 = 9;
 const CLIENT_COPY: u8 = 10;
 const CLIENT_CHORD: u8 = 11;
+const HELLO_CHORDS: u8 = 1;
+const HELLO_WATCH: u8 = 2;
 const CLIENT_PULL: u8 = 12;
 
 const STALL: Duration = Duration::from_secs(5);
@@ -53,6 +55,12 @@ pub struct Settings {
     pub fps: u32,
     pub max_mbps: u32,
     pub keepalive: Keepalive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Control,
+    Watch,
 }
 
 enum Stroke {
@@ -259,6 +267,7 @@ pub fn start<S: Screen>(
 pub fn run<S: Screen>(
     mut stream: impl Link,
     settings: Settings,
+    access: Access,
     open: impl FnOnce() -> Result<S, Failure>,
 ) -> Result<(), Failure> {
     stream.streaming()?;
@@ -271,7 +280,11 @@ pub fn run<S: Screen>(
     hello.extend_from_slice(&(width as u16).to_le_bytes());
     hello.extend_from_slice(&(height as u16).to_le_bytes());
     hello.extend_from_slice(&(settings.fps as u16).to_le_bytes());
-    hello.push(u8::from(screen.chords()));
+    let mut flags = if screen.chords() { HELLO_CHORDS } else { 0 };
+    if access == Access::Watch {
+        flags |= HELLO_WATCH;
+    }
+    hello.push(flags);
     writer.push(&hello);
     let started = Instant::now();
     let mut pace = Pace::new(settings.fps, started);
@@ -309,6 +322,11 @@ pub fn run<S: Screen>(
                 Message::Pong => continue,
                 Message::Close => return Ok(()),
             };
+            if access == Access::Watch
+                && !matches!(data.first(), Some(&(CLIENT_ACK | CLIENT_PAUSE)))
+            {
+                continue;
+            }
             match data.first() {
                 Some(&CLIENT_ACK) if data.len() >= 5 => {
                     let acked = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
@@ -552,17 +570,21 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
 
     const SIDE: usize = 64;
     const DESKTOP_CLIPBOARD: &[u8] = "copied from a menu".as_bytes();
 
-    #[derive(Clone, Copy, Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     enum Seen {
         Symbol(u32, bool),
         Key(u8, bool),
         Pointer(i16, i16),
         Button(u8, bool),
+        Chord(u8, bool),
+        Offer(String),
+        ExpectCopy,
     }
 
     struct Layout {
@@ -587,6 +609,8 @@ mod tests {
         pulled: Option<Vec<u8>>,
         seen: Arc<Mutex<Vec<Seen>>>,
         layout: Option<Layout>,
+        turns: Arc<AtomicUsize>,
+        changing: bool,
     }
 
     impl Still {
@@ -606,12 +630,14 @@ mod tests {
             &self.pixels
         }
         fn drain(&mut self) -> Result<bool, Failure> {
-            Ok(false)
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            Ok(self.changing)
         }
         fn resized(&self) -> bool {
             false
         }
         fn grab(&mut self, _full: bool) -> Result<Rect, Failure> {
+            self.pixels[0] = self.pixels[0].wrapping_add(0x0001_0101);
             Ok(Rect {
                 x: 0,
                 y: 0,
@@ -666,19 +692,26 @@ mod tests {
             }
             Ok(binds.iter().any(|&(_, _, reused)| reused))
         }
-        fn chord(&mut self, _letter: u8, _shift: bool) -> Result<(), Failure> {
+        fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure> {
+            self.saw(Seen::Chord(letter, shift));
             Ok(())
         }
-        fn offer(&mut self, _text: &[u8]) -> Result<(), Failure> {
+        fn offer(&mut self, text: &[u8]) -> Result<(), Failure> {
+            self.saw(Seen::Offer(String::from_utf8_lossy(text).into_owned()));
             Ok(())
         }
-        fn expect_copy(&mut self) {}
+        fn expect_copy(&mut self) {
+            self.saw(Seen::ExpectCopy);
+        }
         fn pull(&mut self) -> Result<(), Failure> {
             self.pulled = Some(DESKTOP_CLIPBOARD.to_vec());
             Ok(())
         }
         fn copied(&mut self) -> Option<Vec<u8>> {
             self.pulled.take()
+        }
+        fn chords(&self) -> bool {
+            true
         }
     }
 
@@ -699,6 +732,7 @@ mod tests {
         browser: UnixStream,
         ended: mpsc::Receiver<Result<(), String>>,
         seen: Arc<Mutex<Vec<Seen>>>,
+        turns: Arc<AtomicUsize>,
         _wake: UnixStream,
     }
 
@@ -707,27 +741,38 @@ mod tests {
     }
 
     fn open_with(settings: Settings, layout: Option<Layout>) -> Session {
+        open_as(settings, layout, Access::Control, false)
+    }
+
+    fn open_as(
+        settings: Settings,
+        layout: Option<Layout>,
+        access: Access,
+        changing: bool,
+    ) -> Session {
         let (browser, engine) = UnixStream::pair().unwrap();
         let (wake, screen_end) = UnixStream::pair().unwrap();
         let (done, ended) = mpsc::channel();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&seen);
+        let turns = Arc::new(AtomicUsize::new(0));
+        let screen = Still {
+            wake: screen_end,
+            pixels: vec![0x0033_6699; SIDE * SIDE],
+            pulled: None,
+            seen: Arc::clone(&seen),
+            layout,
+            turns: Arc::clone(&turns),
+            changing,
+        };
         std::thread::spawn(move || {
-            let result = run(engine, settings, || {
-                Ok(Still {
-                    wake: screen_end,
-                    pixels: vec![0x0033_6699; SIDE * SIDE],
-                    pulled: None,
-                    seen: recorded,
-                    layout,
-                })
-            });
+            let result = run(engine, settings, access, || Ok(screen));
             let _ = done.send(result.map_err(|error| error.to_string()));
         });
         Session {
             browser,
             ended,
             seen,
+            turns,
             _wake: wake,
         }
     }
@@ -1060,5 +1105,144 @@ mod tests {
                 "the viewer sent more text than the desktop can type".to_string()
             ))
         );
+    }
+
+    fn watching(access: Access, changing: bool) -> (Session, u8) {
+        let settings = Settings {
+            fps: 60,
+            max_mbps: 100,
+            keepalive: KEEPALIVE,
+        };
+        let mut session = open_as(settings, None, access, changing);
+        let (first, hello) = try_frame(&mut session.browser).unwrap();
+        assert_eq!((first, hello[0]), (0x82, SERVER_HELLO));
+        (session, hello[7])
+    }
+
+    impl Session {
+        fn send(&mut self, messages: &[Vec<u8>]) {
+            for message in messages {
+                self.browser.write_all(&masked(0x2, message)).unwrap();
+            }
+            let start = self.turns.load(Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.turns.load(Ordering::SeqCst) < start + 6 {
+                assert!(Instant::now() < deadline, "the session stopped turning");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn pause(&mut self, paused: bool) {
+            self.browser
+                .write_all(&masked(0x2, &[CLIENT_PAUSE, u8::from(paused)]))
+                .unwrap();
+        }
+
+        fn frames_within(&mut self, wait: Duration) -> usize {
+            let deadline = Instant::now() + wait;
+            let mut frames = 0;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                self.browser.set_read_timeout(Some(left)).unwrap();
+                let Ok((first, body)) = try_frame(&mut self.browser) else {
+                    break;
+                };
+                if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                    frames += 1;
+                    let sequence = u32::from_le_bytes([body[1], body[2], body[3], body[4]]);
+                    self.browser.write_all(&ack(sequence)).unwrap();
+                }
+            }
+            frames
+        }
+
+        fn close(self) -> Vec<Seen> {
+            self.browser.shutdown(std::net::Shutdown::Both).unwrap();
+            let ended = self.ended.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                ended.as_ref().map_or_else(
+                    |error| error.contains("Broken pipe") || error.contains("Connection reset"),
+                    |()| true
+                ),
+                "the session ended with {ended:?}"
+            );
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    fn every_input() -> Vec<Vec<u8>> {
+        vec![
+            vec![CLIENT_POINTER, 5, 0, 7, 0],
+            vec![CLIENT_BUTTON, 1, 1],
+            vec![CLIENT_BUTTON, 1, 0],
+            vec![CLIENT_KEY, 30, 0, 1],
+            vec![CLIENT_KEY, 30, 0, 0],
+            vec![CLIENT_WHEEL, 0, 1],
+            vec![CLIENT_SYMBOL, 0x61, 0, 0, 0, 1],
+            vec![CLIENT_SYMBOL, 0x61, 0, 0, 0, 0],
+            [&[CLIENT_TEXT][..], b"hi"].concat(),
+            [&[CLIENT_CLIPBOARD][..], b"secret"].concat(),
+            vec![CLIENT_COPY],
+            vec![CLIENT_CHORD, b'v', 0],
+        ]
+    }
+
+    #[test]
+    fn a_stream_with_control_passes_every_kind_of_input_to_the_desktop() {
+        let (mut session, flags) = watching(Access::Control, false);
+        assert_eq!(flags, HELLO_CHORDS);
+        session.send(&every_input());
+        let mut expected = vec![
+            Seen::Pointer(5, 7),
+            Seen::Button(1, true),
+            Seen::Button(1, false),
+            Seen::Key(38, true),
+            Seen::Key(38, false),
+            Seen::Button(5, true),
+            Seen::Button(5, false),
+            Seen::Symbol(0x61, true),
+            Seen::Symbol(0x61, false),
+        ];
+        expected.extend(typed("hi"));
+        expected.extend([
+            Seen::Offer("secret".into()),
+            Seen::ExpectCopy,
+            Seen::Chord(b'v', false),
+        ]);
+        assert_eq!(session.close(), expected);
+    }
+
+    #[test]
+    fn a_watch_stream_says_so_and_never_reaches_the_desktop_whatever_it_sends() {
+        let (mut session, flags) = watching(Access::Watch, false);
+        assert_eq!(flags, HELLO_CHORDS | HELLO_WATCH);
+        session.send(&every_input());
+        let shapes: [&[u8]; 4] = [
+            &[],
+            &[1, 1, 1, 1, 1, 1, 1, 1],
+            &[b'v', 1, 0, 0, 1, 0, 0, 0],
+            b"some typed text",
+        ];
+        let mut sweep: Vec<Vec<u8>> = (0..=u8::MAX)
+            .flat_map(|kind| shapes.map(|shape| [&[kind][..], shape].concat()))
+            .collect();
+        sweep.push(vec![CLIENT_PAUSE, 0]);
+        session.send(&sweep);
+        assert_eq!(session.close(), Vec::new());
+    }
+
+    #[test]
+    fn a_watch_stream_still_acknowledges_and_pauses() {
+        let (mut session, _) = watching(Access::Watch, true);
+        assert!(session.frames_within(Duration::from_millis(300)) > 3);
+        session.pause(true);
+        session.frames_within(Duration::from_millis(300));
+        assert_eq!(session.frames_within(Duration::from_millis(300)), 0);
+        session.pause(false);
+        assert!(session.frames_within(Duration::from_millis(300)) > 3);
+        assert_eq!(session.close(), Vec::new());
     }
 }

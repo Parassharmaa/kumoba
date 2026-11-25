@@ -34,6 +34,7 @@ pub struct Config {
     pub screen: Option<PathBuf>,
     pub owned: bool,
     pub token: Option<String>,
+    pub watch_token: Option<String>,
 }
 
 impl Default for Config {
@@ -45,6 +46,7 @@ impl Default for Config {
             screen: None,
             owned: false,
             token: None,
+            watch_token: None,
         }
     }
 }
@@ -92,6 +94,7 @@ pub fn serve(config: &Config) -> io::Result<()> {
     http::serve(
         &config.listen,
         config.token.as_deref(),
+        config.watch_token.as_deref(),
         session::Settings {
             fps: config.fps.clamp(1, 120),
             max_mbps: config.max_mbps.clamp(1, 1000),

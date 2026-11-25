@@ -165,7 +165,7 @@ function connect() {
   viewer = connectViewer(canvas, url, {
     onConnect: () => {
       retry = 0;
-      setStatus("");
+      setStatus(viewer?.watchOnly() ? "Watching only" : "");
     },
     onClose: ({ connected, error }) => {
       if (error && connected) {
