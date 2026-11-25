@@ -29,9 +29,8 @@ export type KumobaOptions = {
    */
   token?: string;
   /**
-   * Base URL browsers can reach kumobad through, used to build `expose()` links.
-   * Defaults to `KUMOBA_PUBLIC_URL` when `url` is not passed either, then the `http://` URL when `url` is one,
-   * otherwise links carry only a path.
+   * Base URL browsers reach kumobad's preview listener at, used for `expose()` and `liveView()` links
+   * instead of the link kumobad returns. Defaults to `KUMOBA_PUBLIC_URL` when `url` is not passed either.
    */
   publicUrl?: string;
   /** Guest user that commands and file operations act as. Per-sandbox `user` overrides it. Defaults to `KUMOBA_USER`. */
@@ -73,7 +72,7 @@ export function resolveOptions(options: KumobaOptions): ResolvedOptions {
 export class Kumoba {
   private readonly api: Api;
   private readonly defaultUser: string | undefined;
-  private readonly baseUrl: string | null;
+  private readonly publicUrl: string | null;
 
   /**
    * With no options, connects to the kumobad that `KUMOBA_URL` names or, failing that,
@@ -83,7 +82,7 @@ export class Kumoba {
     const resolved = resolveOptions(options);
     this.api = new Api(resolved.url, resolved.token);
     this.defaultUser = resolved.defaultUser;
-    this.baseUrl = resolved.publicUrl ?? (resolved.url.startsWith("http://") ? resolved.url : null);
+    this.publicUrl = resolved.publicUrl ?? null;
   }
 
   /** Same as `new Kumoba({ env })`: configure from `KUMOBA_*` variables with `~/.kumoba` defaults. */
@@ -92,7 +91,7 @@ export class Kumoba {
   }
 
   private context(user: string | undefined): SandboxContext {
-    return { api: this.api, defaultUser: user ?? this.defaultUser, baseUrl: this.baseUrl };
+    return { api: this.api, defaultUser: user ?? this.defaultUser, publicUrl: this.publicUrl };
   }
 
   /**

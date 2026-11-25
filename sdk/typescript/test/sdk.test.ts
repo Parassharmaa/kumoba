@@ -260,13 +260,32 @@ describe("Sandbox.files", () => {
 });
 
 describe("Sandbox extras", () => {
-  it("exposes ports with a full URL only when a base URL is known", async () => {
+  it("exposes ports with the link the daemon returns", async () => {
     const sandbox = await kumoba.create();
     const link = await sandbox.expose(8080, { ttlSeconds: 60 });
     expect(link.path).toBe("/v1/preview/token-8080/");
-    expect(link.url).toBeNull();
+    expect(link.url).toBe("http://127.0.0.1:7789/v1/preview/token-8080/");
     expect(link.expiresAt).toBeInstanceOf(Date);
+  });
 
+  it("never builds a link from an http API URL", async () => {
+    const overHttp = new Kumoba({ url: fake.httpUrl, token: fake.token });
+    const sandbox = await overHttp.create();
+    expect((await sandbox.expose(3000)).url).toBe("http://127.0.0.1:7789/v1/preview/token-3000/");
+    fake.previewUrl = null;
+    expect(await sandbox.expose(3000)).toMatchObject({
+      path: "/v1/preview/token-3000/",
+      url: null,
+    });
+    fake.previewUrl = undefined;
+    expect(await sandbox.expose(3000)).toMatchObject({
+      path: "/v1/preview/token-3000/",
+      url: null,
+    });
+  });
+
+  it("prefers publicUrl over the daemon's link", async () => {
+    const sandbox = await kumoba.create();
     const withBase = new Kumoba({
       url: fake.url,
       token: fake.token,
@@ -274,6 +293,11 @@ describe("Sandbox extras", () => {
     });
     const other = await (await withBase.get(sandbox.id)).expose(3000);
     expect(other.url).toBe("https://kumoba.example.com/_sandbox/v1/preview/token-3000/");
+    fake.previewUrl = undefined;
+    fake.onExec = () => ({ stdout: "", exitCode: 127 });
+    expect((await (await withBase.get(sandbox.id)).desktop.liveView()).url).toBe(
+      "https://kumoba.example.com/_sandbox/v1/preview/token-host/"
+    );
   });
 
   it("attaches secrets and deletes them globally", async () => {
@@ -322,6 +346,7 @@ describe("Sandbox extras", () => {
     );
     expect(await sandbox.desktop.liveView()).toMatchObject({
       path: "/v1/preview/token-6090/",
+      url: "http://127.0.0.1:7789/v1/preview/token-6090/",
       viewer: "stream",
     });
     expect(await sandbox.desktop.liveView({ viewer: "vnc" })).toMatchObject({
@@ -340,7 +365,11 @@ describe("Sandbox extras", () => {
     const sandbox = await kumoba.create();
     const before = Date.now();
     const view = await sandbox.desktop.liveView({ ttlSeconds: 120 });
-    expect(view).toMatchObject({ path: "/v1/preview/token-host/", viewer: "stream" });
+    expect(view).toMatchObject({
+      path: "/v1/preview/token-host/",
+      url: "http://127.0.0.1:7789/v1/preview/token-host/",
+      viewer: "stream",
+    });
     expect(view.expiresAt.getTime() - before).toBeGreaterThanOrEqual(120_000);
     expect(await sandbox.desktop.liveView({ viewer: "vnc" })).toMatchObject({
       path: "/v1/preview/token-host/",
