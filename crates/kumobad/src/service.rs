@@ -380,6 +380,17 @@ impl Service {
                 Err(error) => return Err(error.into()),
             };
             let mut sandbox = self.runtime.get(id).await?;
+            if meta.ephemeral {
+                sandbox.delete().await?;
+                match std::fs::remove_file(self.meta_path(&key)) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error.into());
+                    }
+                    _ => {}
+                }
+                log("run_deleted_after_restart", &key, None);
+                continue;
+            }
             if !sandbox.config().secrets.is_empty() {
                 sandbox.update_secret_bindings(BTreeMap::new()).await?;
             }
@@ -434,7 +445,7 @@ impl Service {
         })
     }
 
-    pub async fn create(&self, request: CreateRequest) -> ApiResult<Summary> {
+    pub async fn create(&self, request: CreateRequest, ephemeral: bool) -> ApiResult<Summary> {
         let image = self.image_path(&request.image)?;
         let mut config = SandboxConfig::new(image);
         config.vcpus = request.cpu;
@@ -451,6 +462,7 @@ impl Service {
             auto_delete_minutes: request.auto_delete_minutes,
             network: request.network,
             created_at_ms: now_ms(),
+            ephemeral,
         };
         self.persist(&meta)?;
         let entry = Entry::new(meta.clone(), sandbox, 0);
@@ -847,6 +859,58 @@ mod tests {
         assert!(screen_answers(missing).await.is_err());
     }
 
+    #[tokio::test]
+    async fn a_restart_deletes_run_sandboxes_and_adopts_the_rest() {
+        let daemon = crate::testing::Daemon::new();
+        let runtime = daemon.runtime().await;
+        let run = runtime
+            .create(SandboxConfig::new(daemon.image()))
+            .await
+            .unwrap()
+            .id();
+        let kept = runtime
+            .create(SandboxConfig::new(daemon.image()))
+            .await
+            .unwrap()
+            .id();
+        let meta_dir = daemon.meta_dir();
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        let write = |id: kumoba::SandboxId, extra: &str| {
+            std::fs::write(
+                meta_dir.join(format!("{id}.json")),
+                format!(
+                    r#"{{"id":"{id}","image":"default","labels":{{}},"cpu":1,"memoryMib":512,"autoStopMinutes":0,"autoDeleteMinutes":null,"network":{{"mode":"open","hosts":[]}},"createdAtMs":0{extra}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(run, r#","ephemeral":true"#);
+        write(kept, "");
+        let service = daemon.service(runtime.clone()).await;
+        assert_eq!(runtime.list().await.unwrap(), vec![kept]);
+        assert!(!meta_dir.join(format!("{run}.json")).exists());
+        assert!(service.entry(&run.to_string()).await.is_err());
+        let adopted = service.entry(&kept.to_string()).await.unwrap();
+        assert!(!adopted.meta().ephemeral);
+        let summary = serde_json::to_value(service.summary(&adopted).await.unwrap()).unwrap();
+        assert!(summary.get("ephemeral").is_none());
+    }
+
+    #[tokio::test]
+    async fn only_run_sandboxes_are_recorded_as_ephemeral() {
+        let daemon = crate::testing::Daemon::new();
+        let service = daemon.service(daemon.runtime().await).await;
+        for ephemeral in [false, true] {
+            let request = serde_json::from_str(r#"{"image":"default"}"#).unwrap();
+            let id = service.create(request, ephemeral).await.unwrap().meta.id;
+            let persisted: Meta = serde_json::from_slice(
+                &std::fs::read(daemon.meta_dir().join(format!("{id}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(persisted.ephemeral, ephemeral);
+        }
+    }
+
     fn meta(auto_stop_minutes: u32, auto_delete_minutes: Option<u32>) -> Meta {
         Meta {
             id: "sbx".into(),
@@ -858,6 +922,7 @@ mod tests {
             auto_delete_minutes,
             network: crate::model::NetworkSpec::default(),
             created_at_ms: 0,
+            ephemeral: false,
         }
     }
 

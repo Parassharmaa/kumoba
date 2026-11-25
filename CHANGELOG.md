@@ -6,6 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
+- `kumobad`: `kumoba run` and `POST /v1/run` no longer leave a stopped sandbox behind when the client disconnects while the VM boots, as with Ctrl-C or an SDK timeout. The sandbox is now deleted as soon as the client goes away. A run sandbox that is still there when kumobad starts again, because the daemon stopped mid-run, is deleted then; its summary shows `"ephemeral": true`.
 - `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, `--label '[]'` or `--args '{"label":[]}'`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
 - Writing a file to a path that is a named pipe (FIFO) fails at once with `guest operation failed: only regular files are supported` (HTTP 422, `guest_error`) instead of hanging. Each such write used to leave a guest connection stuck for good, and after 64 of them commands, file transfers, previews and the desktop on that sandbox stopped responding.
 
