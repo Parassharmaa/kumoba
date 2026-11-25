@@ -19,6 +19,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 - A command that leaves a background process holding its output open, as in `sh -c 'build; server &'`, reports `truncated: true` when output over the limit was dropped. It used to report `truncated: false` in that case, so the cut output looked complete. Output that was already waiting to be read when `exec` stopped listening is now returned instead of being dropped.
 - `kumobad`: `autoDeleteMinutes` now also deletes a sandbox whose VM stopped on its own, for example after `poweroff`, a kernel panic, running out of memory or a crashed worker. The clock starts when kumobad first sees it stopped. Such a sandbox used to show `stopped` forever and keep its disk.
 - `kumobad`: listing files, opening a preview link and every preview request now count as activity for auto-stop, as the HTTP API guide says. A sandbox could be stopped while someone was only browsing its preview or file list, and a preview request that was still being answered could be cut off.
+- Rust crate: `Sandbox::exec` of a command that cannot start, such as a missing program, an unknown user or a bad working directory, returns `Error::Guest` and leaves the sandbox running, so its servers and desktop keep going and the next `exec` works. It used to stop the whole VM. A broken connection to the guest, a protocol error and a timeout still stop it. The daemon was not affected.
 
 ## [0.6.6] - 2026-11-25
 

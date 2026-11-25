@@ -77,6 +77,42 @@ impl Running {
             })?;
         }
     }
+    async fn exec<O, E>(
+        &mut self,
+        request: Request,
+        timeout: Duration,
+        output_limit: usize,
+        stdout: &mut O,
+        stderr: &mut E,
+        progress: &mut crate::execution::Progress,
+    ) -> Result<(Termination, bool)>
+    where
+        O: tokio::io::AsyncWrite + Unpin + Send,
+        E: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        let mut guard = CancelGuard {
+            vm: self,
+            armed: true,
+        };
+        let mut exit = guard.vm.exit.clone();
+        let stream = guard.vm.agent.as_mut().ok_or(Error::NotRunning)?;
+        let result = tokio::time::timeout(timeout, async {
+            tokio::select! {
+                result = crate::execution::drive(stream, request, output_limit, stdout, stderr, progress) => result,
+                _ = async {
+                    loop {
+                        if exit.borrow().is_some() { break; }
+                        if exit.changed().await.is_err() { break; }
+                    }
+                } => Err(Error::OutcomeUnknown("worker exited during execution".into())),
+            }
+        })
+        .await;
+        if matches!(result, Ok(Ok(_) | Err(Error::Guest(_)))) {
+            guard.armed = false;
+        }
+        result.unwrap_or(Ok((Termination::TimedOut, true)))
+    }
 }
 impl Drop for Running {
     fn drop(&mut self) {
@@ -689,39 +725,33 @@ impl Sandbox {
         let output_limit = command.output_limit;
         let request = Request::Exec(command.into_request());
         let mut progress = crate::execution::Progress::default();
-        let result = {
+        let (result, tainted) = {
             let Phase::Running(vm) = &mut self.phase else {
                 return Err(Error::NotRunning);
             };
             if vm.tainted {
                 return Err(Error::NotRunning);
             }
-            let mut guard = CancelGuard { vm, armed: true };
-            let mut exit = guard.vm.exit.clone();
-            let stream = guard.vm.agent.as_mut().ok_or(Error::NotRunning)?;
-            let result = tokio::time::timeout(timeout, async {
-                tokio::select! {
-                    result = crate::execution::drive(stream, request, output_limit, stdout, stderr, &mut progress) => result,
-                    _ = async {
-                        loop {
-                            if exit.borrow().is_some() { break; }
-                            if exit.changed().await.is_err() { break; }
-                        }
-                    } => Err(Error::OutcomeUnknown("worker exited during execution".into())),
-                }
-            }).await;
-            if matches!(result, Ok(Ok(_))) {
-                guard.armed = false;
-            }
-            result
+            let result = vm
+                .exec(
+                    request,
+                    timeout,
+                    output_limit,
+                    stdout,
+                    stderr,
+                    &mut progress,
+                )
+                .await;
+            (result, vm.tainted)
         };
         let (termination, truncated) = match result {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => {
-                self.force_stop().await?;
+            Ok(result) => result,
+            Err(error) => {
+                if tainted {
+                    self.force_stop().await?;
+                }
                 return Err(error);
             }
-            Err(_) => (Termination::TimedOut, true),
         };
         if termination == Termination::TimedOut {
             self.force_stop().await?;
@@ -899,4 +929,156 @@ pub(crate) async fn connect_guest(socket: &std::path::Path, port: u16) -> Result
     })
     .await
     .map_err(|_| Error::Guest("guest port connection timed out".into()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kumoba_protocol::ExecEvent;
+    use tokio::io::AsyncReadExt;
+
+    struct Fake {
+        vm: Running,
+        killed: oneshot::Receiver<()>,
+        exit: watch::Sender<Option<std::result::Result<ExitStatus, String>>>,
+    }
+
+    fn running(agent: UnixStream) -> Fake {
+        let (kill, killed) = oneshot::channel();
+        let (exit_tx, exit) = watch::channel(None);
+        Fake {
+            vm: Running {
+                owner: None,
+                socket: PathBuf::new(),
+                agent: Some(agent),
+                kill: Some(kill),
+                exit,
+                tainted: false,
+                desktop_available: false,
+                desktop_startup_timeout: false,
+                shell_available: false,
+                os: "linux".into(),
+                desktop: None,
+            },
+            killed,
+            exit: exit_tx,
+        }
+    }
+
+    async fn answer(guest: &mut UnixStream, event: ExecEvent) {
+        let _: Request = receive(guest).await.unwrap();
+        send(guest, &event).await.unwrap();
+        assert_eq!(guest.read_u8().await.unwrap(), 1);
+    }
+
+    async fn exec(vm: &mut Running) -> Result<(Termination, bool)> {
+        exec_within(vm, Duration::from_secs(5)).await
+    }
+
+    async fn exec_within(vm: &mut Running, timeout: Duration) -> Result<(Termination, bool)> {
+        vm.exec(
+            Request::Hello,
+            timeout,
+            1024,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut crate::execution::Progress::default(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_command_that_fails_to_start_keeps_the_agent_connection() {
+        let (host, mut guest) = UnixStream::pair().unwrap();
+        let mut fake = running(host);
+        let peer = tokio::spawn(async move {
+            answer(
+                &mut guest,
+                ExecEvent::Failed {
+                    message: "No such file or directory".into(),
+                },
+            )
+            .await;
+            answer(
+                &mut guest,
+                ExecEvent::Finished {
+                    code: Some(0),
+                    signal: None,
+                    timed_out: false,
+                    truncated: false,
+                },
+            )
+            .await;
+        });
+        assert!(matches!(exec(&mut fake.vm).await, Err(Error::Guest(_))));
+        assert!(!fake.vm.tainted);
+        assert!(fake.killed.try_recv().is_err());
+        assert_eq!(
+            exec(&mut fake.vm).await.unwrap(),
+            (Termination::Exited(0), false)
+        );
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_broken_exec_stream_still_stops_the_vm() {
+        let (host, mut guest) = UnixStream::pair().unwrap();
+        let mut fake = running(host);
+        let peer = tokio::spawn(async move {
+            let _: Request = receive(&mut guest).await.unwrap();
+            send(
+                &mut guest,
+                &ExecEvent::Finished {
+                    code: Some(0),
+                    signal: Some(9),
+                    timed_out: false,
+                    truncated: false,
+                },
+            )
+            .await
+            .unwrap();
+        });
+        assert!(matches!(exec(&mut fake.vm).await, Err(Error::Protocol(_))));
+        assert!(fake.vm.tainted);
+        assert!(fake.killed.try_recv().is_ok());
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_command_past_its_timeout_still_stops_the_vm() {
+        let (host, mut guest) = UnixStream::pair().unwrap();
+        let mut fake = running(host);
+        let peer = tokio::spawn(async move {
+            let _: Request = receive(&mut guest).await.unwrap();
+            guest
+        });
+        assert_eq!(
+            exec_within(&mut fake.vm, Duration::from_millis(50))
+                .await
+                .unwrap(),
+            (Termination::TimedOut, true)
+        );
+        assert!(fake.vm.tainted);
+        assert!(fake.killed.try_recv().is_ok());
+        drop(peer.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_worker_exit_during_exec_still_stops_the_vm() {
+        let (host, mut guest) = UnixStream::pair().unwrap();
+        let mut fake = running(host);
+        let exit = fake.exit.clone();
+        let peer = tokio::spawn(async move {
+            let _: Request = receive(&mut guest).await.unwrap();
+            exit.send(Some(Err("worker crashed".into()))).unwrap();
+            guest
+        });
+        assert!(matches!(
+            exec(&mut fake.vm).await,
+            Err(Error::OutcomeUnknown(_))
+        ));
+        assert!(fake.vm.tainted);
+        assert!(fake.killed.try_recv().is_ok());
+        drop(peer.await.unwrap());
+    }
 }
