@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
 import type { Files } from "./files.js";
-import { withDeadline } from "./http.js";
+import { CLEANUP_TIMEOUT_MS, withDeadline } from "./http.js";
 import { shellQuote } from "./shell.js";
 import type {
   AccessibilityNode,
@@ -123,6 +123,18 @@ export class Desktop {
     return parsed.data;
   }
 
+  private async scratch<T>(path: string, signal: Signal, use: () => Promise<T>): Promise<T> {
+    let result: T;
+    try {
+      result = await use();
+    } catch (error) {
+      await this.files.remove(path, { timeoutMs: CLEANUP_TIMEOUT_MS }).catch(() => undefined);
+      throw error;
+    }
+    await this.files.remove(path, { signal });
+    return result;
+  }
+
   private async command(args: readonly (string | number)[], options: CallOptions): Promise<void> {
     await withDeadline(options, (signal) => this.helper(args, signal));
   }
@@ -175,11 +187,7 @@ export class Desktop {
         ],
         signal
       );
-      try {
-        return await this.files.read(path, { signal });
-      } finally {
-        await this.files.remove(path);
-      }
+      return this.scratch(path, signal, () => this.files.read(path, { signal }));
     });
   }
 
@@ -254,11 +262,9 @@ export class Desktop {
     const path = `${SCRATCH}/${randomUUID()}.json`;
     return withDeadline(options, async (signal) => {
       await this.helper(["a11y-file", options.maxDepth ?? 8, path], signal, 60_000);
-      try {
-        return treeSchema.parse(JSON.parse(await this.files.readText(path, { signal })));
-      } finally {
-        await this.files.remove(path);
-      }
+      return this.scratch(path, signal, async () =>
+        treeSchema.parse(JSON.parse(await this.files.readText(path, { signal })))
+      );
     });
   }
 

@@ -118,12 +118,12 @@ await sandbox.desktop.click(200, 300, { timeoutMs: 10_000 });
 - Neither is set by default and calls wait as long as kumobad takes. kumobad bounds a boot itself, at 2 minutes for Linux and 5 for macOS.
 - `files.stream()` resolves once the download starts, so `timeoutMs` covers only opening it; `signal` still stops it partway, and the stream then emits the `aborted` error. `files.read()`, `files.download()` and `files.write()` count the whole transfer.
 - `kumoba.accessLog()` counts its time limit across every page, from the first one to the last.
-- When `create()` is aborted or times out while the sandbox boots, the SDK deletes the sandbox before it throws. When that happens before kumobad has replied to the create request itself, kumobad may have made a sandbox whose id the SDK never received; it stays until `autoDeleteMinutes` passes after it stops, or until you delete it.
+- When `create()` is aborted or times out while the sandbox boots, the SDK asks kumobad to delete the sandbox before it throws, and waits up to 10 seconds for that. `desktop.screenshot()` and `desktop.accessibilityTree()` remove their temporary file in the guest the same way. When `create()` stops before kumobad has replied to the create request itself, kumobad may have made a sandbox whose id the SDK never received; find it with `list()` and delete it.
 - `run()` already takes `signal`. Its `timeoutMs` is different: kumobad kills the command when it passes, and `run()` resolves with `timedOut: true` instead of throwing.
 
 ## Errors
 
-Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style `status`: the daemon's own when it answered with an error, 502 or 503 for a failure the SDK detected in its reply or connection, and 0 when no request was made. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks, local file errors in `files.upload()` and `files.download()` such as a missing local path, and errors from a stream you pass to `files.write()`; those reach you unchanged.
+Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style `status`: the daemon's own when it answered with an error, 502 or 503 for a failure the SDK detected in its reply or connection, and 0 when no request was made or the call was aborted or timed out. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks, local file errors in `files.upload()` and `files.download()` such as a missing local path, and errors from a stream you pass to `files.write()`; those reach you unchanged.
 
 | `code` | When | `retryable` |
 | --- | --- | --- |

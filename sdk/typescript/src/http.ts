@@ -18,6 +18,7 @@ export type HttpInit = {
 };
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+export const CLEANUP_TIMEOUT_MS = 10_000;
 
 class Timeout {
   constructor(readonly ms: number) {}

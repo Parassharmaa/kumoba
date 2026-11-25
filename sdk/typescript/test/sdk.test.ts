@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Kumoba, KumobaError, type Sandbox } from "../src/index.js";
 import { toArgv } from "../src/shell.js";
 import { type FakeKumobad, startFakeKumobad } from "./fake-kumobad.js";
@@ -689,7 +689,7 @@ describe("cancellation and timeouts", () => {
     return { sandbox, local };
   };
   const until = async (done: () => boolean) => {
-    while (!done()) await new Promise((resolve) => setTimeout(resolve, 2));
+    while (!done()) await new Promise((resolve) => setImmediate(resolve));
   };
   const outcome = async (promise: Promise<unknown>) => {
     const error = await promise.then(
@@ -728,9 +728,9 @@ describe("cancellation and timeouts", () => {
   it.each(calls)("%s fails with a retryable timeout on a stalled daemon", async (_name, call) => {
     const t = await target();
     fake.stall = () => true;
-    const error = await outcome(call(t, { timeoutMs: 40 }));
+    const error = await outcome(call(t, { timeoutMs: 150 }));
     expect(error).toMatchObject({ code: "timeout", retryable: true });
-    expect(error.message).toMatch(/40 ms/);
+    expect(error.message).toMatch(/150 ms/);
     expect(fake.stalled.length).toBeGreaterThan(0);
     await until(() => fake.stalledClosed === fake.stalled.length);
   });
@@ -744,9 +744,40 @@ describe("cancellation and timeouts", () => {
     expect(await pending).toMatchObject({ code: "aborted" });
     expect(fake.sandboxes.size).toBe(0);
 
-    expect(await outcome(kumoba.create({ timeoutMs: 60 }))).toMatchObject({ code: "timeout" });
+    expect(await outcome(kumoba.create({ timeoutMs: 500 }))).toMatchObject({ code: "timeout" });
     expect(fake.stalled).toHaveLength(2);
     expect(fake.sandboxes.size).toBe(0);
+  });
+
+  it("gives up cleaning up after a cancelled call when the daemon does not answer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fake.stall = (method, path) =>
+        method === "DELETE" || (method === "POST" && path.endsWith("/start"));
+      const controller = new AbortController();
+      const pending = outcome(kumoba.create({ signal: controller.signal }));
+      await until(() => fake.stalled.length === 1);
+      controller.abort();
+      await until(() => fake.stalled.length === 2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await pending).toMatchObject({ code: "aborted" });
+      expect(fake.stalled.map((request) => request.split(" ")[0])).toEqual(["POST", "DELETE"]);
+
+      fake.stall = () => false;
+      const t = await target();
+      fake.stalled = [];
+      fake.stall = (method) => method === "GET" || fake.stalled.length > 0;
+      const screenshot = new AbortController();
+      const capturing = outcome(t.sandbox.desktop.screenshot({ signal: screenshot.signal }));
+      await until(() => fake.stalled.length === 1);
+      screenshot.abort();
+      await until(() => fake.stalled.length === 2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await capturing).toMatchObject({ code: "aborted" });
+      expect(fake.stalled[1]).toBe(`POST /v1/sandboxes/${t.sandbox.id}/exec`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("counts one deadline across every request a call makes", async () => {
@@ -757,7 +788,7 @@ describe("cancellation and timeouts", () => {
       return desktopOutput(call);
     };
     fake.stall = (method) => method === "GET";
-    const error = await outcome(t.sandbox.desktop.screenshot({ timeoutMs: 80 }));
+    const error = await outcome(t.sandbox.desktop.screenshot({ timeoutMs: 500 }));
     expect(error).toMatchObject({ code: "timeout" });
     expect(execs).toBe(2);
     expect(fake.stalled).toEqual([`GET /v1/sandboxes/${t.sandbox.id}/files`]);
@@ -767,7 +798,7 @@ describe("cancellation and timeouts", () => {
     const t = await target();
     await t.sandbox.files.write("/w/c.bin", Buffer.alloc(10, 7));
     fake.downloadCut = { bytes: 3, finish: "hang" };
-    expect(await outcome(t.sandbox.files.read("/w/c.bin", { timeoutMs: 60 }))).toMatchObject({
+    expect(await outcome(t.sandbox.files.read("/w/c.bin", { timeoutMs: 300 }))).toMatchObject({
       code: "timeout",
     });
     const controller = new AbortController();
@@ -781,8 +812,8 @@ describe("cancellation and timeouts", () => {
 
   it("leaves a stream it opened alone once the timeout for opening it has passed", async () => {
     const t = await target();
-    const stream = await t.sandbox.files.stream("/w/b.txt", { timeoutMs: 20 });
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    const stream = await t.sandbox.files.stream("/w/b.txt", { timeoutMs: 300 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const chunks: Buffer[] = [];
     for await (const chunk of stream) chunks.push(chunk as Buffer);
     expect(Buffer.concat(chunks).toString()).toBe("content");

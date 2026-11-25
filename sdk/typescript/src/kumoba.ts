@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Api, toInfo } from "./api.js";
 import { KumobaError } from "./errors.js";
-import { deadline, withDeadline } from "./http.js";
+import { CLEANUP_TIMEOUT_MS, deadline, withDeadline } from "./http.js";
 import { toNetwork } from "./network.js";
 import { collectRun, execRequest, Sandbox, type SandboxContext } from "./sandbox.js";
 import type {
@@ -145,7 +145,7 @@ export class Kumoba {
         try {
           await sandbox.start({ signal });
         } catch (error) {
-          await sandbox.delete().catch(() => undefined);
+          await sandbox.delete({ timeoutMs: CLEANUP_TIMEOUT_MS }).catch(() => undefined);
           throw error;
         }
       }
