@@ -278,7 +278,7 @@ pub(crate) async fn exec(stream: &mut UnixStream, request: ExecRequest) -> io::R
                 Err(_) => {
                     out_abort.abort();
                     err_abort.abort();
-                    (false, false)
+                    (true, true)
                 }
             };
             Ok::<_, io::Error>((out_truncated, err_truncated, (), status))
@@ -351,6 +351,48 @@ mod tests {
         }
     }
 
+    struct Collected {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        code: Option<i32>,
+        timed_out: bool,
+        truncated: bool,
+    }
+
+    async fn collect(host: &mut UnixStream) -> Collected {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        loop {
+            let event: ExecEvent = receive_limited(host, MAX_EXEC_FRAME).await.unwrap();
+            host.write_u8(1).await.unwrap();
+            match event {
+                ExecEvent::Output { stream, data } => {
+                    let bytes = STANDARD.decode(data).unwrap();
+                    match stream {
+                        OutputKind::Stdout => stdout.extend(bytes),
+                        OutputKind::Stderr => stderr.extend(bytes),
+                    }
+                }
+                ExecEvent::Finished {
+                    code,
+                    signal,
+                    timed_out,
+                    truncated,
+                } => {
+                    assert_eq!(signal, None);
+                    return Collected {
+                        stdout,
+                        stderr,
+                        code,
+                        timed_out,
+                        truncated,
+                    };
+                }
+                ExecEvent::Failed { message } => panic!("unexpected failure: {message}"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn caps_each_stream_and_hands_back_terminal_ownership() {
         let (mut host, mut guest) = UnixStream::pair().unwrap();
@@ -366,42 +408,52 @@ mod tests {
                 Request::Hello
             ));
         });
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        loop {
-            let event: ExecEvent = receive_limited(&mut host, MAX_EXEC_FRAME).await.unwrap();
-            let finished = match event {
-                ExecEvent::Output { stream, data } => {
-                    let bytes = STANDARD.decode(data).unwrap();
-                    match stream {
-                        OutputKind::Stdout => stdout.extend(bytes),
-                        OutputKind::Stderr => stderr.extend(bytes),
-                    }
-                    false
-                }
-                ExecEvent::Finished {
-                    code,
-                    signal,
-                    timed_out,
-                    truncated,
-                } => {
-                    assert_eq!(code, Some(0));
-                    assert_eq!(signal, None);
-                    assert!(!timed_out);
-                    assert!(truncated);
-                    true
-                }
-                ExecEvent::Failed { message } => panic!("unexpected failure: {message}"),
-            };
-            host.write_u8(1).await.unwrap();
-            if finished {
-                send(&mut host, &Request::Hello).await.unwrap();
-                break;
-            }
-        }
-        assert_eq!(stdout, b"abc");
-        assert_eq!(stderr, b"ghi");
+        let result = collect(&mut host).await;
+        send(&mut host, &Request::Hello).await.unwrap();
+        assert_eq!(result.code, Some(0));
+        assert!(!result.timed_out);
+        assert!(result.truncated);
+        assert_eq!(result.stdout, b"abc");
+        assert_eq!(result.stderr, b"ghi");
         runner.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn complete_output_is_not_reported_truncated() {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let runner = tokio::spawn(async move {
+            exec(&mut guest, shell("printf abc; printf def >&2", 3, 3000))
+                .await
+                .unwrap();
+        });
+        let result = collect(&mut host).await;
+        assert_eq!(result.code, Some(0));
+        assert!(!result.truncated);
+        assert_eq!(result.stdout, b"abc");
+        assert_eq!(result.stderr, b"def");
+        runner.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn output_cut_before_a_background_process_lets_go_is_reported_truncated() {
+        for script in [
+            "seq 1 200000; sleep 2 &",
+            "seq 1 200000 >&2; sleep 2 &",
+            "printf abc; sleep 2 &",
+        ] {
+            let (mut host, mut guest) = UnixStream::pair().unwrap();
+            let runner = tokio::spawn(async move {
+                exec(&mut guest, shell(script, 1024, 10_000)).await.unwrap();
+            });
+            let result = tokio::time::timeout(Duration::from_secs(5), collect(&mut host))
+                .await
+                .expect("execution did not finish");
+            runner.await.unwrap();
+            assert_eq!(result.code, Some(0), "{script}");
+            assert!(!result.timed_out, "{script}");
+            assert!(result.truncated, "{script}");
+            assert!(result.stdout.len() <= 1024 && result.stderr.len() <= 1024);
+        }
     }
 
     #[tokio::test]
