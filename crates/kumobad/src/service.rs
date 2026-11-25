@@ -180,6 +180,14 @@ impl Entry {
         OperationGuard(self.clone())
     }
 
+    fn admit(&self, state: State) -> ApiResult<()> {
+        if state != State::Running {
+            return Err(ApiError::Status(409, "sandbox is not started".into()));
+        }
+        self.touch();
+        Ok(())
+    }
+
     pub fn meta(&self) -> Meta {
         self.meta.lock().expect("meta lock").clone()
     }
@@ -703,9 +711,7 @@ impl Service {
     ) -> ApiResult<(Arc<Entry>, kumoba::Agent, Option<kumoba::Command>)> {
         let entry = self.entry(id).await?;
         let mut sandbox = entry.sandbox.lock().await;
-        if sandbox.state()? != State::Running {
-            return Err(ApiError::Status(409, "sandbox is not started".into()));
-        }
+        entry.admit(sandbox.state()?)?;
         let prepared = command
             .map(|command| sandbox.prepare_command(command))
             .transpose()?;
@@ -875,6 +881,43 @@ mod tests {
     }
 
     const MINUTE: u64 = 60_000;
+
+    async fn stopped_entry(root: &std::path::Path) -> Arc<Entry> {
+        for name in ["worker", "library", "firmware", "image.raw"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+        let runtime = Runtime::open(kumoba::RuntimeConfig::new(
+            root.join("worker"),
+            root.join("library"),
+            root.join("firmware"),
+            root.join("state"),
+        ))
+        .await
+        .unwrap();
+        let sandbox = runtime
+            .create(SandboxConfig::new(root.join("image.raw")))
+            .await
+            .unwrap();
+        Entry::new(meta(15, None), sandbox, 0)
+    }
+
+    #[tokio::test]
+    async fn reaching_a_running_sandbox_counts_as_activity() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = stopped_entry(root.path()).await;
+        entry.activity_ms.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            entry.admit(State::Stopped),
+            Err(ApiError::Status(409, _))
+        ));
+        assert_eq!(entry.snapshot().activity_ms, 0);
+        entry.admit(State::Running).unwrap();
+        assert!(entry.snapshot().activity_ms > 0);
+        assert_eq!(
+            reap_action(State::Running, &entry.meta(), entry.snapshot(), now_ms()),
+            None
+        );
+    }
 
     #[test]
     fn running_sandboxes_stop_only_when_idle_past_their_limit() {
