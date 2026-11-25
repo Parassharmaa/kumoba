@@ -206,7 +206,7 @@ async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResu
             let entry = service.entry(&id).await?;
             Ok(json_response(
                 200,
-                serde_json::to_value(service.summary(&entry).await?).unwrap(),
+                serde_json::to_value(service.summary(&entry)?).unwrap(),
             ))
         }
         Operation::Update => {
