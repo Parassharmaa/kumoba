@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Kumoba, KumobaError } from "../src/index.js";
+import { Kumoba, KumobaError, type Sandbox } from "../src/index.js";
 import { toArgv } from "../src/shell.js";
 import { type FakeKumobad, startFakeKumobad } from "./fake-kumobad.js";
 
@@ -533,4 +533,210 @@ describe("Kumoba.accessLog", () => {
     ]);
     expect(seen[0]?.completedAt).toEqual(new Date(10));
   });
+});
+
+describe("cancellation and timeouts", () => {
+  type Call = { signal?: AbortSignal; timeoutMs?: number };
+  type Target = { sandbox: Sandbox; local: string };
+  const desktopOutput = (call: { argv: string[] }) => {
+    const command = call.argv[2] ?? "";
+    if (command.includes("'display'"))
+      return { stdout: '{"displays":[{"isActive":true,"width":8,"height":8}]}\n' };
+    if (command.includes("'position'")) return { stdout: '{"x":1,"y":2}\n' };
+    if (command.includes("'status'") || command.includes("'restart'"))
+      return { stdout: '{"running":true}\n' };
+    if (command.includes("'start'")) return { stdout: '{"xvfb":true}\n' };
+    return { stdout: "" };
+  };
+  const calls: [string, (target: Target, options: Call) => Promise<unknown>][] = [
+    ["kumoba.images", (_t, o) => kumoba.images(o)],
+    ["kumoba.create", (_t, o) => kumoba.create(o)],
+    ["kumoba.get", (t, o) => kumoba.get(t.sandbox.id, o)],
+    ["kumoba.find", (t, o) => kumoba.find(t.sandbox.id, o)],
+    ["kumoba.list", (_t, o) => kumoba.list(o)],
+    [
+      "kumoba.accessLog",
+      async (_t, o) => {
+        for await (const _entry of kumoba.accessLog(o));
+      },
+    ],
+    ["kumoba.deleteSecrets", (_t, o) => kumoba.deleteSecrets(["TOKEN"], o)],
+    ["sandbox.refresh", (t, o) => t.sandbox.refresh(o)],
+    ["sandbox.start", (t, o) => t.sandbox.start(o)],
+    ["sandbox.stop", (t, o) => t.sandbox.stop(o)],
+    ["sandbox.delete", (t, o) => t.sandbox.delete(o)],
+    ["sandbox.update", (t, o) => t.sandbox.update({ labels: { a: "b" }, ...o })],
+    ["sandbox.expose", (t, o) => t.sandbox.expose(8080, o)],
+    [
+      "sandbox.setSecrets",
+      (t, o) =>
+        t.sandbox.setSecrets([{ name: "T", value: "v", hosts: ["x.dev"], envVars: ["T"] }], o),
+    ],
+    ["files.write", (t, o) => t.sandbox.files.write("/w/a.txt", "hello", o)],
+    ["files.read", (t, o) => t.sandbox.files.read("/w/b.txt", o)],
+    ["files.readText", (t, o) => t.sandbox.files.readText("/w/b.txt", o)],
+    ["files.stream", (t, o) => t.sandbox.files.stream("/w/b.txt", o)],
+    ["files.list", (t, o) => t.sandbox.files.list("/w", o)],
+    ["files.upload", (t, o) => t.sandbox.files.upload(join(t.local, "up.txt"), "/w/up.txt", o)],
+    [
+      "files.download",
+      (t, o) => t.sandbox.files.download("/w/b.txt", join(t.local, "down.txt"), o),
+    ],
+    ["files.mkdir", (t, o) => t.sandbox.files.mkdir("/w/d", o)],
+    ["files.remove", (t, o) => t.sandbox.files.remove("/w/d", o)],
+    ["files.exists", (t, o) => t.sandbox.files.exists("/w/d", o)],
+    ["desktop.start", (t, o) => t.sandbox.desktop.start(o)],
+    ["desktop.status", (t, o) => t.sandbox.desktop.status("view", o)],
+    ["desktop.restart", (t, o) => t.sandbox.desktop.restart("view", o)],
+    ["desktop.display", (t, o) => t.sandbox.desktop.display(o)],
+    ["desktop.screenshot", (t, o) => t.sandbox.desktop.screenshot(o)],
+    ["desktop.click", (t, o) => t.sandbox.desktop.click(1, 2, o)],
+    ["desktop.move", (t, o) => t.sandbox.desktop.move(1, 2, o)],
+    ["desktop.drag", (t, o) => t.sandbox.desktop.drag({ x: 1, y: 2 }, { x: 3, y: 4 }, "left", o)],
+    ["desktop.scroll", (t, o) => t.sandbox.desktop.scroll(1, 2, "down", 1, o)],
+    ["desktop.position", (t, o) => t.sandbox.desktop.position(o)],
+    ["desktop.type", (t, o) => t.sandbox.desktop.type("hi", o)],
+    ["desktop.press", (t, o) => t.sandbox.desktop.press("a", [], o)],
+    ["desktop.hotkey", (t, o) => t.sandbox.desktop.hotkey("ctrl+a", o)],
+    ["desktop.accessibilityTree", (t, o) => t.sandbox.desktop.accessibilityTree(o)],
+    ["desktop.liveView", (t, o) => t.sandbox.desktop.liveView(o)],
+  ];
+
+  let local: string;
+  beforeEach(() => {
+    local = mkdtempSync(join(tmpdir(), "kumoba-cancel-"));
+    writeFileSync(join(local, "up.txt"), "up");
+  });
+  afterEach(() => {
+    rmSync(local, { recursive: true, force: true });
+  });
+
+  const target = async (): Promise<Target> => {
+    fake.onExec = desktopOutput;
+    const sandbox = await kumoba.create();
+    await sandbox.files.write("/w/b.txt", "content");
+    return { sandbox, local };
+  };
+  const until = async (done: () => boolean) => {
+    while (!done()) await new Promise((resolve) => setTimeout(resolve, 2));
+  };
+  const outcome = async (promise: Promise<unknown>) => {
+    const error = await promise.then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(KumobaError);
+    return error as KumobaError;
+  };
+
+  it.each(calls)("%s sends nothing when its signal is already aborted", async (_name, call) => {
+    const t = await target();
+    let requests = 0;
+    fake.stall = () => {
+      requests += 1;
+      return false;
+    };
+    const reason = new Error("not needed");
+    const error = await outcome(call(t, { signal: AbortSignal.abort(reason) }));
+    expect(error).toMatchObject({ code: "aborted", retryable: false, cause: reason });
+    expect(requests).toBe(0);
+  });
+
+  it.each(calls)("%s stops waiting on a stalled daemon when aborted", async (_name, call) => {
+    const t = await target();
+    fake.stall = () => true;
+    const controller = new AbortController();
+    const reason = new Error("user cancelled");
+    const pending = outcome(call(t, { signal: controller.signal }));
+    await until(() => fake.stalled.length > 0);
+    controller.abort(reason);
+    expect(await pending).toMatchObject({ code: "aborted", retryable: false, cause: reason });
+    await until(() => fake.stalledClosed === fake.stalled.length);
+  });
+
+  it.each(calls)("%s fails with a retryable timeout on a stalled daemon", async (_name, call) => {
+    const t = await target();
+    fake.stall = () => true;
+    const error = await outcome(call(t, { timeoutMs: 40 }));
+    expect(error).toMatchObject({ code: "timeout", retryable: true });
+    expect(error.message).toMatch(/40 ms/);
+    expect(fake.stalled.length).toBeGreaterThan(0);
+    await until(() => fake.stalledClosed === fake.stalled.length);
+  });
+
+  it("deletes the sandbox when create is cancelled or times out while it boots", async () => {
+    fake.stall = (method, path) => method === "POST" && path.endsWith("/start");
+    const controller = new AbortController();
+    const pending = outcome(kumoba.create({ signal: controller.signal }));
+    await until(() => fake.stalled.length === 1);
+    controller.abort();
+    expect(await pending).toMatchObject({ code: "aborted" });
+    expect(fake.sandboxes.size).toBe(0);
+
+    expect(await outcome(kumoba.create({ timeoutMs: 60 }))).toMatchObject({ code: "timeout" });
+    expect(fake.stalled).toHaveLength(2);
+    expect(fake.sandboxes.size).toBe(0);
+  });
+
+  it("counts one deadline across every request a call makes", async () => {
+    const t = await target();
+    let execs = 0;
+    fake.onExec = (call) => {
+      execs += 1;
+      return desktopOutput(call);
+    };
+    fake.stall = (method) => method === "GET";
+    const error = await outcome(t.sandbox.desktop.screenshot({ timeoutMs: 80 }));
+    expect(error).toMatchObject({ code: "timeout" });
+    expect(execs).toBe(2);
+    expect(fake.stalled).toEqual([`GET /v1/sandboxes/${t.sandbox.id}/files`]);
+  });
+
+  it("aborts a download partway through as aborted, not as a cut-off file", async () => {
+    const t = await target();
+    await t.sandbox.files.write("/w/c.bin", Buffer.alloc(10, 7));
+    fake.downloadCut = { bytes: 3, finish: "hang" };
+    expect(await outcome(t.sandbox.files.read("/w/c.bin", { timeoutMs: 60 }))).toMatchObject({
+      code: "timeout",
+    });
+    const controller = new AbortController();
+    const stream = await t.sandbox.files.stream("/w/c.bin", { signal: controller.signal });
+    const failed = new Promise((resolve) => stream.once("error", resolve));
+    await new Promise((resolve) => stream.once("data", resolve));
+    controller.abort();
+    expect(await failed).toMatchObject({ code: "aborted", retryable: false });
+    await until(() => fake.downloadsClosed === 2);
+  });
+
+  it("leaves a stream it opened alone once the timeout for opening it has passed", async () => {
+    const t = await target();
+    const stream = await t.sandbox.files.stream("/w/b.txt", { timeoutMs: 20 });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks).toString()).toBe("content");
+  });
+
+  it("reports the caller's own timeout signal as aborted with its reason", async () => {
+    const t = await target();
+    fake.stall = () => true;
+    const error = await outcome(t.sandbox.refresh({ signal: AbortSignal.timeout(20) }));
+    expect(error).toMatchObject({ code: "aborted", cause: { name: "TimeoutError" } });
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
+    "refuses timeoutMs %s before sending anything",
+    async (timeoutMs) => {
+      const t = await target();
+      let requests = 0;
+      fake.stall = () => {
+        requests += 1;
+        return false;
+      };
+      expect(await outcome(t.sandbox.refresh({ timeoutMs }))).toMatchObject({
+        code: "invalid_request",
+      });
+      expect(requests).toBe(0);
+    }
+  );
 });

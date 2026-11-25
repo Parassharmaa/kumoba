@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- TypeScript SDK: every call that talks to kumobad, not only `run()`, takes `signal` and `timeoutMs`: `create`, `start`, `stop`, `delete`, `get`, `find`, `list`, `refresh`, `update`, `images`, `accessLog`, `deleteSecrets`, `expose`, `setSecrets`, every `files` method and every `desktop` method. A cancelled call fails with code `aborted`, and one that runs past `timeoutMs` fails with the new code `timeout` (`retryable: true`). The time limit covers every request the call makes, so `create({ timeoutMs })` counts the boot too, and a `create()` cancelled while the sandbox boots deletes it. A stuck boot or a hung file read used to block the caller for good. There is no default time limit. The SDK now needs Node 20.3 or later.
+
 ### Changed
 
 - Access log: a connection that was allowed but could not be set up, because its DNS lookup failed or got no answer in time, or the connection or upstream proxy failed, is now logged with `decision` `failed` instead of `allowed`, and gets its own 10000 per hour cap. Update the TypeScript SDK with the daemon: SDKs older than this release refuse an access log page that contains `failed`. From this release the SDK passes through decisions it does not know as plain strings (`AccessDecision`), so a later new value does not break it. In the Rust crate, `AccessRecord.allowed` is replaced by `decision: AccessDecision` (`Allowed`, `Denied`, `Failed`).

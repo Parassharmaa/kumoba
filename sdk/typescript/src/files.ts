@@ -3,9 +3,9 @@ import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Api } from "./api.js";
 import { KumobaError } from "./errors.js";
-import { readBody } from "./http.js";
+import { readBody, withDeadline } from "./http.js";
 import { shellQuote } from "./shell.js";
-import type { FileEntry, FileOptions, ReadOptions, RunResult } from "./types.js";
+import type { FileEntry, FileOptions, ReadOptions, RunOptions, RunResult } from "./types.js";
 
 export type FileContent = string | Uint8Array | Readable | AsyncIterable<Uint8Array>;
 
@@ -23,7 +23,10 @@ export class Files {
     private readonly api: Api,
     private readonly id: string,
     private readonly defaultUser: string | undefined,
-    private readonly sh: (command: string, options?: { user?: string }) => Promise<RunResult>
+    private readonly sh: (
+      command: string,
+      options: Pick<RunOptions, "user" | "signal">
+    ) => Promise<RunResult>
   ) {}
 
   private user(options?: FileOptions): string | undefined {
@@ -32,13 +35,17 @@ export class Files {
 
   /** Write a string, bytes or a stream to `path`. Parent directories must exist. */
   async write(path: string, content: FileContent, options?: FileOptions): Promise<void> {
-    await this.api.upload(this.id, path, toBody(content), this.user(options));
+    await withDeadline(options, (signal) =>
+      this.api.upload(this.id, path, toBody(content), this.user(options), signal)
+    );
   }
 
   /** Read a whole file into memory. */
   async read(path: string, options?: ReadOptions): Promise<Buffer> {
-    const response = await this.api.download(this.id, path, this.user(options));
-    return readBody(response, options?.maxBytes ?? MAX_READ_BYTES);
+    return withDeadline(options, async (signal) => {
+      const response = await this.api.download(this.id, path, this.user(options), signal);
+      return readBody(response, options?.maxBytes ?? MAX_READ_BYTES);
+    });
   }
 
   /** Read a whole file as UTF-8 text. */
@@ -46,13 +53,20 @@ export class Files {
     return (await this.read(path, options)).toString("utf8");
   }
 
-  /** Stream a file without buffering it. */
+  /**
+   * Stream a file without buffering it. `timeoutMs` bounds opening the stream;
+   * `signal` can stop it at any point.
+   */
   async stream(path: string, options?: FileOptions): Promise<Readable> {
-    return this.api.download(this.id, path, this.user(options));
+    return withDeadline(options, (signal) =>
+      this.api.download(this.id, path, this.user(options), signal)
+    );
   }
 
   async list(path: string, options?: FileOptions): Promise<FileEntry[]> {
-    return this.api.listFiles(this.id, path, this.user(options));
+    return withDeadline(options, (signal) =>
+      this.api.listFiles(this.id, path, this.user(options), signal)
+    );
   }
 
   /** Copy a local file into the sandbox. */
@@ -62,7 +76,13 @@ export class Files {
 
   /** Copy a sandbox file to the local filesystem. */
   async download(remotePath: string, localPath: string, options?: FileOptions): Promise<void> {
-    await pipeline(await this.stream(remotePath, options), createWriteStream(localPath));
+    await withDeadline(options, async (signal) => {
+      const user = this.user(options);
+      await pipeline(
+        await this.api.download(this.id, remotePath, user, signal),
+        createWriteStream(localPath)
+      );
+    });
   }
 
   /** `mkdir -p` inside the guest. */
@@ -76,13 +96,21 @@ export class Files {
   }
 
   async exists(path: string, options?: FileOptions): Promise<boolean> {
-    const result = await this.sh(`test -e ${shellQuote(path)}`, options);
-    return result.ok;
+    return (await this.shell(`test -e ${shellQuote(path)}`, options)).ok;
   }
 
   private async must(command: string, options?: FileOptions): Promise<void> {
-    const result = await this.sh(command, options);
+    const result = await this.shell(command, options);
     if (!result.ok) throw commandError(command, result);
+  }
+
+  private async shell(command: string, options?: FileOptions): Promise<RunResult> {
+    return withDeadline(options, (signal) =>
+      this.sh(command, {
+        ...(options?.user === undefined ? {} : { user: options.user }),
+        ...(signal === undefined ? {} : { signal }),
+      })
+    );
   }
 }
 

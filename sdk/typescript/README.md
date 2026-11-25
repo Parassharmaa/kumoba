@@ -4,7 +4,7 @@
 [![CI](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml/badge.svg)](https://github.com/Parassharmaa/kumoba/actions/workflows/ci.yml)
 [![License](https://img.shields.io/npm/l/kumoba)](https://github.com/Parassharmaa/kumoba/blob/main/LICENSE)
 
-TypeScript SDK and CLI for [kumoba](https://github.com/Parassharmaa/kumoba): fast sandboxes for AI agents, each a real VM that boots in under a second. Talks to a `kumobad` daemon over a Unix socket or loopback TCP. Depends only on `zod`; needs Node 20 or later.
+TypeScript SDK and CLI for [kumoba](https://github.com/Parassharmaa/kumoba): fast sandboxes for AI agents, each a real VM that boots in under a second. Talks to a `kumobad` daemon over a Unix socket or loopback TCP. Depends only on `zod`; needs Node 20.3 or later.
 
 > **Alpha.** APIs and formats may change between 0.x releases. Docs: [parassharmaa.github.io/kumoba](https://parassharmaa.github.io/kumoba/).
 
@@ -86,6 +86,6 @@ See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-
 - `desktop.start / screenshot / click / type / hotkey` on images with the desktop installed, and `desktop.liveView()` for a link that shows the desktop in a browser. `liveView()` also works on macOS sandboxes.
 - `start / stop / delete / update({ network })`, plus `kumoba.list`, `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
 
-`await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `code`, `status` and `retryable`; a run cancelled through its `signal` fails with code `aborted`, which is not retryable.
+`await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `code`, `status` and `retryable`. Every call takes `signal` and `timeoutMs` in its options; a call cancelled through its `signal` fails with code `aborted`, which is not retryable, and one that runs past `timeoutMs` fails with code `timeout`, which is. Neither is set by default.
 
 The SDK version matches the `kumobad` release it was tested against; see the [changelog](https://github.com/Parassharmaa/kumoba/blob/main/CHANGELOG.md).

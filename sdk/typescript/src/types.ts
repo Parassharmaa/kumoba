@@ -27,7 +27,22 @@ export type SandboxInfo = {
   lastActivityAt: Date;
 };
 
-export type CreateOptions = {
+/**
+ * Cancellation and a time limit for one SDK call. Neither is set by default, so a call
+ * waits as long as the daemon takes, which for `create()` includes a full boot.
+ */
+export type CallOptions = {
+  /** Abort the call; it throws a `KumobaError` with code `aborted` and `cause` set to `signal.reason`. */
+  signal?: AbortSignal | undefined;
+  /**
+   * Give up after this many milliseconds with a `KumobaError` with code `timeout` and
+   * `retryable: true`. It bounds the whole call, every request it makes included, until
+   * its promise settles.
+   */
+  timeoutMs?: number | undefined;
+};
+
+export type CreateOptions = CallOptions & {
   /** Image name as registered with kumobad (`KUMOBAD_IMAGES`). Defaults to `"default"`. */
   image?: string;
   /** Virtual CPUs. Defaults to 2. */
@@ -47,12 +62,12 @@ export type CreateOptions = {
   start?: boolean;
 };
 
-export type ListOptions = {
+export type ListOptions = CallOptions & {
   labels?: Record<string, string>;
   limit?: number;
 };
 
-export type UpdateOptions = {
+export type UpdateOptions = CallOptions & {
   labels?: Record<string, string>;
   autoStopMinutes?: number;
   /** New network policy; only accepted while the sandbox is stopped, applied on the next start. */
@@ -97,7 +112,7 @@ export type FileEntry = {
   size: number;
 };
 
-export type FileOptions = {
+export type FileOptions = CallOptions & {
   /** Guest user to act as. Overrides the sandbox default. */
   user?: string;
 };
@@ -116,7 +131,7 @@ export type Secret = {
   envVars: string[];
 };
 
-export type ExposeOptions = {
+export type ExposeOptions = CallOptions & {
   /** Seconds the link stays valid (1 to 3600). Defaults to 600. */
   ttlSeconds?: number;
 };
@@ -129,7 +144,7 @@ export type Exposed = {
   expiresAt: Date;
 };
 
-export type ScreenshotOptions = {
+export type ScreenshotOptions = CallOptions & {
   format?: "png" | "jpeg";
   /** JPEG quality, 1 to 100. Defaults to 75. */
   quality?: number;
@@ -189,7 +204,7 @@ export type AccessEntry = {
   dropped?: number;
 };
 
-export type AccessLogOptions = {
+export type AccessLogOptions = CallOptions & {
   /** Start of the window. Defaults to two hours ago. */
   since?: Date;
   /** End of the window, exclusive. Defaults to now. */

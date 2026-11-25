@@ -3,11 +3,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Api, toInfo } from "./api.js";
 import { KumobaError } from "./errors.js";
+import { deadline, withDeadline } from "./http.js";
 import { toNetwork } from "./network.js";
 import { collectRun, execRequest, Sandbox, type SandboxContext } from "./sandbox.js";
 import type {
   AccessEntry,
   AccessLogOptions,
+  CallOptions,
   CreateOptions,
   ListOptions,
   RunOptions,
@@ -38,6 +40,11 @@ export type KumobaOptions = {
   defaultUser?: string;
   /** Environment to read the defaults from. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+};
+
+export type GetOptions = CallOptions & {
+  /** Guest user that commands and file operations act as. */
+  user?: string;
 };
 
 type ResolvedOptions = { url: string; token: string; publicUrl?: string; defaultUser?: string };
@@ -112,40 +119,47 @@ export class Kumoba {
   }
 
   /** Names of the images kumobad can boot. */
-  async images(): Promise<string[]> {
-    return this.api.images();
+  async images(options: CallOptions = {}): Promise<string[]> {
+    return withDeadline(options, (signal) => this.api.images(signal));
   }
 
   /** Create a sandbox and, unless `start: false`, boot it. */
   async create(options: CreateOptions = {}): Promise<Sandbox> {
-    const summary = await this.api.create({
-      image: options.image ?? "default",
-      labels: options.labels ?? {},
-      cpu: options.cpu ?? 2,
-      memoryMib: options.memoryMib ?? 4096,
-      autoStopMinutes: options.autoStopMinutes ?? 15,
-      autoDeleteMinutes: options.autoDeleteMinutes === undefined ? null : options.autoDeleteMinutes,
-      network: toNetwork(options.network),
-    });
-    const sandbox = new Sandbox(this.context(options.user), toInfo(summary));
-    if (options.start ?? true) {
-      try {
-        await sandbox.start();
-      } catch (error) {
-        await sandbox.delete().catch(() => undefined);
-        throw error;
+    return withDeadline(options, async (signal) => {
+      const summary = await this.api.create(
+        {
+          image: options.image ?? "default",
+          labels: options.labels ?? {},
+          cpu: options.cpu ?? 2,
+          memoryMib: options.memoryMib ?? 4096,
+          autoStopMinutes: options.autoStopMinutes ?? 15,
+          autoDeleteMinutes:
+            options.autoDeleteMinutes === undefined ? null : options.autoDeleteMinutes,
+          network: toNetwork(options.network),
+        },
+        signal
+      );
+      const sandbox = new Sandbox(this.context(options.user), toInfo(summary));
+      if (options.start ?? true) {
+        try {
+          await sandbox.start({ signal });
+        } catch (error) {
+          await sandbox.delete().catch(() => undefined);
+          throw error;
+        }
       }
-    }
-    return sandbox;
+      return sandbox;
+    });
   }
 
   /** Reconnect to an existing sandbox by id. Throws a `KumobaError` with `notFound` when it is gone. */
-  async get(id: string, options: { user?: string } = {}): Promise<Sandbox> {
-    return new Sandbox(this.context(options.user), toInfo(await this.api.get(id)));
+  async get(id: string, options: GetOptions = {}): Promise<Sandbox> {
+    const summary = await withDeadline(options, (signal) => this.api.get(id, signal));
+    return new Sandbox(this.context(options.user), toInfo(summary));
   }
 
   /** Like `get`, but resolves to `undefined` instead of throwing when the sandbox does not exist. */
-  async find(id: string, options: { user?: string } = {}): Promise<Sandbox | undefined> {
+  async find(id: string, options: GetOptions = {}): Promise<Sandbox | undefined> {
     try {
       return await this.get(id, options);
     } catch (error) {
@@ -156,7 +170,9 @@ export class Kumoba {
 
   /** Sandboxes whose labels include every entry of `labels`, newest first. */
   async list(options: ListOptions = {}): Promise<Sandbox[]> {
-    const { sandboxes } = await this.api.list(options.labels ?? {}, options.limit ?? 100);
+    const { sandboxes } = await withDeadline(options, (signal) =>
+      this.api.list(options.labels ?? {}, options.limit ?? 100, signal)
+    );
     return sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary)));
   }
 
@@ -168,30 +184,33 @@ export class Kumoba {
     const untilMs = (options.until ?? new Date()).getTime();
     const sinceMs = (options.since ?? new Date(untilMs - 2 * 3_600_000)).getTime();
     const limit = options.limit ?? 10_000;
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await this.api.accessLog({
-        sinceMs,
-        untilMs,
-        limit,
-        ...(cursor ? { cursor } : {}),
-      });
-      for (const entry of page.entries) {
-        const { startedAtMs, completedAtMs, dropped, ...rest } = entry;
-        yield {
-          ...rest,
-          startedAt: new Date(startedAtMs),
-          completedAt: new Date(completedAtMs),
-          ...(dropped === undefined ? {} : { dropped }),
-        };
+    const { signal, clear } = deadline(options);
+    try {
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await this.api.accessLog(
+          { sinceMs, untilMs, limit, ...(cursor ? { cursor } : {}) },
+          signal
+        );
+        for (const entry of page.entries) {
+          const { startedAtMs, completedAtMs, dropped, ...rest } = entry;
+          yield {
+            ...rest,
+            startedAt: new Date(startedAtMs),
+            completedAt: new Date(completedAtMs),
+            ...(dropped === undefined ? {} : { dropped }),
+          };
+        }
+        if (!page.truncated || !page.nextCursor) return;
+        cursor = page.nextCursor;
       }
-      if (!page.truncated || !page.nextCursor) return;
-      cursor = page.nextCursor;
+    } finally {
+      clear();
     }
   }
 
   /** Forget secrets by name across every sandbox. Returns the names that existed. */
-  async deleteSecrets(names: readonly string[]): Promise<string[]> {
-    return this.api.deleteSecrets(names);
+  async deleteSecrets(names: readonly string[], options: CallOptions = {}): Promise<string[]> {
+    return withDeadline(options, (signal) => this.api.deleteSecrets(names, signal));
   }
 }

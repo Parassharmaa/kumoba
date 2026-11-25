@@ -3,6 +3,7 @@ import { type Duplex, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
+import type { CallOptions } from "./types.js";
 
 export type Endpoint = { socketPath: string } | { host: string; port: number };
 
@@ -13,8 +14,47 @@ export type HttpInit = {
   path: string;
   json?: unknown;
   body?: Body;
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 };
+
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+class Timeout {
+  constructor(readonly ms: number) {}
+}
+
+export type Deadline = { signal: AbortSignal | undefined; clear(): void };
+
+export function deadline(options: CallOptions | undefined): Deadline {
+  const signal = options?.signal;
+  const timeoutMs = options?.timeoutMs;
+  if (timeoutMs === undefined) return { signal, clear: () => undefined };
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new KumobaError(
+      `timeoutMs must be a number of milliseconds above 0 and up to ${String(MAX_TIMEOUT_MS)}, got ${String(timeoutMs)}`,
+      { code: "invalid_request" }
+    );
+  }
+  const timer = new AbortController();
+  const handle = setTimeout(() => timer.abort(new Timeout(timeoutMs)), timeoutMs);
+  handle.unref();
+  return {
+    signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal,
+    clear: () => clearTimeout(handle),
+  };
+}
+
+export async function withDeadline<T>(
+  options: CallOptions | undefined,
+  call: (signal: AbortSignal | undefined) => Promise<T>
+): Promise<T> {
+  const limit = deadline(options);
+  try {
+    return await call(limit.signal);
+  } finally {
+    limit.clear();
+  }
+}
 
 const MAX_JSON_BYTES = 16 * 1024 * 1024;
 
@@ -75,7 +115,7 @@ function downloadBroken(received: number, declared: number | undefined, cause?: 
   });
 }
 
-export function checkedDownload(response: IncomingMessage): Readable {
+export function checkedDownload(response: IncomingMessage, signal?: AbortSignal): Readable {
   const header = response.headers["x-file-size"];
   const declared = typeof header === "string" && /^\d+$/.test(header) ? Number(header) : undefined;
   let received = 0;
@@ -90,7 +130,11 @@ export function checkedDownload(response: IncomingMessage): Readable {
       );
     },
   });
-  response.on("error", (cause) => counter.destroy(downloadBroken(received, declared, cause)));
+  response.on("error", (cause) =>
+    counter.destroy(
+      signal?.aborted ? abortedError(signal) : downloadBroken(received, declared, cause)
+    )
+  );
   counter.on("close", () => {
     if (!response.complete) response.destroy();
   });
@@ -134,7 +178,9 @@ export class Http {
       const outgoing = httpRequest(options, resolve);
       outgoing.on("error", (cause) => reject(this.failure(cause, init.signal)));
       if (init.body) {
-        pipeline(Readable.from(init.body), outgoing).catch(reject);
+        pipeline(Readable.from(init.body), outgoing).catch((cause: unknown) => {
+          reject(init.signal?.aborted ? abortedError(init.signal) : cause);
+        });
       } else {
         outgoing.end(payload);
       }
@@ -205,6 +251,13 @@ export class Http {
 }
 
 export function abortedError(signal: AbortSignal): KumobaError {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Timeout) {
+    return new KumobaError(`kumoba call timed out after ${String(reason.ms)} ms`, {
+      code: "timeout",
+      retryable: true,
+    });
+  }
   return new KumobaError("kumoba request was aborted", {
     code: "aborted",
     retryable: false,

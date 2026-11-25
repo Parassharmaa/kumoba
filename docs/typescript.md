@@ -4,7 +4,7 @@
 npm install kumoba
 ```
 
-The package needs Node 20 or later and depends only on `zod`. It also installs the [`kumoba` CLI](/cli).
+The package needs Node 20.3 or later and depends only on `zod`. It also installs the [`kumoba` CLI](/cli).
 
 ## Connect
 
@@ -98,13 +98,32 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 
 `list()` throws a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it.
 
+## Cancel a call or give it a time limit
+
+Every call that asks kumobad for something takes `signal` and `timeoutMs` in its options object, the last argument; the desktop calls with positional arguments, such as `desktop.drag(from, to, button, options)`, take it last too.
+
+```ts
+const sandbox = await kumoba.create({ timeoutMs: 600_000 });
+const data = await sandbox.files.read("/workspace/out.json", { signal: controller.signal });
+await sandbox.desktop.click(200, 300, { timeoutMs: 10_000 });
+```
+
+- `signal` aborts the call: it throws a `KumobaError` with code `aborted` and `cause` set to `signal.reason`, and the request to kumobad is closed.
+- `timeoutMs` throws a `KumobaError` with code `timeout` when that many milliseconds pass before the call's promise settles. The clock covers every request the call makes, so for `create()` it counts creating the sandbox and the whole boot. It must be above 0 and at most 2147483647; anything else is `invalid_request`.
+- Neither is set by default and calls wait as long as kumobad takes. kumobad bounds a boot itself, at 2 minutes for Linux and 5 for macOS.
+- `files.stream()` resolves once the download starts, so `timeoutMs` covers only opening it; `signal` still stops it partway, and the stream then emits the `aborted` error. `files.read()`, `files.download()` and `files.write()` count the whole transfer.
+- `kumoba.accessLog()` counts its time limit across every page, from the first one to the last.
+- When `create()` is aborted or times out while the sandbox boots, the SDK deletes the sandbox before it throws. When that happens before kumobad has replied to the create request itself, kumobad may have made a sandbox whose id the SDK never received; it stays until `autoDeleteMinutes` passes after it stops, or until you delete it.
+- `run()` already takes `signal`. Its `timeoutMs` is different: kumobad kills the command when it passes, and `run()` resolves with `timedOut: true` instead of throwing.
+
 ## Errors
 
 Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style `status`: the daemon's own when it answered with an error, 502 or 503 for a failure the SDK detected in its reply or connection, and 0 when no request was made. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks, local file errors in `files.upload()` and `files.download()` such as a missing local path, and errors from a stream you pass to `files.write()`; those reach you unchanged.
 
 | `code` | When | `retryable` |
 | --- | --- | --- |
-| `aborted` | The `signal` you passed to `run()` was aborted. `cause` is `signal.reason`. | `false` |
+| `aborted` | The `signal` you passed was aborted. `cause` is `signal.reason`. | `false` |
+| `timeout` | The `timeoutMs` you passed ran out before the call finished. | `true` |
 | `unreachable` | kumobad could not be reached, or the connection broke before the reply was complete, for example because kumobad restarted. | `true` |
 | `protocol` | kumobad sent something the SDK does not understand, a download ended early, or a command's output ended without an exit status. | `true` when a download or a command's output ended early, otherwise `false` |
 | `daemon_error` | kumobad started the request but could not run the command, for example because the guest agent did not answer. | `false` |
@@ -113,6 +132,6 @@ Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style
 
 Other codes, such as `not_found`, `capacity` or `guest_error`, are the daemon's own and come with its HTTP status (see the [HTTP API](/http-api)). An error reply without a code is `daemon_error`. Errors from the daemon are retryable when the status is 429 or 5xx.
 
-A `run()` that fails with `unreachable` or `protocol` after kumobad accepted it may have started the command, so retry only commands that are safe to run twice.
+A `run()` that fails with `unreachable` or `protocol` after kumobad accepted it may have started the command, so retry only commands that are safe to run twice. The same holds for `timeout`: kumobad may have done what the call asked, such as a desktop click, before the time ran out.
 
 `files.read()`, `files.readText()`, `files.stream()` and `files.download()` compare the bytes received with the file size the daemon reports. A download that ends early, for example because the sandbox stopped mid-transfer, throws a `KumobaError` with code `protocol` and `retryable: true` instead of returning a short file. A stream emits it as an `error`.
