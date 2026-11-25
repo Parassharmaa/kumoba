@@ -683,10 +683,11 @@ async fn download(
     user: Option<String>,
 ) -> ApiResult<Response<Body>> {
     let (entry, agent, _) = service.running_agent(id, None).await?;
-    let first = agent.read_at(path, 0, MAX_DATA, user.as_deref()).await?;
+    let mut first = agent.read_at(path, 0, MAX_DATA, user.as_deref()).await?;
     let path = path.to_string();
     let (sender, receiver) = mpsc::channel::<Bytes>(4);
     let size = first.size;
+    first.data.truncate(remaining(size, 0));
     tokio::spawn(async move {
         let _operation = entry.begin();
         let mut offset = first.data.len() as u64;
@@ -698,7 +699,8 @@ async fn download(
                 .read_at(&path, offset, MAX_DATA, user.as_deref())
                 .await
             {
-                Ok(chunk) if !chunk.data.is_empty() => {
+                Ok(mut chunk) if !chunk.data.is_empty() => {
+                    chunk.data.truncate(remaining(size, offset));
                     offset += chunk.data.len() as u64;
                     if sender.send(Bytes::from(chunk.data)).await.is_err() {
                         return;
@@ -708,12 +710,19 @@ async fn download(
             }
         }
     });
+    Ok(sized_stream_response(size, receiver))
+}
+
+fn remaining(size: u64, offset: u64) -> usize {
+    usize::try_from(size.saturating_sub(offset)).unwrap_or(usize::MAX)
+}
+
+fn sized_stream_response(size: u64, receiver: mpsc::Receiver<Bytes>) -> Response<Body> {
     let mut response = stream_response("application/octet-stream", receiver);
-    response.headers_mut().insert(
-        "x-file-size",
-        size.to_string().parse().expect("numeric header"),
-    );
-    Ok(response)
+    let headers = response.headers_mut();
+    headers.insert(hyper::header::CONTENT_LENGTH, size.into());
+    headers.insert("x-file-size", size.into());
+    response
 }
 
 async fn upload(
@@ -983,6 +992,72 @@ mod tests {
         assert_eq!(desktop_view(Stream, &json!({"novnc": true})), VNC_VIEW);
         assert_eq!(desktop_view(Stream, &json!({"view": false})), VNC_VIEW);
         assert_eq!(desktop_view(Stream, &Value::Null), VNC_VIEW);
+    }
+
+    async fn fetch_download(
+        size: u64,
+        sent: &[&'static [u8]],
+    ) -> (Option<String>, Result<usize, String>) {
+        use super::sized_stream_response;
+        use http_body_util::{BodyExt, Empty};
+        use hyper_util::rt::TokioIo;
+        let (client_io, server_io) = tokio::io::duplex(1 << 16);
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        for chunk in sent {
+            sender.send(bytes::Bytes::from_static(chunk)).await.unwrap();
+        }
+        let receiver = std::sync::Mutex::new(Some(receiver));
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |_request| {
+                let receiver = receiver.lock().unwrap().take().unwrap();
+                async move { Ok::<_, std::convert::Infallible>(sized_stream_response(size, receiver)) }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(server_io), service)
+                .await;
+        });
+        let (mut request_sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(client_io))
+                .await
+                .unwrap();
+        tokio::spawn(connection);
+        let response = request_sender
+            .send_request(
+                hyper::Request::get("/files")
+                    .body(Empty::<bytes::Bytes>::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let declared = response
+            .headers()
+            .get("x-file-size")
+            .map(|value| value.to_str().unwrap().to_string());
+        drop(sender);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|collected| collected.to_bytes().len())
+            .map_err(|error| error.to_string());
+        (declared, body)
+    }
+
+    #[tokio::test]
+    async fn a_download_cut_short_fails_at_the_client() {
+        let (declared, body) = fetch_download(10, &[b"abc"]).await;
+        assert_eq!(declared.as_deref(), Some("10"));
+        assert!(body.is_err(), "{body:?}");
+    }
+
+    #[tokio::test]
+    async fn a_complete_download_ends_cleanly() {
+        let (declared, body) = fetch_download(10, &[b"abcd", b"efghij"]).await;
+        assert_eq!(declared.as_deref(), Some("10"));
+        assert_eq!(body, Ok(10));
+        let (declared, body) = fetch_download(0, &[b""]).await;
+        assert_eq!(declared.as_deref(), Some("0"));
+        assert_eq!(body, Ok(0));
     }
 
     #[test]

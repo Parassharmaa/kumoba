@@ -230,3 +230,79 @@ pub async fn read_all(response: Response<Incoming>) -> Result<Bytes, Failure> {
         .map(http_body_util::Collected::to_bytes)
         .map_err(|error| Failure::Api(format!("reading the kumobad response failed: {error}")))
 }
+
+pub enum CopyError {
+    Read(Failure),
+    Write(std::io::Error),
+}
+
+pub fn declared_size(headers: &hyper::HeaderMap) -> Option<u64> {
+    headers.get("x-file-size")?.to_str().ok()?.parse().ok()
+}
+
+pub fn cut_short(received: u64, declared: Option<u64>, why: Option<String>) -> Failure {
+    let of = declared
+        .map(|declared| format!(" of {declared}"))
+        .unwrap_or_default();
+    let why = why.map(|error| format!(": {error}")).unwrap_or_default();
+    Failure::Api(format!(
+        "kumobad download ended after {received}{of} bytes{why}"
+    ))
+}
+
+pub fn check_size(received: u64, declared: Option<u64>) -> Result<(), Failure> {
+    match declared {
+        Some(declared) if received < declared => Err(cut_short(received, Some(declared), None)),
+        _ => Ok(()),
+    }
+}
+
+pub async fn copy_body(
+    response: Response<Incoming>,
+    out: &mut impl std::io::Write,
+) -> Result<(), CopyError> {
+    let declared = declared_size(response.headers());
+    let mut body = response.into_body();
+    let mut received = 0u64;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|error| {
+            CopyError::Read(cut_short(received, declared, Some(error.to_string())))
+        })?;
+        if let Ok(data) = frame.into_data() {
+            received += data.len() as u64;
+            out.write_all(&data).map_err(CopyError::Write)?;
+        }
+    }
+    out.flush().map_err(CopyError::Write)?;
+    check_size(received, declared).map_err(CopyError::Read)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_size, declared_size};
+
+    #[test]
+    fn a_download_shorter_than_its_declared_size_fails() {
+        let failure = check_size(3, Some(10))
+            .err()
+            .map(|failure| failure.message().to_string());
+        assert_eq!(
+            failure.as_deref(),
+            Some("kumobad download ended after 3 of 10 bytes")
+        );
+        assert!(check_size(10, Some(10)).is_ok());
+        assert!(check_size(12, Some(10)).is_ok());
+        assert!(check_size(0, Some(0)).is_ok());
+        assert!(check_size(3, None).is_ok());
+    }
+
+    #[test]
+    fn reads_the_declared_file_size() {
+        let mut headers = hyper::HeaderMap::new();
+        assert_eq!(declared_size(&headers), None);
+        headers.insert("x-file-size", "42".parse().unwrap());
+        assert_eq!(declared_size(&headers), Some(42));
+        headers.insert("x-file-size", "-1".parse().unwrap());
+        assert_eq!(declared_size(&headers), None);
+    }
+}
