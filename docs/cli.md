@@ -68,7 +68,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 
 | Kind | Commands | What you get |
 | --- | --- | --- |
-| JSON | most | Pretty JSON on a terminal, one line of JSON when piped or with `--json`. `-q` prints only the `id`s, one per line |
+| JSON | most | Pretty JSON on a terminal, one line of JSON when piped or with `--json`. `-q` prints only the `id`s, one per line, and says on stderr when the reply was cut short (`truncated`), so a `list` with more matches than `--limit` (1000 by default) does not look complete |
 | Stream | `run`, `exec` | The guest's stdout and stderr on yours, as they arrive |
 | Bytes | `read-file` | The file on stdout, or into `-o FILE` as it arrives. Exits 1 if the transfer ends before the whole file arrived, and removes a partial `-o FILE` |
 

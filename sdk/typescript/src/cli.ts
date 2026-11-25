@@ -201,6 +201,15 @@ function commandHelp(io: Io, spec: CommandSpec): void {
   io.stdout(`${lines.join("\n")}\n`);
 }
 
+function truncatedNote(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { truncated, nextCursor } = value as { truncated?: unknown; nextCursor?: unknown };
+  if (truncated !== true) return undefined;
+  return typeof nextCursor === "string"
+    ? `more matched than were listed; pass --cursor ${nextCursor} for the next page`
+    : "more matched than were listed; raise --limit to see them";
+}
+
 function ids(value: unknown): string[] {
   if (!value || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
@@ -361,6 +370,8 @@ async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): 
   const value: unknown = bytes.length > 0 ? JSON.parse(bytes.toString("utf8")) : null;
   if (parsed.quiet) {
     for (const id of ids(value)) io.stdout(`${id}\n`);
+    const note = truncatedNote(value);
+    if (note) io.stderr(`kumoba: ${note}\n`);
   } else if (parsed.json || !io.stdoutIsTty) io.stdout(`${JSON.stringify(value)}\n`);
   else io.stdout(`${JSON.stringify(value, null, 2)}\n`);
   if (parsed.open) {

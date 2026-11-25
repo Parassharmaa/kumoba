@@ -73,7 +73,7 @@ See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-
 | --- | --- | --- |
 | `url` | `KUMOBA_URL` | `unix://$KUMOBA_HOME/kumobad.sock`; `http://127.0.0.1:<port>` also works |
 | `token` | `KUMOBA_TOKEN` or `KUMOBA_TOKEN_FILE` | `$KUMOBA_HOME/token` |
-| `publicUrl` | `KUMOBA_PUBLIC_URL` | the `http://` URL, for full `expose()` links |
+| `publicUrl` | `KUMOBA_PUBLIC_URL` | the link `kumobad` returns; set it to where browsers reach the preview listener |
 | `defaultUser` | `KUMOBA_USER` | the image's default user |
 | | `KUMOBA_HOME` | `~/.kumoba` |
 
@@ -84,7 +84,7 @@ See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-
 - `setSecrets([...])`: values never enter the guest; they are injected into HTTPS requests to the hosts you name.
 - `expose(port, { ttlSeconds })`: a signed, expiring link through `kumobad` to a port in the VM.
 - `desktop.start / screenshot / click / type / hotkey` on images with the desktop installed, and `desktop.liveView()` for a link that shows the desktop in a browser. `liveView()` also works on macOS sandboxes.
-- `start / stop / delete / update({ network })`, plus `kumoba.list`, `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
+- `start / stop / delete / update({ network })`, plus `kumoba.list` (every match), `kumoba.listPage` (a bounded page and whether more matched), `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
 
 `await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `status` and `code`.
 

@@ -57,6 +57,7 @@ struct Running {
     desktop_available: bool,
     desktop_startup_timeout: bool,
     shell_available: bool,
+    upload_available: bool,
     os: String,
     desktop: Option<crate::DesktopInfo>,
 }
@@ -343,6 +344,7 @@ impl Sandbox {
             desktop_available: false,
             desktop_startup_timeout: false,
             shell_available: false,
+            upload_available: false,
             os: "linux".into(),
             desktop: None,
         }));
@@ -376,6 +378,7 @@ impl Sandbox {
                         shell,
                         os,
                         clock,
+                        upload,
                         ..
                     })) =
                         tokio::time::timeout(Duration::from_millis(300), receive(&mut socket)).await
@@ -391,6 +394,7 @@ impl Sandbox {
                     guard.vm.desktop_available = desktop;
                     guard.vm.desktop_startup_timeout = desktop_startup_timeout;
                     guard.vm.shell_available = shell;
+                    guard.vm.upload_available = upload;
                     guard.vm.os = os;
                     return Ok(());
                 }
@@ -707,7 +711,11 @@ impl Sandbox {
         if vm.tainted {
             return Err(Error::NotRunning);
         }
-        Ok(crate::agent::Agent::new(vm.socket.clone(), vm.exit.clone()))
+        Ok(crate::agent::Agent::new(
+            vm.socket.clone(),
+            vm.exit.clone(),
+            vm.upload_available,
+        ))
     }
 
     pub async fn exec_streamed<O, E>(
