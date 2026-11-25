@@ -6,6 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Added
 
+- TypeScript SDK: every call that talks to kumobad, not only `run()`, takes `signal` and `timeoutMs`: `create`, `start`, `stop`, `delete`, `get`, `find`, `list`, `listPage`, `refresh`, `update`, `images`, `accessLog`, `deleteSecrets`, `expose`, `setSecrets`, every `files` method and every `desktop` method. A cancelled call fails with code `aborted`, and one that runs past `timeoutMs` fails with the new code `timeout` (`retryable: true`). The time limit covers every request the call makes, so `create({ timeoutMs })` counts the boot too, and a `create()` cancelled while the sandbox boots deletes it. A stuck boot or a hung file read used to block the caller for good. There is no default time limit. The SDK now needs Node 20.3 or later.
 - TypeScript SDK: `kumoba.listPage({ labels, limit })` returns at most `limit` sandboxes, newest first, and `truncated`, which is true when more matched.
 
 ### Changed

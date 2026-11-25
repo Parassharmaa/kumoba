@@ -66,6 +66,9 @@ export type FakeKumobad = {
   downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
   downloadsClosed: number;
   imagesCut: boolean;
+  stall: (method: string, path: string) => boolean;
+  stalled: string[];
+  stalledClosed: number;
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -131,14 +134,17 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     downloadCut: undefined,
     downloadsClosed: 0,
     imagesCut: false,
+    stall: () => false,
+    stalled: [],
+    stalledClosed: 0,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
-      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      const tcpClosed = new Promise<void>((resolve) => tcp.close(() => resolve()));
+      const closed = Promise.all(
+        [server, tcp].map((each) => new Promise<void>((resolve) => each.close(() => resolve())))
+      );
       server.closeAllConnections();
       tcp.closeAllConnections();
       await closed;
-      await tcpClosed;
       rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -152,6 +158,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
       const url = new URL(request.url ?? "/", "http://fake");
       const parts = url.pathname.split("/").filter(Boolean);
       const method = request.method ?? "GET";
+      if (fake.stall(method, url.pathname)) {
+        fake.stalled.push(`${method} ${url.pathname}`);
+        response.on("close", () => {
+          fake.stalledClosed += 1;
+        });
+        return;
+      }
       const sandbox = parts[2] ? fake.sandboxes.get(parts[2]) : undefined;
       if (method === "GET" && url.pathname === "/v1/access-log") {
         const sinceMs = Number(url.searchParams.get("sinceMs"));
