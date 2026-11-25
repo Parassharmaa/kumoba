@@ -71,7 +71,7 @@ export type RunOptions = {
   onStdout?: (text: string) => void;
   /** Called with decoded text as stderr arrives. */
   onStderr?: (text: string) => void;
-  /** Abort the request; the daemon kills the guest process group. */
+  /** Abort the request; the daemon kills the guest process group and `run` throws a `KumobaError` with code `aborted`. */
   signal?: AbortSignal;
   /** Bytes of stdout and of stderr to keep in the result. Defaults to 1 MiB each. */
   maxOutputBytes?: number;
