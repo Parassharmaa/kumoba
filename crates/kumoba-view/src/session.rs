@@ -1,8 +1,8 @@
 use crate::flow::Flow;
-use crate::http::Link;
+use crate::http::{Link, send};
 use crate::screen::{Failure, Screen};
-use crate::ws::{Message, Reader, Writer};
-use kumoba_view_codec::{Encoder, Rect};
+use crate::ws::{Message, Reader, Writer, close_frame};
+use kumoba_view_codec::{Encoder, MAX_HEIGHT, MAX_WIDTH, Rect, fits};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,8 @@ const STEPS_PER_TURN: usize = 8192;
 const MAX_WAITING_TEXT: usize = 256 * 1024;
 const LOOK_AHEAD: usize = 256;
 const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
+const CLOSE_REFUSED: u16 = 1011;
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
 pub struct Keepalive {
@@ -200,13 +202,65 @@ fn sooner(timeout: Option<Duration>, other: Option<Duration>) -> Option<Duration
     }
 }
 
+fn refuse(stream: &mut impl Link, error: &Failure) {
+    let reason = error.to_string();
+    let mut letters = reason.chars();
+    let reason: String = letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default();
+    let deadline = Instant::now() + CLOSE_WAIT;
+    if send(stream, &close_frame(CLOSE_REFUSED, &reason), deadline).is_err() {
+        return;
+    }
+    unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_WR) };
+    let mut scratch = [0u8; 512];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || poll(-1, stream.as_raw_fd(), false, Some(left)).is_err() {
+            return;
+        }
+        match stream.read(&mut scratch) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+pub fn start<S: Screen>(
+    stream: &mut impl Link,
+    open: impl FnOnce() -> Result<S, Failure>,
+) -> Result<S, Failure> {
+    let opened = open().and_then(|screen| {
+        let (width, height) = screen.size();
+        if fits(width, height) {
+            Ok(screen)
+        } else {
+            Err(format!(
+                "the desktop is {width}x{height} pixels; the live view shows at most {MAX_WIDTH}x{MAX_HEIGHT}"
+            )
+            .into())
+        }
+    });
+    if let Err(error) = &opened {
+        refuse(stream, error);
+    }
+    opened
+}
+
 pub fn run<S: Screen>(
     mut stream: impl Link,
     settings: Settings,
     open: impl FnOnce() -> Result<S, Failure>,
 ) -> Result<(), Failure> {
     stream.streaming()?;
-    let mut screen = open()?;
+    let mut screen = start(&mut stream, open)?;
     let (width, height) = screen.size();
     let mut encoder = Encoder::new(width, height);
     let mut reader = Reader::default();
