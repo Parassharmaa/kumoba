@@ -22,6 +22,8 @@ const CLIENT_TEXT: u8 = 8;
 const CLIENT_CLIPBOARD: u8 = 9;
 const CLIENT_COPY: u8 = 10;
 const CLIENT_CHORD: u8 = 11;
+const HELLO_CHORDS: u8 = 1;
+const HELLO_WATCH: u8 = 2;
 
 const STALL: Duration = Duration::from_secs(5);
 const POINTER_EVERY: Duration = Duration::from_millis(33);
@@ -36,6 +38,12 @@ const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
 pub struct Settings {
     pub fps: u32,
     pub max_mbps: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Control,
+    Watch,
 }
 
 enum Stroke {
@@ -144,6 +152,7 @@ fn sooner(timeout: Option<Duration>, other: Option<Duration>) -> Option<Duration
 pub fn run<S: Screen>(
     mut stream: impl Link,
     settings: Settings,
+    access: Access,
     open: impl FnOnce() -> Result<S, Failure>,
 ) -> Result<(), Failure> {
     stream.streaming()?;
@@ -156,7 +165,11 @@ pub fn run<S: Screen>(
     hello.extend_from_slice(&(width as u16).to_le_bytes());
     hello.extend_from_slice(&(height as u16).to_le_bytes());
     hello.extend_from_slice(&(settings.fps as u16).to_le_bytes());
-    hello.push(u8::from(screen.chords()));
+    let mut flags = if screen.chords() { HELLO_CHORDS } else { 0 };
+    if access == Access::Watch {
+        flags |= HELLO_WATCH;
+    }
+    hello.push(flags);
     writer.push(&hello);
     let started = Instant::now();
     let mut pace = Pace::new(settings.fps, started);
@@ -181,6 +194,11 @@ pub fn run<S: Screen>(
             let Message::Binary(data) = incoming else {
                 return Ok(());
             };
+            if access == Access::Watch
+                && !matches!(data.first(), Some(&(CLIENT_ACK | CLIENT_PAUSE)))
+            {
+                continue;
+            }
             match data.first() {
                 Some(&CLIENT_ACK) if data.len() >= 5 => {
                     let acked = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
@@ -400,5 +418,308 @@ pub fn run<S: Screen>(
             sequence,
             at: Instant::now(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen::Cursor;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    const SIZE: usize = 64;
+
+    #[derive(Clone, Default)]
+    struct Seen {
+        input: Arc<Mutex<Vec<String>>>,
+        turns: Arc<AtomicUsize>,
+    }
+
+    impl Seen {
+        fn note(&self, what: String) -> Result<(), Failure> {
+            self.input.lock().unwrap().push(what);
+            Ok(())
+        }
+
+        fn after_turns(&self, count: usize) {
+            let start = self.turns.load(Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.turns.load(Ordering::SeqCst) < start + count {
+                assert!(Instant::now() < deadline, "the session stopped turning");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    struct Fake {
+        pixels: Vec<u32>,
+        quiet: UnixStream,
+        _other: UnixStream,
+        seen: Seen,
+        changing: bool,
+    }
+
+    impl Screen for Fake {
+        fn size(&self) -> (usize, usize) {
+            (SIZE, SIZE)
+        }
+        fn fd(&self) -> RawFd {
+            self.quiet.as_raw_fd()
+        }
+        fn pixels(&self) -> &[u32] {
+            &self.pixels
+        }
+        fn drain(&mut self) -> Result<bool, Failure> {
+            self.seen.turns.fetch_add(1, Ordering::SeqCst);
+            Ok(self.changing)
+        }
+        fn resized(&self) -> bool {
+            false
+        }
+        fn grab(&mut self, _full: bool) -> Result<Rect, Failure> {
+            self.pixels[0] = self.pixels[0].wrapping_add(0x0001_0101);
+            Ok(Rect {
+                x: 0,
+                y: 0,
+                width: SIZE,
+                height: SIZE,
+            })
+        }
+        fn moves(&mut self) -> Vec<(i32, i32)> {
+            Vec::new()
+        }
+        fn cursor(&mut self) -> Result<Option<Cursor>, Failure> {
+            Ok(None)
+        }
+        fn position(&mut self) -> Result<(u16, u16), Failure> {
+            Ok((0, 0))
+        }
+        fn pointer(&mut self, x: i16, y: i16) -> Result<(), Failure> {
+            self.seen.note(format!("pointer {x} {y}"))
+        }
+        fn button(&mut self, button: u8, down: bool) -> Result<(), Failure> {
+            self.seen.note(format!("button {button} {down}"))
+        }
+        fn key(&mut self, keycode: u8, down: bool) -> Result<(), Failure> {
+            self.seen.note(format!("key {keycode} {down}"))
+        }
+        fn symbol(&mut self, symbol: u32, down: bool) -> Result<(), Failure> {
+            self.seen.note(format!("symbol {symbol:#x} {down}"))
+        }
+        fn needs_key(&self, _symbol: u32) -> bool {
+            false
+        }
+        fn bind(&mut self, _symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
+            Ok(false)
+        }
+        fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure> {
+            self.seen.note(format!("chord {} {shift}", letter as char))
+        }
+        fn offer(&mut self, text: &[u8]) -> Result<(), Failure> {
+            self.seen
+                .note(format!("offer {}", String::from_utf8_lossy(text)))
+        }
+        fn expect_copy(&mut self) {
+            let _ = self.seen.note("expect copy".into());
+        }
+        fn copied(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+        fn chords(&self) -> bool {
+            true
+        }
+    }
+
+    fn masked(payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0x82];
+        if payload.len() < 126 {
+            frame.push(0x80 | payload.len() as u8);
+        } else {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        }
+        frame.extend_from_slice(&[0, 0, 0, 0]);
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn heard(browser: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+        let mut head = [0u8; 2];
+        browser.read_exact(&mut head)?;
+        let length = match head[1] & 0x7f {
+            126 => {
+                let mut wide = [0u8; 2];
+                browser.read_exact(&mut wide)?;
+                usize::from(u16::from_be_bytes(wide))
+            }
+            127 => {
+                let mut wide = [0u8; 8];
+                browser.read_exact(&mut wide)?;
+                usize::try_from(u64::from_be_bytes(wide)).unwrap()
+            }
+            short => usize::from(short),
+        };
+        let mut payload = vec![0u8; length];
+        browser.read_exact(&mut payload)?;
+        Ok(payload)
+    }
+
+    struct Viewer {
+        browser: UnixStream,
+        seen: Seen,
+        session: std::thread::JoinHandle<Result<(), Failure>>,
+        hello: Vec<u8>,
+    }
+
+    impl Viewer {
+        fn open(access: Access, changing: bool) -> Self {
+            let (mut browser, engine) = UnixStream::pair().unwrap();
+            let (quiet, other) = UnixStream::pair().unwrap();
+            let seen = Seen::default();
+            let fake = Fake {
+                pixels: vec![0; SIZE * SIZE],
+                quiet,
+                _other: other,
+                seen: seen.clone(),
+                changing,
+            };
+            let settings = Settings {
+                fps: 60,
+                max_mbps: 100,
+            };
+            let session = std::thread::spawn(move || run(engine, settings, access, || Ok(fake)));
+            let hello = heard(&mut browser).unwrap();
+            assert_eq!(hello[0], SERVER_HELLO);
+            Self {
+                browser,
+                seen,
+                session,
+                hello,
+            }
+        }
+
+        fn send(&mut self, messages: &[Vec<u8>]) {
+            for message in messages {
+                self.browser.write_all(&masked(message)).unwrap();
+            }
+            self.seen.after_turns(6);
+        }
+
+        fn frames_within(&mut self, wait: Duration) -> usize {
+            let deadline = Instant::now() + wait;
+            let mut frames = 0;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                self.browser.set_read_timeout(Some(left)).unwrap();
+                let Ok(message) = heard(&mut self.browser) else {
+                    break;
+                };
+                if message[0] == SERVER_FRAME {
+                    frames += 1;
+                    let mut ack = vec![CLIENT_ACK];
+                    ack.extend_from_slice(&message[1..5]);
+                    self.browser.write_all(&masked(&ack)).unwrap();
+                }
+            }
+            frames
+        }
+
+        fn pause(&mut self, paused: bool) {
+            self.browser
+                .write_all(&masked(&[CLIENT_PAUSE, u8::from(paused)]))
+                .unwrap();
+        }
+
+        fn close(self) -> Vec<String> {
+            drop(self.browser);
+            self.session.join().unwrap().unwrap();
+            Arc::try_unwrap(self.seen.input)
+                .unwrap()
+                .into_inner()
+                .unwrap()
+        }
+    }
+
+    fn every_input() -> Vec<Vec<u8>> {
+        vec![
+            vec![CLIENT_POINTER, 5, 0, 7, 0],
+            vec![CLIENT_BUTTON, 1, 1],
+            vec![CLIENT_BUTTON, 1, 0],
+            vec![CLIENT_KEY, 30, 0, 1],
+            vec![CLIENT_KEY, 30, 0, 0],
+            vec![CLIENT_WHEEL, 0, 1],
+            vec![CLIENT_SYMBOL, 0x61, 0, 0, 0, 1],
+            vec![CLIENT_SYMBOL, 0x61, 0, 0, 0, 0],
+            [&[CLIENT_TEXT][..], b"hi"].concat(),
+            [&[CLIENT_CLIPBOARD][..], b"secret"].concat(),
+            vec![CLIENT_COPY],
+            vec![CLIENT_CHORD, b'v', 0],
+        ]
+    }
+
+    #[test]
+    fn a_stream_with_control_passes_every_kind_of_input_to_the_desktop() {
+        let mut viewer = Viewer::open(Access::Control, false);
+        assert_eq!(viewer.hello[7], HELLO_CHORDS);
+        viewer.send(&every_input());
+        assert_eq!(
+            viewer.close(),
+            [
+                "pointer 5 7",
+                "button 1 true",
+                "button 1 false",
+                "key 38 true",
+                "key 38 false",
+                "button 5 true",
+                "button 5 false",
+                "symbol 0x61 true",
+                "symbol 0x61 false",
+                "symbol 0x68 true",
+                "symbol 0x68 false",
+                "symbol 0x69 true",
+                "symbol 0x69 false",
+                "offer secret",
+                "expect copy",
+                "chord v false",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_watch_stream_says_so_and_never_reaches_the_desktop_whatever_it_sends() {
+        let mut viewer = Viewer::open(Access::Watch, false);
+        assert_eq!(viewer.hello[7], HELLO_CHORDS | HELLO_WATCH);
+        viewer.send(&every_input());
+        let shapes: [&[u8]; 4] = [
+            &[],
+            &[1, 1, 1, 1, 1, 1, 1, 1],
+            &[b'v', 1, 0, 0, 1, 0, 0, 0],
+            b"some typed text",
+        ];
+        let mut sweep: Vec<Vec<u8>> = (0..=u8::MAX)
+            .flat_map(|kind| shapes.map(|shape| [&[kind][..], shape].concat()))
+            .collect();
+        sweep.push(vec![CLIENT_PAUSE, 0]);
+        viewer.send(&sweep);
+        assert_eq!(viewer.close(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_watch_stream_still_acknowledges_and_pauses() {
+        let mut viewer = Viewer::open(Access::Watch, true);
+        assert!(viewer.frames_within(Duration::from_millis(300)) > 3);
+        viewer.pause(true);
+        viewer.frames_within(Duration::from_millis(300));
+        assert_eq!(viewer.frames_within(Duration::from_millis(300)), 0);
+        viewer.pause(false);
+        assert!(viewer.frames_within(Duration::from_millis(300)) > 3);
+        assert_eq!(viewer.close(), Vec::<String>::new());
     }
 }

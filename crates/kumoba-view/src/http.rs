@@ -1,5 +1,5 @@
 use crate::remote::Remote;
-use crate::session::{self, Settings};
+use crate::session::{self, Access, Settings};
 use crate::ws;
 #[cfg(target_os = "linux")]
 use crate::x11::X11;
@@ -258,7 +258,10 @@ fn local_request(request: &Request, port: u16) -> bool {
 pub enum Guard {
     Private,
     Loopback(u16),
-    Token(Arc<str>),
+    Token {
+        control: Arc<str>,
+        watch: Option<Arc<str>>,
+    },
 }
 
 fn same(left: &[u8], right: &[u8]) -> bool {
@@ -277,14 +280,23 @@ fn token_of(query: &str) -> Option<&str> {
 }
 
 impl Guard {
-    fn admits(&self, request: &Request) -> bool {
+    fn admits(&self, request: &Request) -> Option<Access> {
         match self {
-            Self::Private => true,
-            Self::Loopback(port) => local_request(request, *port),
-            Self::Token(token) => {
-                request.path != "/stream"
-                    || token_of(&request.query)
-                        .is_some_and(|given| same(given.as_bytes(), token.as_bytes()))
+            Self::Private => Some(Access::Control),
+            Self::Loopback(port) => local_request(request, *port).then_some(Access::Control),
+            Self::Token { .. } if request.path != "/stream" => Some(Access::Control),
+            Self::Token { control, watch } => {
+                let given = token_of(&request.query)?.as_bytes();
+                if same(given, control.as_bytes()) {
+                    Some(Access::Control)
+                } else if watch
+                    .as_ref()
+                    .is_some_and(|watch| same(given, watch.as_bytes()))
+                {
+                    Some(Access::Watch)
+                } else {
+                    None
+                }
             }
         }
     }
@@ -395,7 +407,7 @@ fn handle(
     };
     let deadline = Instant::now() + shared.waits.reply;
     stream.streaming()?;
-    if !shared.guard.admits(&request) {
+    let Some(access) = shared.guard.admits(&request) else {
         return Ok(respond(
             &mut stream,
             deadline,
@@ -403,7 +415,7 @@ fn handle(
             "text/plain",
             b"forbidden\n",
         )?);
-    }
+    };
     if request.method != "GET" {
         return Ok(respond(
             &mut stream,
@@ -474,8 +486,10 @@ fn handle(
             let settings = shared.settings;
             match &shared.source {
                 #[cfg(target_os = "linux")]
-                Source::X11 => session::run(stream, settings, X11::open)?,
-                Source::Remote(path) => session::run(stream, settings, || Remote::open(path))?,
+                Source::X11 => session::run(stream, settings, access, X11::open)?,
+                Source::Remote(path) => {
+                    session::run(stream, settings, access, || Remote::open(path))?;
+                }
             }
             drop(streaming);
         }
@@ -532,25 +546,63 @@ pub fn valid_token(token: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || "._~-".contains(character))
 }
 
-fn guard_for(address: SocketAddr, token: Option<&str>) -> io::Result<(Guard, bool)> {
-    match token {
-        Some(token) if valid_token(token) => Ok((Guard::Token(token.into()), false)),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+fn unusable(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+fn guard_for(
+    address: SocketAddr,
+    token: Option<&str>,
+    watch: Option<&str>,
+) -> io::Result<(Guard, bool)> {
+    if token.is_some_and(|token| !valid_token(token)) {
+        return Err(unusable(
             "the token must be letters, digits, '.', '_', '~' or '-'",
+        ));
+    }
+    if watch.is_some_and(|watch| !valid_token(watch)) {
+        return Err(unusable(
+            "the watch token must be letters, digits, '.', '_', '~' or '-'",
+        ));
+    }
+    if token.is_some() && token == watch {
+        return Err(unusable("the watch token must differ from the token"));
+    }
+    let watch = watch.map(Arc::from);
+    match token {
+        Some(token) => Ok((
+            Guard::Token {
+                control: token.into(),
+                watch,
+            },
+            false,
         )),
-        None if address.ip().is_loopback() => Ok((Guard::Loopback(address.port()), false)),
-        None => Ok((Guard::Token(new_token()?.into()), true)),
+        None if watch.is_none() && address.ip().is_loopback() => {
+            Ok((Guard::Loopback(address.port()), false))
+        }
+        None => Ok((
+            Guard::Token {
+                control: new_token()?.into(),
+                watch,
+            },
+            true,
+        )),
     }
 }
 
 pub fn serve(
     listen: &str,
     token: Option<&str>,
+    watch: Option<&str>,
     settings: Settings,
     source: &Source,
 ) -> io::Result<()> {
     if let Some(path) = listen.strip_prefix("unix:") {
+        if watch.is_some() {
+            return Err(unusable(
+                "a watch token needs a TCP address; a unix: socket takes no token",
+            ));
+        }
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -564,18 +616,26 @@ pub fn serve(
     let listener = TcpListener::bind(listen)?;
     let address = listener.local_addr()?;
     let port = address.port();
-    let (guard, made_up) = guard_for(address, token)?;
+    let (guard, made_up) = guard_for(address, token, watch)?;
     let opening =
         format!("kumoba-view listening on {address}; open http://<this host>:{port}/?token=");
+    let watching = if watch.is_some() {
+        "; the watch token opens it to watch only"
+    } else {
+        ""
+    };
     match &guard {
-        Guard::Token(token) if made_up && io::stdout().is_terminal() => {
-            println!("{opening}{token}");
+        Guard::Token { control, .. } if made_up && io::stdout().is_terminal() => {
+            println!("{opening}{control}{watching}");
         }
-        Guard::Token(token) if made_up => {
-            let saved = save_token(token, port)?;
-            println!("{opening} followed by the token in {}", saved.display());
+        Guard::Token { control, .. } if made_up => {
+            let saved = save_token(control, port)?;
+            println!(
+                "{opening} followed by the token in {}{watching}",
+                saved.display()
+            );
         }
-        Guard::Token(_) => println!("{opening}<your token>"),
+        Guard::Token { .. } => println!("{opening}<your token>{watching}"),
         _ => println!("kumoba-view listening on {address}"),
     }
     accept(listener.incoming(), &shared(guard, settings, source, WAITS));
@@ -604,6 +664,13 @@ mod tests {
             &Source::Remote("/nonexistent/view.sock".into()),
             waits,
         )
+    }
+
+    fn only(control: &str) -> Guard {
+        Guard::Token {
+            control: control.into(),
+            watch: None,
+        }
     }
 
     fn answer(guard: Guard, request: &str) -> String {
@@ -656,7 +723,7 @@ mod tests {
 
     #[test]
     fn a_token_guards_the_stream_from_any_host_but_not_the_page() {
-        let guard = || Guard::Token("s3cret".into());
+        let guard = || only("s3cret");
         let at = |target: &str| format!("GET {target} HTTP/1.1\r\nhost: 172.17.0.2:16090\r\n\r\n");
         assert_eq!(answer(guard(), &at("/")), "HTTP/1.1 200 OK");
         assert_eq!(answer(guard(), &at("/viewer.js")), "HTTP/1.1 200 OK");
@@ -678,7 +745,7 @@ mod tests {
 
     #[test]
     fn only_the_whole_token_parameter_opens_the_stream() {
-        let guard = || Guard::Token("s3cret".into());
+        let guard = || only("s3cret");
         let at = |query: &str| format!("GET /stream{query} HTTP/1.1\r\nhost: example:1\r\n\r\n");
         for refused in [
             "?token=",
@@ -703,27 +770,120 @@ mod tests {
         }
     }
 
+    fn stream_with(query: &str) -> Request {
+        Request {
+            query: query.into(),
+            ..request(&[("host", "172.17.0.2:16090")])
+        }
+    }
+
+    #[test]
+    fn the_token_gives_control_and_the_watch_token_only_watching() {
+        let guard = Guard::Token {
+            control: "s3cret".into(),
+            watch: Some("look".into()),
+        };
+        assert_eq!(
+            guard.admits(&stream_with("token=s3cret")),
+            Some(Access::Control)
+        );
+        assert_eq!(
+            guard.admits(&stream_with("token=look")),
+            Some(Access::Watch)
+        );
+        for refused in [
+            "",
+            "token=",
+            "token=loo",
+            "token=look0",
+            "token=s3cre",
+            "watch=look",
+        ] {
+            assert_eq!(guard.admits(&stream_with(refused)), None, "{refused}");
+        }
+        let at = |target: &str| format!("GET {target} HTTP/1.1\r\nhost: 172.17.0.2:16090\r\n\r\n");
+        assert_eq!(answer(guard.clone(), &at("/")), "HTTP/1.1 200 OK");
+        assert_eq!(
+            answer(guard.clone(), &at("/?token=look")),
+            "HTTP/1.1 200 OK"
+        );
+        assert_eq!(
+            answer(guard.clone(), &at("/stream?token=look")),
+            "HTTP/1.1 400 Bad Request"
+        );
+        assert_eq!(
+            answer(guard, &at("/stream?token=nope")),
+            "HTTP/1.1 403 Forbidden"
+        );
+        assert_eq!(only("s3cret").admits(&stream_with("token=look")), None);
+    }
+
+    #[test]
+    fn a_watch_token_always_needs_a_token_for_control() {
+        let loopback: SocketAddr = "127.0.0.1:6090".parse().unwrap();
+        let everywhere: SocketAddr = "0.0.0.0:6090".parse().unwrap();
+        for address in [loopback, everywhere] {
+            let (guard, made_up) = guard_for(address, None, Some("look")).unwrap();
+            assert!(made_up);
+            assert!(
+                matches!(&guard, Guard::Token { control, watch: Some(watch) } if control.len() == 32 && &**watch == "look")
+            );
+            assert_eq!(guard.admits(&stream_with("")), None);
+        }
+        assert!(matches!(
+            guard_for(loopback, Some("mine"), Some("look")).unwrap(),
+            (Guard::Token { watch: Some(_), .. }, false)
+        ));
+        assert!(guard_for(everywhere, Some("same"), Some("same")).is_err());
+        for unusable in ["", "with space", "a&b", "ünï"] {
+            assert!(
+                guard_for(everywhere, Some("mine"), Some(unusable)).is_err(),
+                "{unusable:?}"
+            );
+            assert!(
+                guard_for(loopback, None, Some(unusable)).is_err(),
+                "{unusable:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_unix_socket_refuses_a_watch_token_it_could_not_enforce() {
+        let settings = Settings {
+            fps: 30,
+            max_mbps: 10,
+        };
+        let refused = serve(
+            "unix:/nonexistent/kumoba-view.sock",
+            None,
+            Some("look"),
+            settings,
+            &Source::Remote("/nonexistent/view.sock".into()),
+        );
+        assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
     #[test]
     fn the_guard_follows_the_address_and_the_token() {
         let loopback: SocketAddr = "127.0.0.1:6090".parse().unwrap();
         let everywhere: SocketAddr = "0.0.0.0:6090".parse().unwrap();
         assert!(matches!(
-            guard_for(loopback, None).unwrap(),
+            guard_for(loopback, None, None).unwrap(),
             (Guard::Loopback(6090), false)
         ));
         assert!(
-            matches!(guard_for(everywhere, None).unwrap(), (Guard::Token(token), true) if token.len() == 32)
+            matches!(guard_for(everywhere, None, None).unwrap(), (Guard::Token { control, watch: None }, true) if control.len() == 32)
         );
         assert!(
-            matches!(guard_for(loopback, Some("chosen")).unwrap(), (Guard::Token(token), false) if &*token == "chosen")
+            matches!(guard_for(loopback, Some("chosen"), None).unwrap(), (Guard::Token { control, .. }, false) if &*control == "chosen")
         );
         assert!(matches!(
-            guard_for(everywhere, Some("a.b_c~d-9")).unwrap(),
-            (Guard::Token(_), false)
+            guard_for(everywhere, Some("a.b_c~d-9"), None).unwrap(),
+            (Guard::Token { .. }, false)
         ));
         for unusable in ["", "with space", "per%cent", "a&b", "a#b", "ünï"] {
             assert!(
-                guard_for(everywhere, Some(unusable)).is_err(),
+                guard_for(everywhere, Some(unusable), None).is_err(),
                 "{unusable:?}"
             );
         }

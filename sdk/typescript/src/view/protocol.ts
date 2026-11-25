@@ -21,7 +21,7 @@ const UNICODE_KEYSYM = 0x01000000;
 const LATIN1_MAX_CODE_POINT = 0xff;
 
 export type ServerMessage =
-  | { type: "hello"; width: number; height: number; chords: boolean }
+  | { type: "hello"; width: number; height: number; chords: boolean; watchOnly: boolean }
   | { type: "frame"; sequence: number; captureMicros: number; data: Uint8Array }
   | {
       type: "cursor";
@@ -58,6 +58,7 @@ export function parseMessage(buffer: ArrayBuffer): ServerMessage {
       width: view.getUint16(1, true),
       height: view.getUint16(3, true),
       chords: buffer.byteLength >= 8 && (view.getUint8(7) & 1) === 1,
+      watchOnly: buffer.byteLength >= 8 && (view.getUint8(7) & 2) === 2,
     };
   }
   if (type === SERVER.frame) {

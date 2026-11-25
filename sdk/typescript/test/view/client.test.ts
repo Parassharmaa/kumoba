@@ -56,12 +56,13 @@ function fakeCodec() {
   };
 }
 
-function hello(width = 4, height = 2) {
+function hello(width = 4, height = 2, flags = 0) {
   const view = new DataView(new ArrayBuffer(8));
   view.setUint8(0, 1);
   view.setUint16(1, width, true);
   view.setUint16(3, height, true);
   view.setUint16(5, 60, true);
+  view.setUint8(7, flags);
   return view.buffer;
 }
 
@@ -249,6 +250,29 @@ describe("viewer stream", () => {
 });
 
 describe("viewer input", () => {
+  it("stays view-only on a watch-only stream whatever the page asks", async () => {
+    const handlers = events();
+    const canvas = document.createElement("canvas");
+    const client = connectViewer(canvas, "wss://gateway.example/stream", handlers);
+    const socket = fake.sockets.at(-1);
+    if (!socket) throw new Error("No socket");
+    expect(client.watchOnly()).toBe(false);
+    socket.receive(hello(4, 2, 2));
+    await vi.waitFor(() => expect(client.watchOnly()).toBe(true));
+    socket.receive(frame(1));
+    paint();
+    client.setViewOnly(false);
+    expect(client.viewOnly()).toBe(true);
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { button: 0, clientX: 1, clientY: 1 }));
+    client.key(key("keydown", { key: "a", code: "KeyA" }));
+    client.typeText("hi");
+    client.paste("hi");
+    socket.receive(clipboard("copied"));
+    expect(socket.input()).toEqual([]);
+    expect(handlers.onClipboard).not.toHaveBeenCalled();
+    expect(acked(socket)).toEqual([1]);
+  });
+
   it("sends nothing while view-only", async () => {
     const { socket, client, canvas } = await liveClient();
     canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: 1, clientY: 1 }));
