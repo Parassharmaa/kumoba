@@ -744,6 +744,8 @@ fn sized_stream_response(size: u64, receiver: mpsc::Receiver<Bytes>) -> Response
     response
 }
 
+const UPLOAD_IDLE: Duration = Duration::from_secs(60);
+
 async fn upload(
     service: Arc<Service>,
     id: &str,
@@ -753,10 +755,13 @@ async fn upload(
 ) -> ApiResult<Response<Body>> {
     let (entry, agent, _) = service.running_agent(id, None).await?;
     let _operation = entry.begin();
+    let mut upload = None;
     let mut buffer = BytesMut::with_capacity(MAX_DATA);
-    let mut offset = 0u64;
-    let mut first = true;
-    while let Some(frame) = body.frame().await {
+    let mut written = 0u64;
+    while let Some(frame) = tokio::time::timeout(UPLOAD_IDLE, body.frame())
+        .await
+        .map_err(|_| ApiError::Status(408, "request body timed out".into()))?
+    {
         let frame = frame.map_err(|error| ApiError::bad_request(error.to_string()))?;
         let Ok(data) = frame.into_data() else {
             continue;
@@ -764,16 +769,25 @@ async fn upload(
         buffer.extend_from_slice(&data);
         while buffer.len() >= MAX_DATA {
             let chunk = buffer.split_to(MAX_DATA);
-            agent.write_at(path, offset, &chunk, first, user).await?;
-            first = false;
-            offset += chunk.len() as u64;
+            if upload.is_none() {
+                upload = Some(agent.upload(path, user).await?);
+            }
+            if let Some(upload) = upload.as_mut() {
+                upload.write(&chunk).await?;
+            }
+            written += chunk.len() as u64;
         }
     }
-    if first || !buffer.is_empty() {
-        agent.write_at(path, offset, &buffer, first, user).await?;
-        offset += buffer.len() as u64;
+    let mut upload = match upload {
+        Some(upload) => upload,
+        None => agent.upload(path, user).await?,
+    };
+    if !buffer.is_empty() {
+        upload.write(&buffer).await?;
+        written += buffer.len() as u64;
     }
-    Ok(json_response(200, json!({"written": offset})))
+    upload.commit().await?;
+    Ok(json_response(200, json!({"written": written})))
 }
 
 const PREVIEW_BODY_LIMIT: usize = 1024 * 1024;
