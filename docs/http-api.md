@@ -94,7 +94,7 @@ A bare `argv[0]` such as `python3` is looked up on the guest's `PATH` through `/
 
 ### One-shot
 
-`POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects. The stream starts with `{"type":"sandbox","id":"..."}`.
+`POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects, including a disconnect while the sandbox is still booting. The stream starts with `{"type":"sandbox","id":"..."}`. The sandbox's summary carries `"ephemeral": true` while it exists, and if kumobad stops during a run it deletes that sandbox when it starts again.
 
 ## Shell
 
@@ -149,7 +149,7 @@ Previews on the preview listener render in a browser: the guest's `content-type`
 
 `POST /v1/sandboxes/{id}/desktop` with `{"user": "kumoba", "ttlSeconds": 3600, "viewer": "stream"}` (all optional) starts Xvfb, xfce and the live views in an image that has them, and → `{"url": "http://127.0.0.1:7789/v1/preview/<token>/", "path": "...", "expiresAtMs": ..., "processes": {"xvfb": true, ...}, "viewer": "stream"}`. Opening `url` shows the desktop live, with keyboard and mouse. `viewer` chooses the page: `stream`, the default, is kumoba's own viewer, and `vnc` is noVNC, whose link ends in `vnc.html?autoconnect=1&resize=remote&path=...`. An image without the stream viewer gets `vnc` either way, and the response says which one the link opens. An image without a desktop answers 422. For a macOS sandbox nothing is started in the guest: the link opens the stream viewer on the screen as it is read on the host, `user` and `viewer` are ignored, and `processes` is `{"view": true}`.
 
-Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that port inside the guest, including WebSocket upgrades, without a bearer token. The token is an HMAC over the sandbox id, port, expiry and whether it opens a macOS sandbox's live view, so it cannot be reused for another sandbox, for another target or after it expires. Hop-by-hop and host-identifying headers are stripped in both directions, and responses carry `content-disposition: attachment` for types a browser would otherwise render, so a page served from a sandbox cannot script against the daemon's origin.
+Requests to `GET|POST|... /v1/preview/<token>/<anything>` are relayed to that port inside the guest, including WebSocket upgrades, without a bearer token. A request body is read in full first and reaches the guest with its `content-length`, also when the client sent it chunked; a body over 10 MiB is refused with 413. The token is an HMAC over the sandbox id, port, expiry and whether it opens a macOS sandbox's live view, so it cannot be reused for another sandbox, for another target or after it expires. Hop-by-hop and host-identifying headers are stripped in both directions, and responses carry `content-disposition: attachment` for types a browser would otherwise render, so a page served from a sandbox cannot script against the daemon's origin.
 
 ## Access log
 
