@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-25
+
 ### Fixed
 
 - `kumoba/view`: a press in the empty bars around the desktop image no longer clicks the nearest edge of the desktop. Moves over the bars are ignored unless a button is held, a click lands on the pixel under the pointer instead of half a pixel off, a touch drag on the view drags on the desktop instead of scrolling the page while in control, and the page's own `touch-action` comes back afterwards. No button stays held on the desktop any more when the browser cancels a press, when a second button is pressed and released during a drag, or when the page switches to watching only mid-drag.
@@ -161,7 +163,8 @@ The first release with these changes; the v0.6.4 tag was never published.
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/Parassharmaa/kumoba/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...v0.6.5
 [0.6.3]: https://github.com/Parassharmaa/kumoba/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/Parassharmaa/kumoba/compare/v0.6.1...v0.6.2
