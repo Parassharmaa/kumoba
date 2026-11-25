@@ -965,6 +965,7 @@ mod tests {
                 desktop_available: false,
                 desktop_startup_timeout: false,
                 shell_available: false,
+                upload_available: false,
                 os: "linux".into(),
                 desktop: None,
             },
