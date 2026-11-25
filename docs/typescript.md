@@ -101,3 +101,5 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 ## Errors
 
 Failures throw `KumobaError` with an HTTP `status` and a `code`, such as `not_found` or `unreachable`.
+
+`files.read()`, `files.readText()`, `files.stream()` and `files.download()` compare the bytes received with the file size the daemon reports. A download that ends early, for example because the sandbox stopped mid-transfer, throws a `KumobaError` with code `protocol` and `retryable: true` instead of returning a short file. A stream emits it as an `error`.

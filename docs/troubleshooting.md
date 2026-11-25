@@ -66,6 +66,10 @@ Your image predates kumoba 0.2.2. Upgrade (see [Upgrade or uninstall](/guide/upg
 
 `exec` stops the processes a command started when the command ends. Start long-running processes with `setsid`, as in [Open a web app](/guide/expose).
 
+## Output from a background process is missing
+
+The command left a process running in the background that still holds its output open, as in `sh -c 'make; ./server &'`. `exec` keeps reading for a quarter of a second after the command ends, returns what has arrived by then, and stops. Whatever that process writes later is not returned, and is not counted as truncated. Send its output to a file, as in `./server > /tmp/server.log 2>&1 &`, and read the file instead.
+
 ## A command was cut off with status 141
 
 The reader of `kumoba exec` or `kumoba run` output closed early, as in `kumoba exec <id> -- cat big.log | head`. That's the normal status for a closed pipe.
