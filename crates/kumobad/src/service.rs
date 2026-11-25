@@ -46,7 +46,9 @@ impl ApiError {
         match self.status() {
             400 => "invalid_request",
             404 => "not_found",
+            408 => "request_timeout",
             409 => "conflict",
+            413 => "request_too_large",
             422 => "guest_error",
             426 => "upgrade_required",
             429 => "capacity",
