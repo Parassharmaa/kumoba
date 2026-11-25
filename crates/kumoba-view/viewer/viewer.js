@@ -126,17 +126,18 @@ function connect() {
       retry = 0;
       setStatus(viewer?.watchOnly() ? "Watching only" : "");
     },
-    onClose: ({ error }) => {
-      if (error) {
-        setStatus(error.message);
+    onClose: ({ connected, error }) => {
+      if (error && connected) {
+        setStatus(`${error.message}. Reload the page to try again.`);
         return;
       }
+      const reason = error ? `${error.message}. ` : "";
       retry += 1;
       if (retry > MAX_ATTEMPTS) {
-        setStatus("The live view stopped. Run kumoba desktop again for a new link.");
+        setStatus(`${reason || "The live view stopped. "}Reload the page to try again.`);
         return;
       }
-      setStatus("Reconnecting");
+      setStatus(`${reason}Reconnecting`);
       setTimeout(connect, 250 * 2 ** retry);
     },
     onClipboard: (text) => {

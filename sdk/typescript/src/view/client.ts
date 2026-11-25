@@ -318,7 +318,7 @@ export function connectViewer(
       end(asError(error));
     }
   };
-  socket.onclose = () => end();
+  socket.onclose = (event: CloseEvent) => end(event.reason ? new Error(event.reason) : undefined);
   createDecoder().then(
     (codec) => {
       if (closed) return;

@@ -3,8 +3,8 @@ use crate::blocks::{self, Canvas, Layout, Predictor, Tables};
 use crate::dct::QUALITIES;
 use crate::stream::Reader;
 use crate::{
-    BAND, BLOCK, FLAG_KEY, MAX_HEIGHT, MAX_WIDTH, Move, RUN_INLINE, Rect, TAG_ABOVE, TAG_DIFF,
-    TAG_LUMA, TAG_RGB, TAG_RUN, TAG_SKIP, apply_moves, cache_slot,
+    BAND, BLOCK, FLAG_KEY, Move, RUN_INLINE, Rect, TAG_ABOVE, TAG_DIFF, TAG_LUMA, TAG_RGB, TAG_RUN,
+    TAG_SKIP, apply_moves, cache_slot, fits,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ fn inside(start: usize, length: usize, limit: usize) -> bool {
 
 impl Decoder {
     pub fn new(width: usize, height: usize) -> Option<Self> {
-        if width == 0 || height == 0 || width > MAX_WIDTH || height > MAX_HEIGHT {
+        if !fits(width, height) {
             return None;
         }
         Some(Self {

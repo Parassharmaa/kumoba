@@ -8,6 +8,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use x11rb::connection::Connection;
+use x11rb::errors::ConnectionError;
 use x11rb::protocol::{Event, damage, shm, xfixes, xproto, xtest};
 use x11rb::rust_connection::RustConnection;
 
@@ -89,9 +90,19 @@ fn last_error() -> Failure {
     io::Error::last_os_error().into()
 }
 
+fn extension<T>(asked: Result<T, ConnectionError>, name: &str) -> Result<T, Failure> {
+    asked.map_err(|error| match error {
+        ConnectionError::UnsupportedExtension => {
+            format!("the X display has no {name} extension, which the live view needs").into()
+        }
+        other => other.into(),
+    })
+}
+
 impl X11 {
     pub fn open() -> Result<Self, Failure> {
-        let (conn, number) = RustConnection::connect(None)?;
+        let (conn, number) = RustConnection::connect(None)
+            .map_err(|error| format!("could not connect to the X display: {error}"))?;
         let setup = conn.setup();
         let screen = &setup.roots[number];
         let (width, height, root) = (screen.width_in_pixels, screen.height_in_pixels, screen.root);
@@ -100,13 +111,23 @@ impl X11 {
             .iter()
             .find(|format| format.depth == screen.root_depth)
             .ok_or("the display has no pixmap format for its depth")?;
-        if format.bits_per_pixel != 32 || setup.image_byte_order != xproto::ImageOrder::LSB_FIRST {
-            return Err("the display must use 32-bit little-endian pixels".into());
+        if format.bits_per_pixel != 32 {
+            return Err(format!(
+                "the X display has depth {}; the live view needs depth 24, as in Xvfb -screen 0 1920x1080x24",
+                screen.root_depth
+            )
+            .into());
         }
-        shm::query_version(&conn)?.reply()?;
-        xfixes::query_version(&conn, 5, 0)?.reply()?;
-        damage::query_version(&conn, 1, 1)?.reply()?;
-        xtest::get_version(&conn, 2, 2)?.reply()?;
+        if setup.image_byte_order != xproto::ImageOrder::LSB_FIRST {
+            return Err(
+                "the X display sends big-endian pixels; the live view needs little-endian ones"
+                    .into(),
+            );
+        }
+        extension(shm::query_version(&conn), "MIT-SHM")?.reply()?;
+        extension(xfixes::query_version(&conn, 5, 0), "XFIXES")?.reply()?;
+        extension(damage::query_version(&conn, 1, 1), "DAMAGE")?.reply()?;
+        extension(xtest::get_version(&conn, 2, 2), "XTEST")?.reply()?;
         let size = usize::from(width) * usize::from(height) * 4;
         let fd = unsafe { libc::memfd_create(c"kumoba-view".as_ptr(), libc::MFD_CLOEXEC) };
         if fd < 0 {
