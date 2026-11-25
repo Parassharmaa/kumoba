@@ -17,6 +17,10 @@ function toBody(content: FileContent): AsyncIterable<Uint8Array> | Iterable<Uint
   return content as AsyncIterable<Uint8Array>;
 }
 
+async function* readLocal(path: string): AsyncGenerator<Uint8Array> {
+  for await (const chunk of createReadStream(path)) yield chunk as Buffer;
+}
+
 /** File operations on one sandbox. Reached as `sandbox.files`. */
 export class Files {
   constructor(
@@ -71,7 +75,7 @@ export class Files {
 
   /** Copy a local file into the sandbox. */
   async upload(localPath: string, remotePath: string, options?: FileOptions): Promise<void> {
-    await this.write(remotePath, createReadStream(localPath), options);
+    await this.write(remotePath, readLocal(localPath), options);
   }
 
   /** Copy a sandbox file to the local filesystem. */

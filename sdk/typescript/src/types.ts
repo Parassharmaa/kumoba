@@ -139,7 +139,7 @@ export type ExposeOptions = CallOptions & {
 export type Exposed = {
   /** Path on the daemon, `/v1/preview/<token>/`. */
   path: string;
-  /** Full URL when the client knows a reachable base URL, otherwise `null`. */
+  /** Full URL for a browser: under `publicUrl` when set, otherwise kumobad's link, or `null` when it has none. */
   url: string | null;
   expiresAt: Date;
 };

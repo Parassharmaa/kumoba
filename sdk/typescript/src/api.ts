@@ -67,7 +67,11 @@ const accessLogSchema = z.object({
   nextCursor: z.string().nullable().optional(),
 });
 
-const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
+const previewSchema = z.object({
+  url: z.string().nullish(),
+  path: z.string(),
+  expiresAtMs: z.number(),
+});
 const desktopSchema = previewSchema.extend({ viewer: z.enum(["stream", "vnc"]) });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
 const deletedSchema = z.object({ deletedNames: z.array(z.string()) });
@@ -149,10 +153,18 @@ export class Api {
 
   async list(
     labels: Record<string, string>,
-    limit: number,
+    limit: number | undefined,
     signal?: AbortSignal
   ): Promise<{ sandboxes: Summary[]; truncated: boolean }> {
-    const query = new URLSearchParams({ limit: String(limit) });
+    const query = new URLSearchParams();
+    if (limit !== undefined) {
+      if (!Number.isSafeInteger(limit) || limit < 0) {
+        throw new KumobaError(`limit must be a whole number of 0 or more, got ${String(limit)}`, {
+          code: "invalid_request",
+        });
+      }
+      query.set("limit", String(limit));
+    }
     for (const [key, value] of Object.entries(labels)) {
       if (key === "" || key.includes(":")) {
         throw new KumobaError(

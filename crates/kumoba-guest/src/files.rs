@@ -2,8 +2,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use kumoba_protocol::{Entry, EntryKind, MAX_DATA};
 use std::{
     io,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +219,158 @@ pub(crate) async fn write_at(
     .map_err(io::Error::other)?
 }
 
+pub(crate) struct Upload {
+    target: PathBuf,
+    owner: Option<Account>,
+    file: std::fs::File,
+    staged: Option<tempfile::TempPath>,
+    truncate: bool,
+}
+
+fn refuse_irregular(target: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(io::Error::from_raw_os_error(libc::ELOOP))
+        }
+        Ok(metadata) if !metadata.is_file() => Err(invalid("only regular files are supported")),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+fn stage_beside(target: &Path, existing: Option<&std::fs::Metadata>) -> io::Result<Option<Upload>> {
+    if existing.is_some_and(|metadata| metadata.nlink() > 1) {
+        return Ok(None);
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| invalid("invalid guest path"))?;
+    let staged = match tempfile::Builder::new()
+        .prefix(".kumoba-upload-")
+        .permissions(std::fs::Permissions::from_mode(0o644))
+        .tempfile_in(parent)
+    {
+        Ok(staged) => staged,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if let Some(metadata) = existing {
+        let current = staged.as_file().metadata()?;
+        if (current.uid(), current.gid()) != (metadata.uid(), metadata.gid()) {
+            match std::os::unix::fs::fchown(
+                staged.as_file(),
+                Some(metadata.uid()),
+                Some(metadata.gid()),
+            ) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
+    }
+    let (file, path) = staged.into_parts();
+    Ok(Some(Upload {
+        target: target.to_path_buf(),
+        owner: None,
+        file,
+        staged: Some(path),
+        truncate: false,
+    }))
+}
+
+impl Upload {
+    pub(crate) async fn begin(path: &str, owner: Option<Account>) -> io::Result<Self> {
+        if !path_valid(path) {
+            return Err(invalid("invalid guest path"));
+        }
+        let target = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || {
+            as_account(owner, || {
+                create_parents(&target)?;
+                let existing = match open_regular(
+                    std::fs::OpenOptions::new().write(true),
+                    libc::O_NOFOLLOW,
+                    &target,
+                ) {
+                    Ok(file) => Some(file),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error),
+                };
+                let metadata = existing.as_ref().map(std::fs::File::metadata).transpose()?;
+                if let Some(upload) = stage_beside(&target, metadata.as_ref())? {
+                    return Ok(Self { owner, ..upload });
+                }
+                let file = match existing {
+                    Some(file) => file,
+                    None => open_regular(
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(false)
+                            .mode(0o644),
+                        libc::O_NOFOLLOW,
+                        &target,
+                    )?,
+                };
+                Ok(Self {
+                    target,
+                    owner,
+                    file,
+                    staged: None,
+                    truncate: true,
+                })
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    pub(crate) async fn write(&mut self, encoded: &str) -> io::Result<()> {
+        let data = STANDARD.decode(encoded).map_err(io::Error::other)?;
+        if data.len() > MAX_DATA {
+            return Err(invalid("file chunk exceeds transfer limit"));
+        }
+        let mut file = self.file.try_clone()?;
+        let truncate = std::mem::take(&mut self.truncate);
+        tokio::task::spawn_blocking(move || {
+            if truncate {
+                file.set_len(0)?;
+            }
+            io::Write::write_all(&mut file, &data)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    pub(crate) async fn commit(self) -> io::Result<()> {
+        tokio::task::spawn_blocking(move || {
+            if self.truncate {
+                self.file.set_len(0)?;
+            }
+            self.file.sync_all()?;
+            let Some(staged) = self.staged else {
+                return Ok(());
+            };
+            let target = self.target;
+            as_account(self.owner, || {
+                refuse_irregular(&target)?;
+                let parent = std::fs::File::open(
+                    target
+                        .parent()
+                        .ok_or_else(|| invalid("invalid guest path"))?,
+                )?;
+                staged.persist(&target).map_err(|error| error.error)?;
+                parent.sync_all()
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+}
+
 pub(crate) fn list(path: &str, owner: Option<Account>) -> io::Result<Vec<Entry>> {
     if !path_valid(path) {
         return Err(invalid("invalid guest path"));
@@ -400,6 +552,256 @@ mod tests {
                 .is_err()
         );
         assert_eq!(std::fs::read(&real).unwrap(), b"keep");
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn upload_replaces_an_existing_file_only_on_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload
+            .write(&STANDARD.encode(vec![1u8; MAX_DATA]))
+            .await
+            .unwrap();
+        upload.write(&STANDARD.encode(b"tail")).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        upload.commit().await.unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written.len(), MAX_DATA + 4);
+        assert!(written.ends_with(b"\x01tail"));
+        assert_eq!(names_in(dir.path()), ["config.toml"]);
+    }
+
+    #[tokio::test]
+    async fn abandoned_upload_keeps_the_original_and_its_staging_file_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload
+            .write(&STANDARD.encode(vec![1u8; MAX_DATA]))
+            .await
+            .unwrap();
+        assert_eq!(names_in(dir.path()).len(), 2);
+        drop(upload);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        assert_eq!(names_in(dir.path()), ["config.toml"]);
+    }
+
+    #[tokio::test]
+    async fn empty_upload_creates_an_empty_file_in_new_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/b/empty");
+        let upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload.commit().await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+    }
+
+    #[tokio::test]
+    async fn upload_keeps_the_mode_of_the_file_it_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [0o755, 0o600] {
+            let path = dir.path().join(format!("file-{mode:o}"));
+            std::fs::write(&path, b"old").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+            upload.write(&STANDARD.encode(b"new")).await.unwrap();
+            upload.commit().await.unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+                mode
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_refuses_symlinks_fifos_and_sockets() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, b"keep").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let socket = dir.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let pipe = fifo(&dir);
+        for target in [link.to_str().unwrap(), socket.to_str().unwrap(), &pipe] {
+            let begun = tokio::time::timeout(Duration::from_secs(5), Upload::begin(target, None))
+                .await
+                .unwrap();
+            assert!(begun.is_err(), "{target}");
+        }
+        assert_eq!(
+            Upload::begin(&pipe, None).await.err().unwrap().to_string(),
+            "only regular files are supported"
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"keep");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(names_in(dir.path()).len(), 4);
+    }
+
+    #[tokio::test]
+    async fn commit_refuses_a_symlink_that_replaced_the_target_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, b"keep").unwrap();
+        let path = dir.path().join("config.toml");
+        let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload.write(&STANDARD.encode(b"new")).await.unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        assert!(upload.commit().await.is_err());
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"keep");
+        assert_eq!(names_in(dir.path()), ["config.toml", "real.txt"]);
+    }
+
+    #[tokio::test]
+    async fn upload_over_a_hard_linked_file_updates_every_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let other = dir.path().join("alias.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        std::fs::hard_link(&path, &other).unwrap();
+        let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload.write(&STANDARD.encode(b"new")).await.unwrap();
+        upload.commit().await.unwrap();
+        assert_eq!(std::fs::read(&other).unwrap(), b"new");
+        assert_eq!(names_in(dir.path()), ["alias.toml", "config.toml"]);
+    }
+
+    #[tokio::test]
+    async fn abandoned_in_place_upload_keeps_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        std::fs::hard_link(&path, dir.path().join("alias.toml")).unwrap();
+        drop(Upload::begin(path.to_str().unwrap(), None).await.unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        let upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload.commit().await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+    }
+
+    #[tokio::test]
+    async fn upload_over_a_file_the_account_cannot_write_is_refused() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("readonly.txt");
+        std::fs::write(&path, b"keep").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let begun = Upload::begin(path.to_str().unwrap(), None).await;
+        assert_eq!(begun.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        assert_eq!(names_in(dir.path()), ["readonly.txt"]);
+    }
+
+    #[tokio::test]
+    async fn upload_into_a_read_only_directory_writes_a_writable_file_in_place() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = async {
+            let mut upload = Upload::begin(path.to_str().unwrap(), None).await?;
+            upload.write(&STANDARD.encode(b"new")).await?;
+            upload.commit().await
+        }
+        .await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(names_in(&locked), ["config.toml"]);
+    }
+
+    #[tokio::test]
+    async fn upload_by_root_keeps_the_owner_of_the_file_it_replaces() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"old").unwrap();
+        std::os::unix::fs::chown(&path, Some(4242), Some(4343)).unwrap();
+        let mut upload = Upload::begin(path.to_str().unwrap(), None).await.unwrap();
+        upload.write(&STANDARD.encode(b"new")).await.unwrap();
+        upload.commit().await.unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!((metadata.uid(), metadata.gid()), (4242, 4343));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[tokio::test]
+    async fn upload_by_an_account_that_cannot_keep_the_owner_writes_in_place() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let path = dir.path().join("shared.txt");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let account = Some(Account {
+            uid: 4242,
+            gid: 4242,
+        });
+        let mut upload = Upload::begin(path.to_str().unwrap(), account)
+            .await
+            .unwrap();
+        upload.write(&STANDARD.encode(b"new")).await.unwrap();
+        upload.commit().await.unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!((metadata.uid(), metadata.mode() & 0o7777), (0, 0o666));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(names_in(dir.path()), ["shared.txt"]);
+    }
+
+    #[tokio::test]
+    async fn upload_by_an_account_creates_files_it_owns() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let path = dir.path().join("new.txt");
+        let account = Some(Account {
+            uid: 4242,
+            gid: 4242,
+        });
+        let mut upload = Upload::begin(path.to_str().unwrap(), account)
+            .await
+            .unwrap();
+        upload.write(&STANDARD.encode(b"new")).await.unwrap();
+        upload.commit().await.unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!((metadata.uid(), metadata.gid()), (4242, 4242));
+        assert_eq!(names_in(dir.path()), ["new.txt"]);
     }
 
     #[test]

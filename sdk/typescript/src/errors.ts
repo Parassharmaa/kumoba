@@ -7,6 +7,7 @@ export type KumobaErrorCode =
   | "guest_error"
   | "protocol"
   | "response_too_large"
+  | "list_truncated"
   | "command_failed"
   | "daemon_error"
   | "unreachable"

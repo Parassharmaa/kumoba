@@ -19,6 +19,8 @@ import type {
 export type OneShotOptions = RunOptions &
   Pick<CreateOptions, "image" | "cpu" | "memoryMib" | "labels" | "network">;
 
+export type ListPage = { sandboxes: Sandbox[]; truncated: boolean };
+
 export type KumobaOptions = {
   /**
    * `unix:///path/to/kumobad.sock` or `http://127.0.0.1:<port>`.
@@ -31,9 +33,8 @@ export type KumobaOptions = {
    */
   token?: string;
   /**
-   * Base URL browsers can reach kumobad through, used to build `expose()` links.
-   * Defaults to `KUMOBA_PUBLIC_URL` when `url` is not passed either, then the `http://` URL when `url` is one,
-   * otherwise links carry only a path.
+   * Base URL browsers reach kumobad's preview listener at, used for `expose()` and `liveView()` links
+   * instead of the link kumobad returns. Defaults to `KUMOBA_PUBLIC_URL` when `url` is not passed either.
    */
   publicUrl?: string;
   /** Guest user that commands and file operations act as. Per-sandbox `user` overrides it. Defaults to `KUMOBA_USER`. */
@@ -80,7 +81,7 @@ export function resolveOptions(options: KumobaOptions): ResolvedOptions {
 export class Kumoba {
   private readonly api: Api;
   private readonly defaultUser: string | undefined;
-  private readonly baseUrl: string | null;
+  private readonly publicUrl: string | null;
 
   /**
    * With no options, connects to the kumobad that `KUMOBA_URL` names or, failing that,
@@ -90,7 +91,7 @@ export class Kumoba {
     const resolved = resolveOptions(options);
     this.api = new Api(resolved.url, resolved.token);
     this.defaultUser = resolved.defaultUser;
-    this.baseUrl = resolved.publicUrl ?? (resolved.url.startsWith("http://") ? resolved.url : null);
+    this.publicUrl = resolved.publicUrl ?? null;
   }
 
   /** Same as `new Kumoba({ env })`: configure from `KUMOBA_*` variables with `~/.kumoba` defaults. */
@@ -99,7 +100,7 @@ export class Kumoba {
   }
 
   private context(user: string | undefined): SandboxContext {
-    return { api: this.api, defaultUser: user ?? this.defaultUser, baseUrl: this.baseUrl };
+    return { api: this.api, defaultUser: user ?? this.defaultUser, publicUrl: this.publicUrl };
   }
 
   /**
@@ -168,12 +169,36 @@ export class Kumoba {
     }
   }
 
-  /** Sandboxes whose labels include every entry of `labels`, newest first. */
+  /**
+   * Sandboxes whose labels include every entry of `labels`, newest first. Without
+   * `limit` it returns every match, or throws a `KumobaError` with code
+   * `list_truncated` if the daemon still cut the list. With `limit` it returns at
+   * most that many and does not say whether more matched; use `listPage` for that.
+   */
   async list(options: ListOptions = {}): Promise<Sandbox[]> {
-    const { sandboxes } = await withDeadline(options, (signal) =>
-      this.api.list(options.labels ?? {}, options.limit ?? 100, signal)
+    if (options.limit !== undefined) return (await this.listPage(options)).sandboxes;
+    const page = await this.listPage({ ...options, limit: Number.MAX_SAFE_INTEGER });
+    if (page.truncated) {
+      throw new KumobaError(
+        `kumobad returned ${String(page.sandboxes.length)} sandboxes and said more matched; use listPage() to read a bounded page`,
+        { code: "list_truncated" }
+      );
+    }
+    return page.sandboxes;
+  }
+
+  /**
+   * At most `limit` matching sandboxes, newest first (the daemon's default of 1000
+   * when `limit` is left out), and whether more matched.
+   */
+  async listPage(options: ListOptions = {}): Promise<ListPage> {
+    const { sandboxes, truncated } = await withDeadline(options, (signal) =>
+      this.api.list(options.labels ?? {}, options.limit, signal)
     );
-    return sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary)));
+    return {
+      sandboxes: sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary))),
+      truncated,
+    };
   }
 
   /**

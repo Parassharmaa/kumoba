@@ -20,7 +20,7 @@ With no options it finds the daemon through `~/.kumoba`. To reach another daemon
 const kumoba = new Kumoba({
   url: "unix:///path/to/kumobad.sock",          // or http://127.0.0.1:7788
   token: "...",
-  publicUrl: "https://sandboxes.example.com",   // base for expose() links
+  publicUrl: "https://sandboxes.example.com",   // where browsers reach the preview listener
 });
 ```
 
@@ -83,12 +83,15 @@ const view = await sandbox.desktop.liveView({ ttlSeconds: 600 });
 console.log(view.url, view.viewer);
 ```
 
+`expose()` and `liveView()` return the link kumobad sends, on its preview listener. When browsers reach that listener at another address, for example through a reverse proxy, pass `publicUrl` and the links start with it instead. Never point `publicUrl` at the API address: it serves previews only as downloads. `url` is `null` when kumobad has no preview listener and `publicUrl` is not set; `path` is always there.
+
 `liveView()` returns a link to the [live view](/guide/desktop) and which viewer it opens: `stream`, kumoba's own, or `vnc`, the noVNC bridge that older images have. On a macOS sandbox `liveView()` is the one `desktop` method that works: kumobad reads the screen on the host, and there is no desktop helper inside macOS for the others.
 
 ## Find sandboxes and read the access log
 
 ```ts
 const sandboxes = await kumoba.list({ labels: { project: "demo" } });
+const { sandboxes: newest, truncated } = await kumoba.listPage({ limit: 20 });
 const one = await kumoba.get(id);
 
 for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_000) })) {
@@ -96,7 +99,9 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 }
 ```
 
-`list()` throws a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it.
+`list()` without `limit` returns every matching sandbox, newest first, so a cleanup loop over it reaches them all. If the daemon still cuts the list it throws a `KumobaError` with code `list_truncated` instead of returning part of it. `list({ limit })` returns at most `limit` sandboxes and does not say whether more matched. `listPage({ labels, limit })` returns `{ sandboxes, truncated }`, at most `limit` sandboxes (the daemon's default of 1000 when `limit` is left out) and whether more matched.
+
+`list()` and `listPage()` throw a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it, or when `limit` is not a whole number of 0 or more.
 
 ## Cancel a call or give it a time limit
 
