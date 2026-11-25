@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed
+
+- Writing a file to a path that is a named pipe (FIFO) fails at once with `guest operation failed: only regular files are supported` (HTTP 422, `guest_error`) instead of hanging. Each such write used to leave a guest connection stuck for good, and after 64 of them commands, file transfers, previews and the desktop on that sandbox stopped responding.
+
 ## [0.6.6] - 2026-11-25
 
 ### Fixed
