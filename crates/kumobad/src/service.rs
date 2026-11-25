@@ -493,15 +493,7 @@ impl Service {
                 matched.push(self.summary(&entry).await?);
             }
         }
-        matched.sort_by(|left, right| {
-            left.meta
-                .created_at_ms
-                .cmp(&right.meta.created_at_ms)
-                .then_with(|| left.meta.id.cmp(&right.meta.id))
-        });
-        let truncated = matched.len() > limit;
-        matched.truncate(limit);
-        Ok((matched, truncated))
+        Ok(newest_first(matched, limit))
     }
 
     pub async fn update(&self, id: &str, request: UpdateRequest) -> ApiResult<Summary> {
@@ -833,6 +825,19 @@ pub(crate) fn log(event: &str, id: &str, error: Option<ApiError>) {
     eprintln!("{line}");
 }
 
+fn newest_first(mut matched: Vec<Summary>, limit: usize) -> (Vec<Summary>, bool) {
+    matched.sort_by(|left, right| {
+        right
+            .meta
+            .created_at_ms
+            .cmp(&left.meta.created_at_ms)
+            .then_with(|| left.meta.id.cmp(&right.meta.id))
+    });
+    let truncated = matched.len() > limit;
+    matched.truncate(limit);
+    (matched, truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,5 +1047,59 @@ mod tests {
         let mut deleted = started();
         tick(State::Deleted, &m, &mut deleted, 3 * MINUTE);
         assert_eq!(deleted.stopped_at_ms, 0);
+    }
+
+    fn listed(id: &str, created_at_ms: u64) -> Summary {
+        Summary {
+            meta: Meta {
+                id: id.into(),
+                created_at_ms,
+                ..meta(15, None)
+            },
+            state: "running",
+            last_activity_at_ms: 0,
+        }
+    }
+
+    fn ids(page: &(Vec<Summary>, bool)) -> (Vec<&str>, bool) {
+        (
+            page.0
+                .iter()
+                .map(|summary| summary.meta.id.as_str())
+                .collect(),
+            page.1,
+        )
+    }
+
+    #[test]
+    fn listing_keeps_the_newest_sandboxes_when_it_truncates() {
+        let all = vec![
+            listed("b", 2),
+            listed("d", 4),
+            listed("a", 1),
+            listed("c", 3),
+        ];
+        assert_eq!(ids(&newest_first(all.clone(), 2)), (vec!["d", "c"], true));
+        assert_eq!(
+            ids(&newest_first(all.clone(), 4)),
+            (vec!["d", "c", "b", "a"], false)
+        );
+        assert_eq!(ids(&newest_first(all, 0)), (vec![], true));
+        assert_eq!(ids(&newest_first(vec![], 2)), (vec![], false));
+    }
+
+    #[test]
+    fn sandboxes_created_in_the_same_millisecond_list_by_id() {
+        let all = vec![
+            listed("y", 5),
+            listed("old", 1),
+            listed("x", 5),
+            listed("z", 5),
+        ];
+        assert_eq!(
+            ids(&newest_first(all.clone(), 4)),
+            (vec!["x", "y", "z", "old"], false)
+        );
+        assert_eq!(ids(&newest_first(all, 2)), (vec!["x", "y"], true));
     }
 }
