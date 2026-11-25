@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createWriteStream, readFileSync, realpathSync } from "node:fs";
+import { lstat, unlink } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
   bytesField,
@@ -16,7 +18,7 @@ import {
   UsageError,
 } from "./cli-args.js";
 import { KumobaError } from "./errors.js";
-import { Http, readBody } from "./http.js";
+import { checkedDownload, Http, readBody } from "./http.js";
 import { resolveOptions } from "./kumoba.js";
 import { encodeFrame, FrameParser, SHELL_PROTOCOL } from "./terminal.js";
 
@@ -298,6 +300,26 @@ async function runTerminal(
   });
 }
 
+async function saveBytes(
+  io: Io,
+  response: IncomingMessage,
+  output: string | undefined
+): Promise<number> {
+  const download = checkedDownload(response);
+  if (output === undefined) {
+    for await (const chunk of download) io.stdout(chunk as Uint8Array);
+    return 0;
+  }
+  try {
+    await pipeline(download, createWriteStream(output));
+  } catch (error) {
+    const partial = await lstat(output).catch(() => undefined);
+    if (partial?.isFile()) await unlink(output).catch(() => undefined);
+    throw error;
+  }
+  return 0;
+}
+
 async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): Promise<number> {
   const parsed: Parsed = parseArgs(spec, tokens, io.stdin);
   if (parsed.help) {
@@ -334,12 +356,8 @@ async function invoke(io: Io, http: Http, spec: CommandSpec, tokens: string[]): 
     ...(spec.input === "bytes" ? { body: [parsed.bytes ?? Buffer.alloc(0)] } : {}),
   });
   if (spec.output === "events") return streamEvents(io, response);
+  if (spec.output === "bytes") return saveBytes(io, response, parsed.output);
   const bytes = await readBody(response, Number.MAX_SAFE_INTEGER);
-  if (spec.output === "bytes") {
-    if (parsed.output) writeFileSync(parsed.output, bytes);
-    else io.stdout(bytes);
-    return 0;
-  }
   const value: unknown = bytes.length > 0 ? JSON.parse(bytes.toString("utf8")) : null;
   if (parsed.quiet) {
     for (const id of ids(value)) io.stdout(`${id}\n`);

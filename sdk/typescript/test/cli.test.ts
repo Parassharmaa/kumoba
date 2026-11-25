@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Io, main } from "../src/cli.js";
@@ -181,6 +183,31 @@ describe("kumoba CLI", () => {
     out = [];
     expect(await main(["read-file", sandbox.id, "path=/tmp/a.txt"], io())).toBe(0);
     expect(text()).toBe("from stdin");
+  });
+
+  it("fails read-file when the download ends before the declared size", async () => {
+    const sandbox = await new Kumoba({ url: fake.url, token: fake.token }).create({
+      image: "test",
+    });
+    fake.sandboxes.get(sandbox.id)?.files.set("/tmp/a.bin", Buffer.alloc(10, 1));
+    fake.downloadCut = { bytes: 3, finish: "end" };
+    expect(await main(["read-file", sandbox.id, "path=/tmp/a.bin"], io())).toBe(1);
+    expect(err.join("")).toMatch(/3 of 10 bytes/);
+    const directory = mkdtempSync(join(tmpdir(), "kumoba-cli-"));
+    const file = join(directory, "a.bin");
+    try {
+      fake.downloadCut = { bytes: 3, finish: "abort" };
+      expect(await main(["read-file", sandbox.id, "path=/tmp/a.bin", "-o", file], io())).toBe(1);
+      expect(existsSync(file)).toBe(false);
+      fake.downloadCut = undefined;
+      expect(await main(["read-file", sandbox.id, "path=/tmp/a.bin", "-o", file], io())).toBe(0);
+      expect(readFileSync(file)).toEqual(Buffer.alloc(10, 1));
+      fake.downloadCut = { bytes: 3, finish: "hang" };
+      const missing = join(directory, "no-such-dir", "a.bin");
+      expect(await main(["read-file", sandbox.id, "path=/tmp/a.bin", "-o", missing], io())).toBe(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("opens a returned url with --open", async () => {

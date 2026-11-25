@@ -118,7 +118,7 @@ Closing the connection ends the shell. A request without the upgrade gets `426 u
 ## Files
 
 - `PUT /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` with the raw bytes as the body → `{"written": <bytes>}`. Parent directories must exist. The file is created `0644` as `user`.
-- `GET /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` → the raw bytes, `application/octet-stream`.
+- `GET /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` → the raw bytes, `application/octet-stream`. `Content-Length` and `x-file-size` carry the file's size. If reading the file fails partway, for example because the sandbox stops, kumobad closes the connection before that many bytes, so the client sees a failed transfer instead of a short file. Daemons before this release ended the body cleanly instead; compare the bytes received with `x-file-size` to catch that.
 - `GET /v1/sandboxes/{id}/files/list?path=/abs/dir[&user=name]` → `{"entries": [{"name": "a.txt", "kind": "file", "size": 5}, ...]}`. `kind` is `file`, `directory` or `other`.
 
 Reads and lists run with the user's permissions when `user` is given.
