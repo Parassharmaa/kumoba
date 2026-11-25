@@ -23,6 +23,7 @@ copied)
     /bin/sleep 0.05
   done
   exit 4 ;;
+read) desk /usr/bin/pbpaste ;;
 set) desk /usr/bin/pbcopy ;;
 swap) desk /usr/bin/pbpaste && desk /usr/bin/pbcopy ;;
 restore) if [ "$(desk /usr/bin/pbpaste)" = "$KUMOBA_VALUE" ]; then desk /usr/bin/pbcopy; fi ;;
@@ -36,6 +37,7 @@ const NOTHING_NEW: i32 = 4;
 pub enum Action {
     Count,
     Copied,
+    Read,
     Set,
     Swap,
     Restore,
@@ -46,6 +48,7 @@ impl Action {
         match self {
             Self::Count => "count",
             Self::Copied => "copied",
+            Self::Read => "read",
             Self::Set => "set",
             Self::Swap => "swap",
             Self::Restore => "restore",
@@ -266,6 +269,21 @@ mod tests {
             request.env.get("KUMOBA_VALUE").map(String::as_str),
             Some("7")
         );
+    }
+
+    #[test]
+    fn a_read_returns_whatever_is_on_the_clipboard_now() {
+        let (host, fake) = agent(vec![
+            output(OutputKind::Stdout, "copied from a menu"),
+            finished(0, false),
+        ]);
+        let answer = run(host, Action::Read, b"", "").unwrap();
+        let (request, _) = fake.join().unwrap();
+        assert_eq!(
+            answer.map(|answer| answer.text),
+            Some(b"copied from a menu".to_vec())
+        );
+        assert_eq!(request.args.last().map(String::as_str), Some("read"));
     }
 
     #[test]

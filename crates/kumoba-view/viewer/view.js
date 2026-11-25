@@ -42,7 +42,8 @@ var CLIENT = {
   text: 8,
   clipboard: 9,
   copy: 10,
-  chord: 11
+  chord: 11,
+  pull: 12
 };
 var FRAME_HEADER_BYTES = 13;
 var CURSOR_HEADER_BYTES = 9;
@@ -170,6 +171,8 @@ function encodeMessage(input) {
       view.setUint8(2, input.shift ? 1 : 0);
       return buffer;
     }
+    case "pull":
+      return message(CLIENT.pull, 0).buffer;
   }
 }
 function characterKeysym(character) {
@@ -756,6 +759,7 @@ function connectViewer(canvas, url, options = {}) {
       if (text) send({ type: "clipboard", text });
       send({ type: "chord", letter: "v", shift });
     },
+    copyFromDesktop: () => send({ type: "pull" }),
     releaseHeldInput: () => {
       releaseKeys();
       releaseButtons();

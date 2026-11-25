@@ -40,6 +40,7 @@ export type Viewer = {
   key(event: KeyboardEvent): void;
   typeText(text: string): void;
   paste(text: string, shift?: boolean): void;
+  copyFromDesktop(): void;
   releaseHeldInput(): void;
   close(): void;
 };
@@ -530,6 +531,7 @@ export function connectViewer(
       if (text) send({ type: "clipboard", text });
       send({ type: "chord", letter: "v", shift });
     },
+    copyFromDesktop: () => send({ type: "pull" }),
     releaseHeldInput: () => {
       releaseKeys();
       releaseButtons();

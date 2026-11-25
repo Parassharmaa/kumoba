@@ -293,6 +293,7 @@ describe("viewer input", () => {
     client.key(key("keydown", { key: "a", code: "KeyA" }));
     client.typeText("hi");
     client.paste("hi");
+    client.copyFromDesktop();
     expect(socket.input()).toEqual([]);
   });
 
@@ -580,6 +581,14 @@ describe("viewer page hooks", () => {
     const { socket, client } = await liveControl();
     client.paste("", true);
     expect(socket.input()).toEqual([[11, 0x76, 1]]);
+  });
+
+  it("asks the desktop for its clipboard and hands the answer to onClipboard", async () => {
+    const { socket, client, handlers } = await liveControl();
+    client.copyFromDesktop();
+    expect(socket.input()).toEqual([[12]]);
+    socket.receive(clipboard("copied from a menu"));
+    expect(handlers.onClipboard).toHaveBeenCalledWith("copied from a menu");
   });
 
   it("closes quietly when the page closes it", async () => {

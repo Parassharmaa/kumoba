@@ -13,6 +13,8 @@
   #pointer { position: fixed; left: 0; top: 0; pointer-events: none; transform-origin: 0 0; }
   #status { position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 system-ui, sans-serif; color: #c9d1d9; background: rgba(16, 18, 20, 0.8); padding: 4px 8px; border-radius: 4px; }
   #status:empty { display: none; }
+  #pull { position: fixed; right: 12px; top: 10px; font: 12px/1.4 system-ui, sans-serif; color: #c9d1d9; background: rgba(16, 18, 20, 0.8); padding: 4px 8px; border: 0; border-radius: 4px; cursor: pointer; opacity: 0.6; }
+  #pull:hover, #pull:focus-visible { opacity: 1; }
 </style>
 </head>
 <body>
@@ -20,6 +22,7 @@
 <textarea id="keys" aria-label="Keyboard input for the desktop" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" rows="1"></textarea>
 <canvas id="pointer" width="1" height="1" hidden></canvas>
 <div id="status" role="status">Connecting</div>
+<button id="pull" type="button" title="Copy the desktop clipboard to this computer">Copy from desktop</button>
 <script type="module" src="viewer.js"></script>
 </body>
 </html>

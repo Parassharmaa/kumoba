@@ -5,12 +5,14 @@ const status = document.getElementById("status");
 const keys = document.getElementById("keys");
 const pointer = document.getElementById("pointer");
 const pointerContext = pointer.getContext("2d");
+const pull = document.getElementById("pull");
 
 const LOCAL_POINTER_MS = 600;
 const MAX_ATTEMPTS = 6;
 const PASTE_WAIT_MS = 120;
 const PASTE_GAP_MS = 300;
 const COPY_WINDOW_MS = 2000;
+const PULL_LABEL_MS = 1200;
 const APPLE = /Mac|iPhone|iPad/.test(navigator.platform);
 
 const local = { x: 0, y: 0 };
@@ -22,6 +24,8 @@ let pasteTimer = 0;
 let pasteShift = false;
 let pastedAt = 0;
 let copyUntil = 0;
+let pulled = null;
+let pullTimer = 0;
 
 window.kumobaView = {
   get stats() {
@@ -116,6 +120,43 @@ keys.addEventListener("input", (event) => {
 keys.addEventListener("blur", () => viewer?.releaseHeldInput());
 addEventListener("resize", placePointer);
 
+function showPulled(label) {
+  pull.textContent = label;
+  clearTimeout(pullTimer);
+  pullTimer = setTimeout(() => {
+    pull.textContent = "Copy from desktop";
+  }, PULL_LABEL_MS);
+}
+
+function copyFromDesktop() {
+  pulled?.reject(new Error("Asked again"));
+  const answer = new Promise((resolve, reject) => {
+    const asked = { resolve, reject };
+    pulled = asked;
+    setTimeout(() => {
+      if (pulled !== asked) return;
+      pulled = null;
+      reject(new Error("The desktop did not answer"));
+    }, COPY_WINDOW_MS);
+  });
+  viewer?.copyFromDesktop();
+  const written =
+    typeof ClipboardItem === "function" && navigator.clipboard?.write
+      ? navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": answer.then((text) => new Blob([text], { type: "text/plain" })),
+          }),
+        ])
+      : answer.then((text) => navigator.clipboard.writeText(text));
+  written.then(
+    () => showPulled("Copied"),
+    () => showPulled("Nothing copied"),
+  );
+}
+
+pull.addEventListener("mousedown", (event) => event.preventDefault());
+pull.addEventListener("click", copyFromDesktop);
+
 function connect() {
   const url = new URL("stream", location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -141,6 +182,13 @@ function connect() {
       setTimeout(connect, 250 * 2 ** retry);
     },
     onClipboard: (text) => {
+      if (pulled) {
+        const asked = pulled;
+        pulled = null;
+        if (text) asked.resolve(text);
+        else asked.reject(new Error("The desktop clipboard is empty"));
+        return;
+      }
       if (performance.now() >= copyUntil) return;
       copyUntil = 0;
       navigator.clipboard?.writeText(text).catch(() => {});

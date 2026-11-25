@@ -79,6 +79,20 @@ impl Clipboard {
         self.wanted_until = Some(Instant::now() + COPY_WINDOW);
     }
 
+    pub fn pull(&mut self, conn: &RustConnection) -> Result<(), Failure> {
+        self.expect_copy();
+        xproto::convert_selection(
+            conn,
+            self.window,
+            self.selection,
+            self.utf8,
+            self.property,
+            x11rb::CURRENT_TIME,
+        )?;
+        conn.flush()?;
+        Ok(())
+    }
+
     fn wanted(&self) -> bool {
         self.wanted_until
             .is_some_and(|until| Instant::now() < until)
