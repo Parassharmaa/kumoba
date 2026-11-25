@@ -2,7 +2,7 @@ use crate::mackeys::{self, COMMAND, SHIFT, SHIFT_RIGHT};
 use crate::screen::{Cursor, Failure, Screen};
 use kumoba_protocol::screen::{
     CLIPBOARD, CLIPBOARD_SET, COPY, CURSOR, DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_SIDE,
-    MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, frame, pair, text,
+    MAX_TEXT, MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, frame, pair, text,
 };
 use kumoba_view_codec::Rect;
 use std::collections::HashMap;
@@ -500,6 +500,9 @@ impl Screen for Remote {
         let gathering = !self.pending.is_empty() && character.is_some();
         let (Some((key, shifted)), false) = (layout, gathering) else {
             if let Some(character) = character {
+                if self.pending.len() + character.len_utf8() > MAX_TEXT {
+                    self.flush()?;
+                }
                 self.pending.push(character);
                 self.pending_at = Instant::now();
             }
@@ -913,6 +916,36 @@ mod tests {
         assert_eq!(sandbox.keys(2), [(36, true), (36, false)]);
         assert_eq!(sandbox.heard(), (PASTE, "あ".as_bytes().to_vec()));
         assert_eq!(sandbox.keys(2), [(36, true), (36, false)]);
+    }
+
+    #[test]
+    fn text_longer_than_one_paste_is_pasted_in_pieces_that_each_fit() {
+        let (remote, mut sandbox) = connected("pieces", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        let long: String = (0..300_000u32)
+            .map(|index| char::from_u32(0x4e00 + index % 500).unwrap())
+            .collect();
+        let typed = long.clone();
+        let typing = std::thread::spawn(move || {
+            for character in typed.chars() {
+                let symbol = 0x0100_0000 + u32::from(character);
+                remote.symbol(symbol, true).unwrap();
+                remote.symbol(symbol, false).unwrap();
+            }
+            std::thread::sleep(GATHER);
+            remote.drain().unwrap();
+            remote
+        });
+        let mut pasted = Vec::new();
+        while pasted.len() < long.len() {
+            let (kind, piece) = sandbox.heard();
+            assert_eq!(kind, PASTE);
+            assert!(piece.len() <= MAX_TEXT, "a paste of {} bytes", piece.len());
+            assert!(std::str::from_utf8(&piece).is_ok());
+            pasted.extend(piece);
+        }
+        assert_eq!(pasted, long.as_bytes());
+        drop(typing.join().unwrap());
     }
 
     #[test]
