@@ -28,6 +28,7 @@ const MAX_ADDRESSES: usize = 64;
 const MAX_CONNECTIONS: usize = 16;
 const MAX_WEB_CONNECTIONS: usize = 32;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_STAGGER: Duration = Duration::from_millis(250);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TUNNEL_TIMEOUT: Duration = Duration::from_secs(3600);
 const DNS_LOOKUPS: usize = 8;
@@ -853,15 +854,36 @@ pub(crate) async fn connect(endpoint: &EgressEndpoint, egress: &Egress) -> io::R
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no destination addresses"))?;
         return connect_via_proxy(proxy, endpoint, checked).await;
     }
+    dial(addresses, TcpStream::connect::<SocketAddrV4>).await
+}
+
+async fn dial<T, F, Fut>(addresses: Vec<SocketAddrV4>, connect: F) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: Fn(SocketAddrV4) -> Fut,
+    Fut: Future<Output = io::Result<T>> + Send + 'static,
+{
     timeout(SETUP_TIMEOUT, async {
+        let mut remaining = addresses.into_iter();
+        let mut attempts = JoinSet::new();
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no destination addresses");
-        for address in addresses {
-            match TcpStream::connect(address).await {
-                Ok(stream) => return Ok(stream),
-                Err(error) => last = error,
+        loop {
+            if let Some(address) = remaining.next() {
+                attempts.spawn(connect(address));
+            }
+            if attempts.is_empty() {
+                return Err(last);
+            }
+            tokio::select! {
+                Some(joined) = attempts.join_next() => {
+                    match joined.map_err(io::Error::other).and_then(|result| result) {
+                        Ok(stream) => return Ok(stream),
+                        Err(error) => last = error,
+                    }
+                }
+                () = tokio::time::sleep(CONNECT_STAGGER), if !remaining.as_slice().is_empty() => {}
             }
         }
-        Err(last)
     })
     .await?
 }
@@ -1259,6 +1281,151 @@ mod tests {
             .unwrap();
         let (server, _) = listener.accept().await.unwrap();
         (client, proxy, remote, server)
+    }
+
+    fn dial_target(index: u8) -> SocketAddrV4 {
+        SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, index), 443)
+    }
+
+    type DialAttempt = Pin<Box<dyn Future<Output = io::Result<(u8, Duration)>> + Send>>;
+
+    fn dial_script(
+        script: &'static [(u8, Option<u64>, bool)],
+    ) -> impl Fn(SocketAddrV4) -> DialAttempt {
+        let started = Instant::now();
+        move |address| {
+            let index = address.ip().octets()[3];
+            let (_, delay, connects) = *script
+                .iter()
+                .find(|(candidate, _, _)| *candidate == index)
+                .unwrap();
+            Box::pin(async move {
+                let Some(delay) = delay else {
+                    return std::future::pending().await;
+                };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                if connects {
+                    Ok((index, started.elapsed()))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        format!("refused {index}"),
+                    ))
+                }
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_falls_back_when_the_first_address_never_answers() {
+        let script = &[(1, None, false), (2, Some(10), true)];
+        let (index, elapsed) = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap();
+        assert_eq!(index, 2);
+        assert_eq!(elapsed, CONNECT_STAGGER + Duration::from_millis(10));
+
+        let script = &[(1, None, false), (2, None, false), (3, Some(0), true)];
+        let (index, elapsed) = dial(
+            vec![dial_target(1), dial_target(2), dial_target(3)],
+            dial_script(script),
+        )
+        .await
+        .unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(elapsed, CONNECT_STAGGER * 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_takes_the_first_address_to_connect_and_staggers_the_rest() {
+        let script = &[(1, Some(200), true), (2, Some(0), true)];
+        let (index, elapsed) = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(elapsed, Duration::from_millis(200));
+
+        let script = &[(1, Some(400), true), (2, Some(300), true)];
+        let (index, elapsed) = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(elapsed, Duration::from_millis(400));
+
+        let script = &[(1, Some(400), true), (2, Some(100), true)];
+        let (index, elapsed) = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap();
+        assert_eq!(index, 2);
+        assert_eq!(elapsed, CONNECT_STAGGER + Duration::from_millis(100));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_moves_on_at_once_when_an_address_refuses() {
+        let script = &[
+            (1, Some(20), false),
+            (2, Some(30), false),
+            (3, Some(5), true),
+        ];
+        let (index, elapsed) = dial(
+            vec![dial_target(1), dial_target(2), dial_target(3)],
+            dial_script(script),
+        )
+        .await
+        .unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(elapsed, Duration::from_millis(55));
+
+        let script = &[(1, Some(400), false), (2, None, false), (3, Some(0), true)];
+        let (index, elapsed) = dial(
+            vec![dial_target(1), dial_target(2), dial_target(3)],
+            dial_script(script),
+        )
+        .await
+        .unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(elapsed, Duration::from_millis(400));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dial_reports_the_last_failure_or_the_setup_timeout() {
+        let script = &[(1, Some(0), false), (2, Some(0), false)];
+        let error = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(error.to_string(), "refused 2");
+
+        let script = &[(1, None, false), (2, Some(100), false)];
+        let started = Instant::now();
+        let error = dial(vec![dial_target(1), dial_target(2)], dial_script(script))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), SETUP_TIMEOUT);
+
+        let error = dial(Vec::new(), dial_script(script)).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn dial_connects_real_sockets_past_a_refusing_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = match listener.local_addr().unwrap() {
+            std::net::SocketAddr::V4(address) => address,
+            std::net::SocketAddr::V6(_) => unreachable!(),
+        };
+        let closed = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            match probe.local_addr().unwrap() {
+                std::net::SocketAddr::V4(address) => address,
+                std::net::SocketAddr::V6(_) => unreachable!(),
+            }
+        };
+        let stream = dial(vec![closed, live], TcpStream::connect::<SocketAddrV4>)
+            .await
+            .unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), std::net::SocketAddr::V4(live));
     }
 
     #[tokio::test]
