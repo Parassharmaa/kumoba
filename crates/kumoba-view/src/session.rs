@@ -908,10 +908,7 @@ mod tests {
         session.browser.write_all(&pointer_to(30, 40)).unwrap();
         answering(&session);
         std::thread::sleep(Duration::from_secs(1));
-        assert!(
-            session.ended.try_recv().is_err(),
-            "the view ended while text was being typed"
-        );
+        assert_eq!(session.ended.try_recv(), Err(mpsc::TryRecvError::Empty));
         let seen = session.seen.lock().unwrap().clone();
         assert!(seen.len() >= 16, "only {} strokes typed", seen.len());
         assert_eq!(seen, typed(&long)[..seen.len()]);
