@@ -247,9 +247,11 @@
           "label": {
             "description": "Only sandboxes with this label, written key:value (not key=value); repeat to require several",
             "items": {
+              "examples": ["task:fix-tests"],
               "pattern": "^[^:]+:",
               "type": "string"
             },
+            "minItems": 1,
             "type": "array"
           },
           "limit": {

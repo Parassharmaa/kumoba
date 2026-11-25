@@ -141,19 +141,12 @@ fn coerce(schema: &Value, raw: &str, name: &str, current: Option<&Value>) -> Res
                 Some(Value::Array(existing)) => existing.clone(),
                 _ => Vec::new(),
             };
-            let mut given = 0;
             for part in raw
                 .split([',', '\n'])
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
             {
                 values.push(scalar(&items, part, name)?);
-                given += 1;
-            }
-            if given == 0
-                && let Some(pattern) = items.get("pattern").and_then(Value::as_str)
-            {
-                return Err(format!("{name} needs a value matching {pattern}"));
             }
             Ok(Value::Array(values))
         }
@@ -173,6 +166,33 @@ fn coerce(schema: &Value, raw: &str, name: &str, current: Option<&Value>) -> Res
         }
         _ => scalar(schema, &raw, name),
     }
+}
+
+fn short_list(schema: &Value, values: &Map<String, Value>, prefix: &str) -> Option<String> {
+    for (name, property) in schema.get("properties")?.as_object()? {
+        let dotted = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match values.get(name) {
+            Some(Value::Array(items)) => {
+                if let Some(min) = property.get("minItems").and_then(Value::as_u64)
+                    && u64::try_from(items.len()).unwrap_or(u64::MAX) < min
+                {
+                    let noun = if min == 1 { "value" } else { "values" };
+                    return Some(format!("{} needs at least {min} {noun}", kebab(&dotted)));
+                }
+            }
+            Some(Value::Object(nested)) => {
+                if let Some(error) = short_list(property, nested, &dotted) {
+                    return Some(error);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn insert(values: &mut Map<String, Value>, path: &[String], value: Value) {
@@ -338,6 +358,11 @@ impl<'a> Command<'a> {
                 Value::Array(rest.iter().cloned().map(Value::String).collect()),
             );
         }
+        if !parsed.help
+            && let Some(error) = short_list(self.schema, &parsed.values, "")
+        {
+            return Err(error);
+        }
         Ok(parsed)
     }
 
@@ -382,7 +407,7 @@ mod tests {
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     "timeoutMs": {"type": "integer"},
                     "tty": {"type": "boolean"},
-                    "label": {"type": "array", "items": {"type": "string", "pattern": "^[^:]+:"}},
+                    "label": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[^:]+:"}},
                     "content": {"type": "string"},
                     "autoDeleteMinutes": {"type": ["integer", "null"]},
                     "network": {"type": "object", "properties": {
@@ -445,16 +470,23 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_value_clears_a_list_unless_its_items_have_a_pattern() {
+    fn a_list_with_min_items_cannot_be_left_empty() {
         let parsed = parse(&["network.hosts="]).unwrap();
         assert_eq!(
             Value::Object(parsed.values),
             json!({"network": {"hosts": []}})
         );
-        for empty in ["", " ", ","] {
-            let error = parse(&["--label", empty]).err().unwrap();
-            assert_eq!(error, "label needs a value matching ^[^:]+:");
+        for tokens in [
+            &["--label", ""][..],
+            &["--label", " , "],
+            &["--label", "[]"],
+            &["--args", r#"{"label":[]}"#],
+        ] {
+            let error = parse(tokens).err().unwrap_or_default();
+            assert!(error.contains("label"), "{tokens:?}: {error}");
         }
+        assert!(parse(&["--label", "x:1"]).is_ok());
+        assert!(parse(&["--args", r#"{"label":["x:1"]}"#]).is_ok());
     }
 
     #[test]

@@ -6,7 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
-- `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
+- `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, `--label '[]'` or `--args '{"label":[]}'`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
 
 ## [0.6.6] - 2026-11-25
 

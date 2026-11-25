@@ -96,6 +96,8 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 }
 ```
 
+`list()` throws a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it.
+
 ## Errors
 
 Failures throw `KumobaError` with an HTTP `status` and a `code`, such as `not_found` or `unreachable`.

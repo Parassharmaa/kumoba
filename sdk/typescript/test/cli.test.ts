@@ -110,19 +110,25 @@ describe("argument parsing", () => {
     expect(() => parseArgs(spec("create"), ["--nope", "1"])).toThrow(/unknown option/);
   });
 
-  it("checks strings against the schema's pattern", () => {
+  it("checks strings against the schema's pattern and lists against minItems", () => {
     const parsed = parseArgs(spec("list"), ["--label", "task:fix-tests", "label=url:http://x:1"]);
     expect(parsed.values).toEqual({ label: ["task:fix-tests", "url:http://x:1"] });
     for (const malformed of ["task=fix-tests", ":v", "task"]) {
       expect(() => parseArgs(spec("list"), ["--label", malformed])).toThrow(
-        `label must match ^[^:]+:, got ${malformed}`
+        new RegExp(`^label .*task:fix-tests.*${malformed}$`)
       );
     }
-    for (const empty of ["", " ", ","]) {
-      expect(() => parseArgs(spec("list"), ["--label", empty])).toThrow(
-        "label needs a value matching ^[^:]+:"
-      );
+    for (const tokens of [
+      ["--label", ""],
+      ["--label", " , "],
+      ["--label", "[]"],
+      ["--args", '{"label":[]}'],
+    ]) {
+      expect(() => parseArgs(spec("list"), tokens)).toThrow(/^label /);
     }
+    expect(parseArgs(spec("list"), ["--args", '{"label":["task:x"]}']).values).toEqual({
+      label: ["task:x"],
+    });
     expect(parseArgs(spec("create"), ["network.hosts="]).values).toEqual({
       network: { hosts: [] },
     });
@@ -211,7 +217,15 @@ describe("kumoba CLI", () => {
     out = [];
     expect(await main(["list", "--label", "task=fix-tests", "-q"], io())).toBe(2);
     expect(text()).toBe("");
-    expect(err.join("")).toContain("label must match ^[^:]+:, got task=fix-tests");
+    expect(err.join("")).toContain("task=fix-tests");
+    for (const tokens of [
+      ["--label", ""],
+      ["--label", "[]"],
+      ["--args", '{"label":[]}'],
+    ]) {
+      expect(await main(["list", ...tokens, "-q"], io())).toBe(2);
+    }
+    expect(text()).toBe("");
     expect(fake.listFilters).toEqual([["task:fix-tests"]]);
   });
 

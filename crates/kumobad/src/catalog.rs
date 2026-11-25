@@ -391,7 +391,8 @@ fn kind_schema(kind: Kind, description: &str) -> Value {
         Kind::Integer => json!({"type": "integer", "description": description}),
         Kind::LabelFilters => json!({
             "type": "array",
-            "items": {"type": "string", "pattern": "^[^:]+:"},
+            "minItems": 1,
+            "items": {"type": "string", "pattern": "^[^:]+:", "examples": ["task:fix-tests"]},
             "description": description,
         }),
     }
