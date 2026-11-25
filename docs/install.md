@@ -5,7 +5,7 @@ The [getting started guide](/getting-started) uses the installer. These are all 
 | What | How |
 | --- | --- |
 | Daemon, CLI and an image | `curl -fsSL https://raw.githubusercontent.com/Parassharmaa/kumoba/main/scripts/install.sh \| bash` |
-| A specific version | Add `KUMOBA_VERSION=0.2.2` before `bash` |
+| A specific version | Add `KUMOBA_VERSION=@version@` before `bash` |
 | A small test image instead | Add `KUMOBA_IMAGE=test` (5 MB Alpine) |
 | The files by hand | A tarball and an image from the [latest release](https://github.com/Parassharmaa/kumoba/releases/latest), checked against `SHA256SUMS` |
 | Daemon and CLI from source | `cargo install kumobad` |

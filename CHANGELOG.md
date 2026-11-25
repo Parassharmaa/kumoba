@@ -11,6 +11,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Changed
 
+- Docs: the HTTP API page lists every error code the daemon returns, the CLI page lists `shell` and `commands`, the Japanese troubleshooting page has the sections it lacked, and install examples show the current release instead of 0.2.2.
 - Access log: a connection that was allowed but could not be set up, because its DNS lookup failed or got no answer in time, or the connection or upstream proxy failed, is now logged with `decision` `failed` instead of `allowed`, and gets its own 10000 per hour cap. Update the TypeScript SDK with the daemon: SDKs older than this release refuse an access log page that contains `failed`. From this release the SDK passes through decisions it does not know as plain strings (`AccessDecision`), so a later new value does not break it. In the Rust crate, `AccessRecord.allowed` is replaced by `decision: AccessDecision` (`Allowed`, `Denied`, `Failed`).
 - Releases are built with pinned tools: every GitHub Action is pinned to a commit, the publish job installs npm 11.21.3 instead of the newest npm, and the `default` image is built from a Debian base pinned by digest. A new upstream release of these no longer changes what a release tag builds or publishes.
 

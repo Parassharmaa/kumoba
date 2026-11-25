@@ -81,4 +81,5 @@ The site at [parassharmaa.github.io/kumoba](https://parassharmaa.github.io/kumob
 - Write to the reader as "you", in the active voice, present tense. Put conditions before instructions ("To keep a server running, start it with `setsid`").
 - Number the steps of a procedure, one action per step, and state what the reader needs before the first step.
 - Every command must run as written on a fresh install. Run it before you commit it.
+- Where a page shows the current release, as in a `KUMOBA_VERSION` example, write `version` between two `@` signs instead of a number. The site build puts in the version from `Cargo.toml`, so examples never name an old release.
 - Japanese pages live in `docs/ja/` and follow the JTF style: です/ます form, half-width letters and digits with no spaces around them, and commands, flags and code left in English. When an English page changes, update its Japanese page or mark the difference.

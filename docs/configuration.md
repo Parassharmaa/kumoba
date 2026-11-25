@@ -40,6 +40,6 @@ Set these in kumobad's environment. `kumobad --help` prints the same list.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `KUMOBA_VERSION` | the latest release | Release to install, such as `0.2.2` |
+| `KUMOBA_VERSION` | the latest release | Release to install, such as `@version@` |
 | `KUMOBA_HOME` | `~/.kumoba` | Install directory |
 | `KUMOBA_IMAGE` | `default` | `default`, `test` or `none` |

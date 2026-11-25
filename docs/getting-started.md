@@ -1,7 +1,7 @@
 # Getting started
 
 ::: warning Alpha
-The API, CLI, SDK and image format may change between 0.x releases. Pin a version (`KUMOBA_VERSION=0.2.2`) for anything you depend on.
+The API, CLI, SDK and image format may change between 0.x releases. Pin a version (`KUMOBA_VERSION=@version@`) for anything you depend on.
 :::
 
 <!--@include: ../README.md#getting-started-->

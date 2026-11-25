@@ -37,11 +37,13 @@ The commands the daemon serves:
 | `create`, `start`, `stop`, `delete` | Sandbox lifecycle; `create` leaves it stopped |
 | `list`, `get`, `update` | Find sandboxes by label, show one, change labels, timers or network |
 | `exec` | Run a command in a started sandbox and stream its output |
+| `shell` | Open an interactive shell in a started sandbox ([Open a shell](/guide/shell)) |
 | `read-file`, `write-file`, `list-files` | Guest files |
 | `expose` | A signed, expiring link to a port inside the sandbox |
 | `desktop` | Start the desktop and link to a live view in the browser |
 | `set-secrets`, `delete-secrets` | Secrets that never enter the guest |
 | `images`, `access-log` | Bootable images, and every proxied network connection |
+| `commands` | Every command the daemon serves, with its JSON Schema |
 
 ## Arguments
 
@@ -70,6 +72,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 | --- | --- | --- |
 | JSON | most | Pretty JSON on a terminal, one line of JSON when piped or with `--json`. `-q` prints only the `id`s, one per line, and says on stderr when the reply was cut short (`truncated`), so a `list` with more matches than `--limit` (1000 by default) does not look complete |
 | Stream | `run`, `exec` | The guest's stdout and stderr on yours, as they arrive |
+| Terminal | `shell` | An interactive terminal in yours, until the shell exits |
 | Bytes | `read-file` | The file on stdout, or into `-o FILE` as it arrives. Exits 1 if the transfer ends before the whole file arrived, and removes a partial `-o FILE` |
 
 `write-file` reads the file content from `content=@path`, or from stdin when it is piped.
@@ -82,7 +85,7 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 
 | Status | Meaning |
 | --- | --- |
-| The guest's own | `run` and `exec` exit with the command's exit code; 124 when it timed out |
+| The guest's own | `run` and `exec` exit with the command's exit code, 124 when it timed out; `shell` with the shell's |
 | 0 | Success |
 | 1 | The daemon rejected the request: unknown sandbox, bad state, invalid value |
 | 2 | Usage error: unknown command or option, missing argument, wrong type |

@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { defineConfig } from "vitepress";
 
 const cargo = readFileSync(new URL("../../Cargo.toml", import.meta.url), "utf8");
-const version = /^\[workspace\.package\][^[]*?^version = "(\d+)\.(\d+)\./m.exec(cargo);
+const version = /^\[workspace\.package\][^[]*?^version = "((\d+)\.(\d+)\.\d+[^"]*)"/m.exec(cargo);
 if (!version) throw new Error("no [workspace.package] version in Cargo.toml");
-const release = `v${version[1]}.${version[2]}`;
+const release = `v${version[2]}.${version[3]}`;
+const fullVersion = version[1];
 
 const repo = "https://github.com/Parassharmaa/kumoba";
 const repoFiles: Record<string, string> = {
@@ -35,6 +36,14 @@ export default defineConfig({
   srcExclude: ["README.md"],
   markdown: {
     config(md) {
+      md.core.ruler.push("kumoba-version", (state) => {
+        for (const token of state.tokens) {
+          token.content = token.content.replaceAll("@version@", fullVersion);
+          for (const child of token.children ?? []) {
+            child.content = child.content.replaceAll("@version@", fullVersion);
+          }
+        }
+      });
       md.core.ruler.push("kumoba-links", (state) => {
         for (const token of state.tokens) {
           for (const child of token.children ?? []) {

@@ -42,6 +42,10 @@ kumobadは初回の起動時に`~/.kumoba/token`を作ります。一度起動�
 
 kumoba 0.3より前のイメージから作られたサンドボックスです。アップグレードしてから、新しいイメージでサンドボックスを作り直してください。
 
+## `shell is interactive: use the kumoba CLI 0.3 or later`と表示される
+
+お使いのCLIは`kumoba shell`に対応する前のバージョンです。インストーラーか`npm install -g kumoba@latest`で最新版をインストールしてください。
+
 ## `pip install`が`externally-managed-environment`で失敗する
 
 kumoba 0.2.2より前のイメージです。アップグレードすると、`pip install`をそのまま使えるイメージになります。
@@ -54,6 +58,9 @@ kumoba 0.2.2より前のイメージです。アップグレードすると、`p
 
 コマンドが、出力を開いたままのプロセスをバックグラウンドに残しています(例: `sh -c 'make; ./server &'`)。`exec`はコマンドが終わってから 0.25 秒だけ出力を読み続け、それまでに届いた分を返して読むのをやめます。そのあとにそのプロセスが書いた分は返らず、`truncated`にも数えられません。出力は`./server > /tmp/server.log 2>&1 &`のようにファイルへ送り、そのファイルを読んでください。
 
+## コマンドが終了ステータス141で途切れる
+
+`kumoba exec`や`kumoba run`の出力を読む側が、途中でパイプを閉じました(例: `kumoba exec <id> -- cat big.log | head`)。パイプが閉じられたときの通常の終了ステータスです。
 
 ## macOS サンドボックスのライブビューが開かない
 
