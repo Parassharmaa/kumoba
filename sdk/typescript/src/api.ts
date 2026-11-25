@@ -53,7 +53,7 @@ const accessEntrySchema = z.object({
   labels: z.record(z.string(), z.string()),
   host: z.string(),
   port: z.number(),
-  decision: z.enum(["allowed", "denied", "failed", "dropped"]),
+  decision: z.string(),
   bytesIn: z.number(),
   bytesOut: z.number(),
   startedAtMs: z.number(),

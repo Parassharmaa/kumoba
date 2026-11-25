@@ -869,7 +869,7 @@
       "path": "/v1/access-log",
       "positional": [],
       "rest": null,
-      "summary": "Show proxied network connections, allowed and denied"
+      "summary": "Show proxied network connections: allowed, denied, or allowed but failed to connect"
     }
   ]
 }

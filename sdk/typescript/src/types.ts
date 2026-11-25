@@ -158,6 +158,12 @@ export type AccessibilityNode = {
 
 export type DisplayInfo = { width: number; height: number };
 
+/**
+ * What happened to a proxied connection. Newer daemons may report values this SDK does
+ * not know yet; those come through as plain strings.
+ */
+export type AccessDecision = "allowed" | "denied" | "failed" | "dropped" | (string & {});
+
 /** One proxied connection attempt, as recorded by kumobad's egress broker. */
 export type AccessEntry = {
   sandboxId: string;
@@ -172,7 +178,7 @@ export type AccessEntry = {
    * `dropped` is a marker, not a connection: `dropped` says how many records from this
    * sandbox were not kept because it exceeded 10000 per hour or the daemon fell behind.
    */
-  decision: "allowed" | "denied" | "failed" | "dropped";
+  decision: AccessDecision;
   /** Bytes sent to the guest. */
   bytesIn: number;
   /** Bytes sent by the guest. */
