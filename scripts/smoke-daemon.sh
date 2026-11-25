@@ -24,6 +24,9 @@ check create "$created" '"state":"stopped"'
 check start "$(api -X POST "http://d/v1/sandboxes/$id/start")" '"state":"started"'
 check list-filter "$(api "http://d/v1/sandboxes?label=org:o1&label=session:s1")" "$id"
 check list-miss "$(api "http://d/v1/sandboxes?label=org:other")" '"sandboxes":[]'
+malformed=$(curl -sS -w ' status=%{http_code}' --unix-socket "$socket" -H "authorization: Bearer $token" "http://d/v1/sandboxes?label=org=o1")
+check list-malformed "$malformed" '"error":"invalid_request"'
+check list-malformed-status "$malformed" 'status=400'
 out=$(api -X POST "http://d/v1/sandboxes/$id/exec" -H 'content-type: application/json' \
   -d '{"argv":["/bin/sh","-c","echo hello; echo oops >&2; exit 3"],"timeoutMs":10000,"user":"kumoba","cwd":"/home/kumoba"}')
 check exec-stdout "$out" "$(printf 'hello\n' | base64)"

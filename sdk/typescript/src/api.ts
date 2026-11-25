@@ -145,7 +145,15 @@ export class Api {
     limit: number
   ): Promise<{ sandboxes: Summary[]; truncated: boolean }> {
     const query = new URLSearchParams({ limit: String(limit) });
-    for (const [key, value] of Object.entries(labels)) query.append("label", `${key}:${value}`);
+    for (const [key, value] of Object.entries(labels)) {
+      if (key === "" || key.includes(":")) {
+        throw new KumobaError(
+          `label filter keys must be non-empty and contain no ":", got ${JSON.stringify(key)}`,
+          { code: "invalid_request" }
+        );
+      }
+      query.append("label", `${key}:${value}`);
+    }
     return this.http.json(listSchema, { method: "GET", path: `/v1/sandboxes?${query.toString()}` });
   }
 
