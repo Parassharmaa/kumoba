@@ -4,7 +4,13 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- Access log: a connection that was allowed but could not be set up, because its DNS lookup failed or got no answer in time, or the connection or upstream proxy failed, is now logged with `decision` `failed` instead of `allowed`, and gets its own 10000 per hour cap. Update the TypeScript SDK with the daemon: older SDKs refuse an access log page that contains `failed`. In the Rust crate, `AccessRecord.allowed` is replaced by `decision: AccessDecision` (`Allowed`, `Denied`, `Failed`).
+
 ### Fixed
+
+- Egress: one sandbox can no longer use up DNS lookups for every sandbox. Each sandbox now has its own 8 lookups at a time, and a connection that finds them busy waits for one within the 5 second setup timeout instead of failing at once with 502. Before, 8 lookups of names whose nameserver never answers, from any one sandbox, made every sandbox's new connections fail for as long as the host resolver kept trying, and a page that opened more than 8 new domains at once could get random 502s.
 
 - `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, `--label '[]'` or `--args '{"label":[]}'`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
 

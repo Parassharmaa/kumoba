@@ -167,10 +167,12 @@ export type AccessEntry = {
   port: number;
   /**
    * `denied` covers allowlist misses and attempts at private or metadata addresses.
+   * `failed` means the destination was allowed but could not be reached: the DNS lookup
+   * failed or timed out, or the connection or the upstream proxy failed.
    * `dropped` is a marker, not a connection: `dropped` says how many records from this
    * sandbox were not kept because it exceeded 10000 per hour or the daemon fell behind.
    */
-  decision: "allowed" | "denied" | "dropped";
+  decision: "allowed" | "denied" | "failed" | "dropped";
   /** Bytes sent to the guest. */
   bytesIn: number;
   /** Bytes sent by the guest. */

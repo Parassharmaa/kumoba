@@ -328,6 +328,15 @@ describe("Kumoba.accessLog", () => {
         startedAtMs: 3,
         completedAtMs: 30,
       },
+      {
+        ...base,
+        host: "silent.example",
+        decision: "failed",
+        bytesIn: 0,
+        bytesOut: 0,
+        startedAtMs: 31,
+        completedAtMs: 36,
+      },
       { ...base, host: "late.example", startedAtMs: 4, completedAtMs: 40 },
     ];
     const seen = [];
@@ -337,6 +346,7 @@ describe("Kumoba.accessLog", () => {
       ["a.example", "allowed"],
       ["b.example", "allowed"],
       ["169.254.169.254", "denied"],
+      ["silent.example", "failed"],
     ]);
     expect(seen[0]?.completedAt).toEqual(new Date(10));
   });

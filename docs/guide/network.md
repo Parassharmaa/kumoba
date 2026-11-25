@@ -36,7 +36,7 @@ A sandbox with secrets can't switch to `blocked`, because secrets are injected b
 kumoba access-log
 ```
 
-Each entry has the sandbox, host, port, whether the connection was allowed or denied, and the bytes in each direction. By default you get the last two hours; `--since-ms` and `--until-ms` choose another window.
+Each entry has the sandbox, host, port, whether the connection was allowed, denied, or allowed but failed to connect (`failed`), and the bytes in each direction. By default you get the last two hours; `--since-ms` and `--until-ms` choose another window.
 
 ## Reach an intranet or go through a corporate proxy
 

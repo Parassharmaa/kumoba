@@ -28,7 +28,7 @@ pub(crate) async fn serve<S>(
     mut head: Vec<u8>,
     pending: Vec<u8>,
     scope: crate::egress::AccessScope,
-    egress: &crate::egress::EgressConfig,
+    egress: &crate::egress::Egress,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -110,7 +110,7 @@ fn strip_hop_headers(headers: &mut HeaderMap) -> Result<(), StatusCode> {
 async fn forward(
     request: Request<Incoming>,
     scope: &crate::egress::AccessScope,
-    egress: &crate::egress::EgressConfig,
+    egress: &crate::egress::Egress,
 ) -> Result<Response<ResponseBody>, StatusCode> {
     if request.method() == hyper::Method::CONNECT || request.headers().contains_key("upgrade") {
         return Err(StatusCode::BAD_REQUEST);
@@ -124,7 +124,7 @@ async fn forward(
                         .or_else(|| crate::egress::raw_target(&format!("{}:80", authority.host())))
                 })
             {
-                scope.record(&host, port, false);
+                scope.record(&host, port, crate::egress::AccessDecision::Denied);
             }
             return Err(status);
         }
@@ -153,16 +153,23 @@ async fn forward(
     let remote = match crate::egress::connect(&endpoint, egress).await {
         Ok(remote) => remote,
         Err(error) => {
-            let denied = error.kind() == io::ErrorKind::PermissionDenied;
-            scope.record(endpoint.host(), endpoint.port(), !denied);
-            return Err(if denied {
-                StatusCode::FORBIDDEN
+            let (decision, status) = if error.kind() == io::ErrorKind::PermissionDenied {
+                (crate::egress::AccessDecision::Denied, StatusCode::FORBIDDEN)
             } else {
-                StatusCode::BAD_GATEWAY
-            });
+                (
+                    crate::egress::AccessDecision::Failed,
+                    StatusCode::BAD_GATEWAY,
+                )
+            };
+            scope.record(endpoint.host(), endpoint.port(), decision);
+            return Err(status);
         }
     };
-    scope.record(endpoint.host(), endpoint.port(), true);
+    scope.record(
+        endpoint.host(),
+        endpoint.port(),
+        crate::egress::AccessDecision::Allowed,
+    );
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(remote))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;

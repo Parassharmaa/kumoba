@@ -42,7 +42,7 @@ export type FakeAccessEntry = {
   labels: Record<string, string>;
   host: string;
   port: number;
-  decision: "allowed" | "denied" | "dropped";
+  decision: "allowed" | "denied" | "failed" | "dropped";
   bytesIn: number;
   bytesOut: number;
   startedAtMs: number;
