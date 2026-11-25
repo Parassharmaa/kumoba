@@ -66,7 +66,11 @@ const accessLogSchema = z.object({
   nextCursor: z.string().nullable().optional(),
 });
 
-const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
+const previewSchema = z.object({
+  url: z.string().nullish(),
+  path: z.string(),
+  expiresAtMs: z.number(),
+});
 const desktopSchema = previewSchema.extend({ viewer: z.enum(["stream", "vnc"]) });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
 const deletedSchema = z.object({ deletedNames: z.array(z.string()) });
