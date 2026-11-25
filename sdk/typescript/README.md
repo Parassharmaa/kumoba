@@ -73,7 +73,7 @@ See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-
 | --- | --- | --- |
 | `url` | `KUMOBA_URL` | `unix://$KUMOBA_HOME/kumobad.sock`; `http://127.0.0.1:<port>` also works |
 | `token` | `KUMOBA_TOKEN` or `KUMOBA_TOKEN_FILE` | `$KUMOBA_HOME/token` |
-| `publicUrl` | `KUMOBA_PUBLIC_URL` | the `http://` URL, for full `expose()` links |
+| `publicUrl` | `KUMOBA_PUBLIC_URL` | the link `kumobad` returns; set it to where browsers reach the preview listener |
 | `defaultUser` | `KUMOBA_USER` | the image's default user |
 | | `KUMOBA_HOME` | `~/.kumoba` |
 

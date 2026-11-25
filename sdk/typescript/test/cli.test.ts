@@ -214,11 +214,12 @@ describe("kumoba CLI", () => {
     const sandbox = await new Kumoba({ url: fake.url, token: fake.token }).create({
       image: "test",
     });
-    const exit = await main(
-      ["expose", sandbox.id, "--port", "8080", "--ttl-seconds", "60", "--open"],
-      io()
-    );
-    expect(exit).toBe(1);
+    const args = ["expose", sandbox.id, "--port", "8080", "--ttl-seconds", "60", "--open"];
+    expect(await main(args, io())).toBe(0);
+    expect(opened).toEqual(["http://127.0.0.1:7789/v1/preview/token-8080/"]);
+    opened = [];
+    fake.previewUrl = null;
+    expect(await main(args, io())).toBe(1);
     expect(err.join("")).toContain("no browser URL");
     expect(opened).toEqual([]);
   });

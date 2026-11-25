@@ -22,7 +22,7 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 export type SandboxContext = {
   api: Api;
   defaultUser: string | undefined;
-  baseUrl: string | null;
+  publicUrl: string | null;
 };
 
 /** One microVM. Obtain it from `Kumoba.create`, `Kumoba.get` or `Kumoba.list`. */
@@ -113,17 +113,18 @@ export class Sandbox implements AsyncDisposable {
 
   /**
    * Make a guest TCP port reachable through kumobad for a limited time.
-   * `url` is set when the client was configured with a base URL; `path` always is.
+   * `url` is under `publicUrl` when the client has one, otherwise it is the link kumobad returns,
+   * `null` when kumobad has no preview listener. `path` is always set.
    */
   async expose(port: number, options: ExposeOptions = {}): Promise<Exposed> {
     return this.link(await this.context.api.preview(this.id, port, options.ttlSeconds ?? 600));
   }
 
-  private link(preview: { path: string; expiresAtMs: number }): Exposed {
-    const base = this.context.baseUrl;
+  private link(preview: { url?: string | null; path: string; expiresAtMs: number }): Exposed {
+    const base = this.context.publicUrl;
     return {
       path: preview.path,
-      url: base === null ? null : `${base.replace(/\/$/, "")}${preview.path}`,
+      url: base === null ? (preview.url ?? null) : `${base.replace(/\/$/, "")}${preview.path}`,
       expiresAt: new Date(preview.expiresAtMs),
     };
   }

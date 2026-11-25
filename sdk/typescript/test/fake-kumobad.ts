@@ -53,6 +53,8 @@ export type FakeAccessEntry = {
 
 export type FakeKumobad = {
   url: string;
+  httpUrl: string;
+  previewUrl: string | null | undefined;
   token: string;
   sandboxes: Map<string, FakeSandbox>;
   accessEntries: FakeAccessEntry[];
@@ -100,6 +102,11 @@ function cutStream(
   });
 }
 
+function link(fake: FakeKumobad, path: string) {
+  if (fake.previewUrl === undefined) return { path };
+  return { url: fake.previewUrl === null ? null : `${fake.previewUrl}${path}`, path };
+}
+
 function summary(sandbox: FakeSandbox) {
   const { files: _files, secrets: _secrets, ...rest } = sandbox;
   return rest;
@@ -111,6 +118,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
   let counter = 0;
   const fake: FakeKumobad = {
     url: `unix://${socketPath}`,
+    httpUrl: "",
+    previewUrl: "http://127.0.0.1:7789",
     token: "fake-token-0123456789abcdef0123456789",
     sandboxes: new Map(),
     accessEntries: [],
@@ -125,8 +134,11 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      const tcpClosed = new Promise<void>((resolve) => tcp.close(() => resolve()));
       server.closeAllConnections();
+      tcp.closeAllConnections();
       await closed;
+      await tcpClosed;
       rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -300,13 +312,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
       } else if (method === "POST" && action === "preview") {
         const { port } = JSON.parse((await body(request)).toString()) as { port: number };
         send(response, 200, {
-          path: `/v1/preview/token-${String(port)}/`,
+          ...link(fake, `/v1/preview/token-${String(port)}/`),
           expiresAtMs: Date.now() + 60_000,
         });
       } else if (method === "POST" && action === "desktop") {
         const asked = JSON.parse((await body(request)).toString()) as { ttlSeconds: number };
         send(response, 200, {
-          path: "/v1/preview/token-host/",
+          ...link(fake, "/v1/preview/token-host/"),
           expiresAtMs: Date.now() + asked.ttlSeconds * 1000,
           viewer: "stream",
         });
@@ -420,5 +432,12 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     socket.on("data", handle);
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const tcp: Server = createServer((request, response) =>
+    server.emit("request", request, response)
+  );
+  await new Promise<void>((resolve) => tcp.listen(0, "127.0.0.1", resolve));
+  const address = tcp.address();
+  if (address === null || typeof address === "string") throw new Error("no tcp address");
+  fake.httpUrl = `http://127.0.0.1:${String(address.port)}`;
   return fake;
 }
