@@ -33,3 +33,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directories: ["/images/default", "/images/mkfs"]
+    schedule:
+      interval: weekly
+    groups:
+      images:
+        patterns: ["*"]
