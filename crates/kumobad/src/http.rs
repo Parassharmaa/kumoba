@@ -752,6 +752,7 @@ fn sized_stream_response(size: u64, receiver: mpsc::Receiver<Bytes>) -> Response
 }
 
 const UPLOAD_IDLE: Duration = Duration::from_secs(60);
+const UPLOAD_KEEPALIVE: Duration = Duration::from_secs(30);
 
 async fn upload(
     service: Arc<Service>,
@@ -762,9 +763,11 @@ async fn upload(
 ) -> ApiResult<Response<Body>> {
     let (entry, agent, _) = service.running_agent(id, None).await?;
     let _operation = entry.begin();
+    let _slot = entry.upload_slot().await;
     let mut upload = None;
     let mut buffer = BytesMut::with_capacity(MAX_DATA);
     let mut written = 0u64;
+    let mut sent = tokio::time::Instant::now();
     while let Some(frame) = tokio::time::timeout(UPLOAD_IDLE, body.frame())
         .await
         .map_err(|_| ApiError::Status(408, "request body timed out".into()))?
@@ -774,8 +777,10 @@ async fn upload(
             continue;
         };
         buffer.extend_from_slice(&data);
-        while buffer.len() >= MAX_DATA {
-            let chunk = buffer.split_to(MAX_DATA);
+        while buffer.len() >= MAX_DATA
+            || (upload.is_some() && !buffer.is_empty() && sent.elapsed() >= UPLOAD_KEEPALIVE)
+        {
+            let chunk = buffer.split_to(buffer.len().min(MAX_DATA));
             if upload.is_none() {
                 upload = Some(agent.upload(path, user).await?);
             }
@@ -783,6 +788,7 @@ async fn upload(
                 upload.write(&chunk).await?;
             }
             written += chunk.len() as u64;
+            sent = tokio::time::Instant::now();
         }
     }
     let mut upload = match upload {

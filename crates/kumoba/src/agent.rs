@@ -46,7 +46,7 @@ impl ShellReceiver {
     }
 }
 
-pub struct Upload(Mode);
+pub struct Upload(Option<Mode>);
 
 enum Mode {
     Staged {
@@ -62,20 +62,20 @@ enum Mode {
     },
 }
 
-impl Upload {
-    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+impl Mode {
+    async fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > MAX_DATA {
             return Err(Error::InvalidInput("file chunk exceeds 1 MiB".into()));
         }
-        match &mut self.0 {
-            Mode::Staged { stream, exit } => {
+        match self {
+            Self::Staged { stream, exit } => {
                 let input = UploadInput::Data(STANDARD.encode(data));
                 expect_ok(
                     exchange(stream, exit.clone(), &input, REPLY_TIMEOUT).await?,
                     "write",
                 )
             }
-            Mode::InPlace {
+            Self::InPlace {
                 agent,
                 path,
                 user,
@@ -92,16 +92,33 @@ impl Upload {
         }
     }
 
-    pub async fn commit(mut self) -> Result<()> {
-        match &mut self.0 {
-            Mode::Staged { stream, exit } => expect_ok(
+    async fn commit(mut self) -> Result<()> {
+        match &mut self {
+            Self::Staged { stream, exit } => expect_ok(
                 exchange(stream, exit.clone(), &UploadInput::Commit, COMMIT_TIMEOUT).await?,
                 "commit",
             ),
-            Mode::InPlace { started: true, .. } => Ok(()),
-            Mode::InPlace { .. } => self.write(&[]).await,
+            Self::InPlace { started: true, .. } => Ok(()),
+            Self::InPlace { .. } => self.write(&[]).await,
         }
     }
+}
+
+impl Upload {
+    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+        let mut mode = self.0.take().ok_or_else(failed_upload)?;
+        mode.write(data).await?;
+        self.0 = Some(mode);
+        Ok(())
+    }
+
+    pub async fn commit(self) -> Result<()> {
+        self.0.ok_or_else(failed_upload)?.commit().await
+    }
+}
+
+fn failed_upload() -> Error {
+    Error::InvalidInput("upload cannot continue after an error".into())
 }
 
 fn expect_ok(response: Response, operation: &str) -> Result<()> {
@@ -304,13 +321,13 @@ impl Agent {
 
     pub async fn upload(&self, path: &str, user: Option<&str>) -> Result<Upload> {
         if !self.staged_uploads {
-            return Ok(Upload(Mode::InPlace {
+            return Ok(Upload(Some(Mode::InPlace {
                 agent: self.clone(),
                 path: path.into(),
                 user: user.map(str::to_string),
                 offset: 0,
                 started: false,
-            }));
+            })));
         }
         let mut stream = self.open().await?;
         let request = Request::Upload {
@@ -321,10 +338,10 @@ impl Agent {
             exchange(&mut stream, self.exit.clone(), &request, REPLY_TIMEOUT).await?,
             "start",
         )?;
-        Ok(Upload(Mode::Staged {
+        Ok(Upload(Some(Mode::Staged {
             stream,
             exit: self.exit.clone(),
-        }))
+        })))
     }
 
     pub async fn write_all(&self, path: &str, data: &[u8], user: Option<&str>) -> Result<()> {
@@ -408,6 +425,10 @@ mod tests {
     }
 
     fn fake_guest(staged_uploads: bool) -> FakeGuest {
+        fake_guest_answering(staged_uploads, |_| Response::Ok)
+    }
+
+    fn fake_guest_answering(staged_uploads: bool, answer: fn(&Value) -> Response) -> FakeGuest {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("agent.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -420,8 +441,9 @@ mod tests {
                 let sender = sender.clone();
                 tokio::spawn(async move {
                     while let Ok(frame) = receive::<_, Value>(&mut stream).await {
+                        let response = answer(&frame);
                         sender.send((connection, Some(frame))).unwrap();
-                        if send(&mut stream, &Response::Ok).await.is_err()
+                        if send(&mut stream, &response).await.is_err()
                             || stream.read_u8().await.is_err()
                         {
                             break;
@@ -534,6 +556,36 @@ mod tests {
         }
         assert_eq!(frames.len(), 2);
         assert!(frames.iter().all(|frame| frame != "Commit"));
+    }
+
+    fn refuse_first_chunk(frame: &Value) -> Response {
+        let first = |data: &Value| data.as_str() == Some(STANDARD.encode(b"first").as_str());
+        if first(&frame["Data"]) || first(&frame["WriteAt"]["data"]) {
+            Response::Error("disk full".into())
+        } else {
+            Response::Ok
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_refuses_further_use_after_an_error() {
+        for staged in [true, false] {
+            let mut guest = fake_guest_answering(staged, refuse_first_chunk);
+            let mut upload = guest.agent.upload("/workspace/file", None).await.unwrap();
+            assert!(matches!(
+                upload.write(b"first").await,
+                Err(Error::Guest(message)) if message == "disk full"
+            ));
+            assert!(upload.write(b"second").await.is_err());
+            assert!(upload.commit().await.is_err());
+            let mut frames = Vec::new();
+            while let Ok(Some((_, frame))) =
+                tokio::time::timeout(Duration::from_millis(300), guest.frames.recv()).await
+            {
+                frames.extend(frame);
+            }
+            assert_eq!(frames.len(), if staged { 2 } else { 1 }, "{frames:?}");
+        }
     }
 
     #[tokio::test]
