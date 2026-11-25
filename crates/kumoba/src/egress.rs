@@ -1104,10 +1104,10 @@ fn checked_addresses(
             "DNS destination is not public IPv4",
         ));
     }
+    let mut seen = BTreeSet::new();
     Ok(candidates
         .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .filter(|ip| seen.insert(*ip))
         .map(|ip| SocketAddrV4::new(ip, port))
         .collect())
 }
@@ -1705,6 +1705,35 @@ mod tests {
         );
         assert!(check(vec![public; 65], BTreeSet::new()).is_err());
         assert!(check(vec![], BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn checked_addresses_keep_resolver_order_without_duplicates() {
+        let ips: Vec<Ipv4Addr> = [
+            "93.184.216.34",
+            "8.8.8.8",
+            "93.184.216.34",
+            "1.1.1.1",
+            "8.8.8.8",
+        ]
+        .iter()
+        .map(|ip| ip.parse().unwrap())
+        .collect();
+        let checked = checked_addresses(
+            ips,
+            &BTreeSet::new(),
+            443,
+            "example.com",
+            &EgressConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            checked,
+            ["93.184.216.34", "8.8.8.8", "1.1.1.1"]
+                .iter()
+                .map(|ip| SocketAddrV4::new(ip.parse().unwrap(), 443))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
