@@ -699,7 +699,6 @@ async fn connection(
         Ok(Ok((head, pending))) => match parse_headers(&head) {
             Ok(endpoint) => (endpoint, pending),
             Err(error) if error.kind() == io::ErrorKind::Unsupported && policy.public_web => {
-                let client = Counted::new(client, scope.counters());
                 return crate::public_http::serve(client, head, pending, scope, egress).await;
             }
             Err(error) => {

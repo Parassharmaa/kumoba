@@ -11,6 +11,7 @@ use std::{
     convert::Infallible,
     io,
     pin::Pin,
+    sync::{Mutex, PoisonError, atomic::Ordering},
     task::{Context, Poll},
     time::Duration,
 };
@@ -58,10 +59,15 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     crate::secret_https::check_wire_headers(&head)?;
+    let access = &Access {
+        scope: &scope,
+        pending: pending.len() as u64,
+        allowed: Mutex::new(None),
+    };
     head.extend(pending);
-    let scope = &scope;
+    let client = crate::egress::Counted::new(client, scope.counters());
     let service = hyper::service::service_fn(|request| async move {
-        let outcome = forward(request, scope, egress, limits).await;
+        let outcome = forward(request, access, egress, limits).await;
         Ok::<_, Infallible>(match outcome {
             Ok(response) => response,
             Err(status) => failure(status),
@@ -143,10 +149,11 @@ fn strip_hop_headers(headers: &mut HeaderMap) -> Result<(), StatusCode> {
 }
 async fn forward(
     request: Request<Incoming>,
-    scope: &crate::egress::AccessScope,
+    access: &Access<'_>,
     egress: &crate::egress::Egress,
     limits: Limits,
 ) -> Result<Response<ResponseBody>, StatusCode> {
+    let scope = access.scope;
     if request.method() == hyper::Method::CONNECT || request.headers().contains_key("upgrade") {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -192,11 +199,10 @@ async fn forward(
             return Err(status);
         }
     };
-    scope.record(
-        endpoint.host(),
-        endpoint.port(),
-        crate::egress::AccessDecision::Allowed,
-    );
+    *access
+        .allowed
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(endpoint);
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(remote))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -228,6 +234,30 @@ async fn forward(
         }
         .boxed_unsync(),
     ))
+}
+struct Access<'a> {
+    scope: &'a crate::egress::AccessScope,
+    pending: u64,
+    allowed: Mutex<Option<EgressEndpoint>>,
+}
+impl Drop for Access<'_> {
+    fn drop(&mut self) {
+        let allowed = self
+            .allowed
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(endpoint) = allowed.take() {
+            self.scope
+                .counters()
+                .from_guest
+                .fetch_add(self.pending, Ordering::Relaxed);
+            self.scope.record(
+                endpoint.host(),
+                endpoint.port(),
+                crate::egress::AccessDecision::Allowed,
+            );
+        }
+    }
 }
 struct Active<S> {
     inner: S,
@@ -365,13 +395,21 @@ mod tests {
 
     impl Origin {
         fn request(&self, head: &str, limits: Limits) -> (UnixStream, JoinHandle<io::Result<()>>) {
+            self.request_with(head, Vec::new(), limits)
+        }
+        fn request_with(
+            &self,
+            head: &str,
+            pending: Vec<u8>,
+            limits: Limits,
+        ) -> (UnixStream, JoinHandle<io::Result<()>>) {
             let (server, client) = UnixStream::pair().unwrap();
             let head = head.replace("{host}", self.host).into_bytes();
             let records = self.records.clone();
             let task = tokio::spawn(serve_with(
                 server,
                 head,
-                Vec::new(),
+                pending,
                 AccessScope::new(Some(Arc::new(move |record| {
                     records.lock().unwrap().push(record);
                 }))),
@@ -383,13 +421,18 @@ mod tests {
         async fn finish(&mut self) {
             (&mut self.task).await.unwrap();
         }
-        fn decisions(&self) -> Vec<(String, u16, AccessDecision)> {
-            self.records
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|record| (record.host.clone(), record.port, record.decision))
-                .collect()
+        fn record(&self) -> AccessRecord {
+            let records = self.records.lock().unwrap();
+            assert_eq!(records.len(), 1, "{records:?}");
+            assert_eq!(
+                (
+                    records[0].host.as_str(),
+                    records[0].port,
+                    records[0].decision
+                ),
+                (self.host, 80, AccessDecision::Allowed)
+            );
+            records[0].clone()
         }
     }
 
@@ -398,7 +441,7 @@ mod tests {
             self.task.abort();
             TEST_DNS
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(self.host);
             TEST_DNS_CHANGED.notify_all();
         }
@@ -516,9 +559,14 @@ mod tests {
         assert!(body.iter().all(|byte| *byte == 7));
         task.await.unwrap().unwrap();
         origin.finish().await;
-        assert_eq!(
-            origin.decisions(),
-            [(origin.host.to_owned(), 80, AccessDecision::Allowed)]
+        let record = origin.record();
+        assert_eq!(record.bytes_out, 0);
+        assert!(
+            (20480..20480 + 512).contains(&record.bytes_in),
+            "{record:?}"
+        );
+        assert!(
+            record.completed.duration_since(record.started).unwrap() >= Duration::from_millis(900)
         );
     }
 
@@ -526,13 +574,15 @@ mod tests {
     async fn upload_over_four_mib_reaches_the_origin_intact() {
         let mut origin = origin("upload.public-http.example", echo_origin).await;
         let length = 5 * 1024 * 1024;
-        let (mut client, task) = origin.request(
+        let body = pattern(length);
+        let (mut client, task) = origin.request_with(
             &format!(
                 "POST http://{{host}}/upload HTTP/1.1\r\nHost: {{host}}\r\nContent-Length: {length}\r\n\r\n"
             ),
+            body[..1000].to_vec(),
             short(2000, 2000),
         );
-        let _ = client.write_all(&pattern(length)).await;
+        let _ = client.write_all(&body[1000..]).await;
         let (head, body) = read_response(&mut client, Duration::from_secs(10)).await;
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         assert_eq!(
@@ -541,10 +591,9 @@ mod tests {
         );
         task.await.unwrap().unwrap();
         origin.finish().await;
-        assert_eq!(
-            origin.decisions(),
-            [(origin.host.to_owned(), 80, AccessDecision::Allowed)]
-        );
+        let record = origin.record();
+        assert_eq!(record.bytes_out, length as u64);
+        assert!((1..512).contains(&record.bytes_in), "{record:?}");
     }
 
     #[tokio::test]
@@ -623,6 +672,81 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(task.await.unwrap().is_err());
         origin.task.abort();
+        let record = origin.record();
+        assert!((1000..1000 + 512).contains(&record.bytes_in), "{record:?}");
+    }
+
+    #[tokio::test]
+    async fn broken_transfers_are_logged_once_when_they_end() {
+        let closed = origin("closed.public-http.example", |mut stream| async move {
+            read_head(&mut stream).await;
+        })
+        .await;
+        let (mut client, task) = closed.request(
+            "GET http://{host}/ HTTP/1.1\r\nHost: {host}\r\n\r\n",
+            short(2000, 2000),
+        );
+        let (head, _) = read_response(&mut client, Duration::from_secs(5)).await;
+        assert!(head.starts_with("HTTP/1.1 502"), "{head}");
+        task.await.unwrap().unwrap();
+        closed.record();
+
+        let abandoned = origin("abandoned.public-http.example", |mut stream| async move {
+            read_head(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+                .await
+                .unwrap();
+            while stream.write_all(&[1; 1024]).await.is_ok() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let (mut client, task) = abandoned.request(
+            "GET http://{host}/ HTTP/1.1\r\nHost: {host}\r\n\r\n",
+            short(2000, 2000),
+        );
+        let mut start = [0; 4096];
+        client.read_exact(&mut start).await.unwrap();
+        drop(client);
+        assert!(
+            timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(abandoned.record().bytes_in >= 4096);
+    }
+
+    #[tokio::test]
+    async fn denied_requests_are_logged_with_zero_bytes() {
+        let records = Arc::new(Mutex::new(Vec::<AccessRecord>::new()));
+        let sink = records.clone();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(serve(
+            server,
+            b"POST http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\n"
+                .to_vec(),
+            b"hello".to_vec(),
+            AccessScope::new(Some(Arc::new(move |record| {
+                sink.lock().unwrap().push(record);
+            }))),
+            Box::leak(Box::default()),
+        ));
+        let (head, _) = read_response(&mut client, Duration::from_secs(2)).await;
+        assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+        task.await.unwrap().unwrap();
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            (
+                records[0].decision,
+                records[0].bytes_in,
+                records[0].bytes_out
+            ),
+            (AccessDecision::Denied, 0, 0)
+        );
     }
 
     #[tokio::test]
