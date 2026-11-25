@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed
+
+- Live view: a client that connects to `kumoba-view` and sends nothing, or asks for the viewer script and never reads it, gives up its place sooner: a connection has 2 seconds to start its request, down from 5, and 10 seconds to read the reply, which had no limit before. One address can hold at most half of the connections that are still loading the page, so clients from other addresses still get in, and when no place is free the engine answers `503 Service Unavailable` instead of closing the connection without a reply.
+
 ## [0.6.6] - 2026-11-25
 
 ### Fixed
