@@ -21,15 +21,21 @@ use tokio::{io::AsyncWrite, sync::mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tokio_util::sync::PollSender;
 
-pub type Body = BoxBody<Bytes, Infallible>;
+pub type Body = BoxBody<Bytes, std::io::Error>;
 const JSON_LIMIT: usize = 1024 * 1024;
+
+fn full(bytes: impl Into<Bytes>) -> Body {
+    Full::new(bytes.into())
+        .map_err(|never| match never {})
+        .boxed()
+}
 
 fn json_response(status: u16, value: Value) -> Response<Body> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
-        .body(Full::new(Bytes::from(value.to_string())).boxed())
+        .body(full(value.to_string()))
         .expect("static response headers")
 }
 
@@ -41,7 +47,8 @@ fn error_response(error: ApiError) -> Response<Body> {
 }
 
 fn stream_response(content_type: &str, receiver: mpsc::Receiver<Bytes>) -> Response<Body> {
-    let stream = ReceiverStream::new(receiver).map(|bytes| Ok::<_, Infallible>(Frame::data(bytes)));
+    let stream =
+        ReceiverStream::new(receiver).map(|bytes| Ok::<_, std::io::Error>(Frame::data(bytes)));
     Response::builder()
         .status(200)
         .header("content-type", content_type)
@@ -408,7 +415,7 @@ async fn shell(
         .status(101)
         .header(hyper::header::CONNECTION, "upgrade")
         .header(hyper::header::UPGRADE, crate::terminal::PROTOCOL)
-        .body(Full::new(Bytes::new()).boxed())
+        .body(full(Bytes::new()))
         .map_err(|error| ApiError::Status(500, error.to_string()))
 }
 const DESKTOP_HELPER: &str = "/usr/local/bin/kumoba-desktop";
@@ -776,7 +783,9 @@ async fn upload(
     Ok(json_response(200, json!({"written": offset})))
 }
 
-const PREVIEW_BODY_LIMIT: usize = 1024 * 1024;
+const PREVIEW_HEAD_TIMEOUT: Duration = Duration::from_secs(30);
+const PREVIEW_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const PREVIEW_READ_CHUNK: usize = 64 * 1024;
 const PREVIEW_REQUEST_LIMIT: usize = 10 * 1024 * 1024;
 const FORWARDED_REQUEST_HEADERS: &[&str] = &[
     "accept",
@@ -849,29 +858,125 @@ const BROWSER_RESPONSE_HEADERS: &[&str] = &[
 
 async fn read_head(stream: &mut tokio::net::UnixStream) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     use tokio::io::AsyncReadExt;
-    let mut buffer = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 4096];
-    loop {
-        let count = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut chunk))
-            .await
-            .map_err(|_| ApiError::Status(504, "guest preview did not respond".into()))??;
-        if count == 0 {
-            return Err(ApiError::Status(
-                502,
-                "guest preview closed the connection".into(),
-            ));
+    let read = async {
+        let mut buffer = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 4096];
+        loop {
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                return Err(ApiError::Status(
+                    502,
+                    "guest preview closed the connection".into(),
+                ));
+            }
+            buffer.extend_from_slice(&chunk[..count]);
+            if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let rest = buffer.split_off(end + 4);
+                return Ok((buffer, rest));
+            }
+            if buffer.len() > 64 * 1024 {
+                return Err(ApiError::Status(
+                    502,
+                    "guest preview header too large".into(),
+                ));
+            }
         }
-        buffer.extend_from_slice(&chunk[..count]);
-        if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-            let rest = buffer.split_off(end + 4);
-            return Ok((buffer, rest));
+    };
+    tokio::time::timeout(PREVIEW_HEAD_TIMEOUT, read)
+        .await
+        .map_err(|_| ApiError::Status(504, "guest preview did not respond".into()))?
+}
+
+struct GuestBody<G> {
+    tunnel: tokio::net::UnixStream,
+    pending: Bytes,
+    remaining: Option<u64>,
+    scratch: Box<[u8]>,
+    idle: Pin<Box<tokio::time::Sleep>>,
+    _keep: G,
+}
+
+impl<G> GuestBody<G> {
+    fn new(
+        tunnel: tokio::net::UnixStream,
+        mut pending: Bytes,
+        length: Option<u64>,
+        keep: G,
+    ) -> Self {
+        if let Some(length) = length {
+            pending.truncate(usize::try_from(length).unwrap_or(usize::MAX));
         }
-        if buffer.len() > 64 * 1024 {
-            return Err(ApiError::Status(
-                502,
-                "guest preview header too large".into(),
-            ));
+        Self {
+            tunnel,
+            pending,
+            remaining: length,
+            scratch: vec![0; PREVIEW_READ_CHUNK].into_boxed_slice(),
+            idle: Box::pin(tokio::time::sleep(PREVIEW_IDLE_TIMEOUT)),
+            _keep: keep,
         }
+    }
+
+    fn sent(&mut self, data: Bytes) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining = remaining.saturating_sub(data.len() as u64);
+        }
+        Poll::Ready(Some(Ok(Frame::data(data))))
+    }
+}
+
+impl<G: Unpin> hyper::body::Body for GuestBody<G> {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+        use std::{future::Future, io::ErrorKind};
+        use tokio::io::AsyncRead;
+        let this = self.get_mut();
+        if !this.pending.is_empty() {
+            let data = std::mem::take(&mut this.pending);
+            return this.sent(data);
+        }
+        let wanted = match this.remaining {
+            Some(0) => return Poll::Ready(None),
+            Some(remaining) => usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .min(PREVIEW_READ_CHUNK),
+            None => PREVIEW_READ_CHUNK,
+        };
+        let mut read = tokio::io::ReadBuf::new(&mut this.scratch[..wanted]);
+        let polled = Pin::new(&mut this.tunnel)
+            .poll_read(cx, &mut read)
+            .map_ok(|()| Bytes::copy_from_slice(read.filled()));
+        match polled {
+            Poll::Ready(Ok(data)) if data.is_empty() && this.remaining.is_some() => {
+                Poll::Ready(Some(Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "guest preview closed before the declared length",
+                ))))
+            }
+            Poll::Ready(Ok(data)) if data.is_empty() => Poll::Ready(None),
+            Poll::Ready(Ok(data)) => {
+                this.idle
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + PREVIEW_IDLE_TIMEOUT);
+                this.sent(data)
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(error))),
+            Poll::Pending => match this.idle.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(Some(Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    "guest preview went quiet",
+                )))),
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.remaining == Some(0)
     }
 }
 
@@ -931,12 +1036,91 @@ where
     Ok(())
 }
 
+async fn relay_response<B, G>(
+    mut tunnel: tokio::net::UnixStream,
+    request: &mut Request<B>,
+    token: &str,
+    target: &str,
+    browse: bool,
+    keep: G,
+) -> ApiResult<Response<Body>>
+where
+    G: Send + Sync + Unpin + 'static,
+{
+    use tokio::io::AsyncWriteExt;
+    let (response_head, leftover) = read_head(&mut tunnel).await?;
+    let text = String::from_utf8_lossy(&response_head);
+    let mut lines = text.split("\r\n");
+    let status: u16 = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .ok_or_else(|| ApiError::Status(502, "guest preview sent an invalid status".into()))?;
+    let allowed: &[&str] = match (status, browse) {
+        (101, _) => UPGRADE_RESPONSE_HEADERS,
+        (_, true) => BROWSER_RESPONSE_HEADERS,
+        (_, false) => PLAIN_RESPONSE_HEADERS,
+    };
+    let mut builder = Response::builder()
+        .status(status)
+        .header("cache-control", "no-store")
+        .header("x-content-type-options", "nosniff");
+    if status != 101 && !browse {
+        builder = builder
+            .header("content-type", "application/octet-stream")
+            .header("content-security-policy", "sandbox")
+            .header("content-disposition", "attachment");
+    }
+    for line in lines.filter(|line| !line.is_empty()) {
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            if name == "location" && allowed.contains(&"location") {
+                if let Some(target) = preview_location(token, target, value.trim()) {
+                    builder = builder.header(name, target);
+                }
+            } else if allowed.contains(&name.as_str()) {
+                builder = builder.header(name, value.trim());
+            }
+        }
+    }
+    if status != 101 {
+        let bodyless =
+            request.method() == hyper::Method::HEAD || matches!(status, 100..=199 | 204 | 304);
+        if bodyless {
+            return builder
+                .body(full(Bytes::new()))
+                .map_err(|error| ApiError::Status(502, error.to_string()));
+        }
+        let length = declared_length(&text).map(|length| length as u64);
+        if let Some(length) = length {
+            builder = builder.header("content-length", length);
+        }
+        return builder
+            .body(GuestBody::new(tunnel, Bytes::from(leftover), length, keep).boxed())
+            .map_err(|error| ApiError::Status(502, error.to_string()));
+    }
+    let upgrade = hyper::upgrade::on(request);
+    tokio::spawn(async move {
+        let _keep = keep;
+        let Ok(upgraded) = upgrade.await else {
+            return;
+        };
+        let mut client = hyper_util::rt::TokioIo::new(upgraded);
+        if !leftover.is_empty() && client.write_all(&leftover).await.is_err() {
+            return;
+        }
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut tunnel).await;
+    });
+    builder
+        .body(full(Bytes::new()))
+        .map_err(|error| ApiError::Status(502, error.to_string()))
+}
+
 async fn preview(
     mut request: Request<Incoming>,
     service: Arc<Service>,
     browse: bool,
 ) -> ApiResult<Response<Body>> {
-    use tokio::io::AsyncWriteExt;
     let path = request
         .uri()
         .path()
@@ -967,95 +1151,309 @@ async fn preview(
         None => format!("/{rest}"),
     };
     forward_request(&mut tunnel, &mut request, &target, claims.port).await?;
-    let (response_head, leftover) = read_head(&mut tunnel).await?;
-    let text = String::from_utf8_lossy(&response_head);
-    let mut lines = text.split("\r\n");
-    let status: u16 = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse().ok())
-        .ok_or_else(|| ApiError::Status(502, "guest preview sent an invalid status".into()))?;
-    let allowed: &[&str] = match (status, browse) {
-        (101, _) => UPGRADE_RESPONSE_HEADERS,
-        (_, true) => BROWSER_RESPONSE_HEADERS,
-        (_, false) => PLAIN_RESPONSE_HEADERS,
-    };
-    let mut builder = Response::builder()
-        .status(status)
-        .header("cache-control", "no-store")
-        .header("x-content-type-options", "nosniff");
-    if status != 101 && !browse {
-        builder = builder
-            .header("content-type", "application/octet-stream")
-            .header("content-security-policy", "sandbox")
-            .header("content-disposition", "attachment");
-    }
-    for line in lines.filter(|line| !line.is_empty()) {
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_ascii_lowercase();
-            if name == "location" && allowed.contains(&"location") {
-                if let Some(target) = preview_location(token, &target, value.trim()) {
-                    builder = builder.header(name, target);
-                }
-            } else if allowed.contains(&name.as_str()) {
-                builder = builder.header(name, value.trim());
-            }
-        }
-    }
-    if status != 101 {
-        use tokio::io::AsyncReadExt;
-        let mut body = leftover;
-        let expected = declared_length(&text);
-        let wanted = expected.map_or(PREVIEW_BODY_LIMIT + 1, |length| {
-            length.min(PREVIEW_BODY_LIMIT + 1)
-        });
-        let remaining = wanted.saturating_sub(body.len()) as u64;
-        let _ = tokio::time::timeout(
-            Duration::from_secs(30),
-            (&mut tunnel).take(remaining).read_to_end(&mut body),
-        )
-        .await;
-        if expected.is_some_and(|length| length > PREVIEW_BODY_LIMIT) {
-            return Err(ApiError::Status(502, "guest preview body too large".into()));
-        }
-        if body.len() > PREVIEW_BODY_LIMIT {
-            return Err(ApiError::Status(502, "guest preview body too large".into()));
-        }
-        return builder
-            .body(Full::new(Bytes::from(body)).boxed())
-            .map_err(|error| ApiError::Status(502, error.to_string()));
-    }
-    let upgrade = hyper::upgrade::on(&mut request);
-    tokio::spawn(async move {
-        let _operation = operation;
-        let Ok(upgraded) = upgrade.await else {
-            return;
-        };
-        let mut client = hyper_util::rt::TokioIo::new(upgraded);
-        if !leftover.is_empty() && client.write_all(&leftover).await.is_err() {
-            return;
-        }
-        let _ = tokio::io::copy_bidirectional(&mut client, &mut tunnel).await;
-    });
-    builder
-        .body(Full::new(Bytes::new()).boxed())
-        .map_err(|error| ApiError::Status(502, error.to_string()))
+    relay_response(tunnel, &mut request, token, &target, browse, operation).await
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full, StreamBody};
-    use hyper::{Request, body::Frame};
-    use std::convert::Infallible;
+    use hyper::{
+        Request,
+        body::{Frame, Incoming},
+    };
+    use std::{convert::Infallible, sync::Arc, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixStream,
+    };
+
+    async fn relayed<F, Fut>(method: &str, guest: F) -> (Served, Arc<()>)
+    where
+        F: FnOnce(UnixStream) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let (tunnel, guest_end) = UnixStream::pair().unwrap();
+        tokio::spawn(guest(guest_end));
+        let keep = Arc::new(());
+        let mut request = Request::builder()
+            .method(method)
+            .uri("/v1/preview/tok/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = super::relay_response(tunnel, &mut request, "tok", "/", true, keep.clone())
+            .await
+            .unwrap();
+        (serve_once(response).await, keep)
+    }
+
+    type Served = Result<hyper::Response<Incoming>, hyper::Error>;
+
+    async fn collect(response: Served) -> Result<Bytes, String> {
+        response
+            .map_err(|error| error.to_string())?
+            .into_body()
+            .collect()
+            .await
+            .map(http_body_util::Collected::to_bytes)
+            .map_err(|error| error.to_string())
+    }
+
+    async fn released(keep: &Arc<()>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while Arc::strong_count(keep) > 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the activity guard outlives the response");
+    }
+
+    async fn next_data(body: &mut Incoming) -> Option<Bytes> {
+        loop {
+            match body.frame().await?.ok()?.into_data() {
+                Ok(data) => return Some(data),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_response_over_a_mebibyte_arrives_whole() {
+        let size = 3 * 1024 * 1024;
+        let (response, _) = relayed("GET", move |mut guest: UnixStream| async move {
+            let head = format!(
+                "HTTP/1.0 200 OK\r\ncontent-type: text/javascript\r\ncontent-length: {size}\r\n\r\n"
+            );
+            guest.write_all(head.as_bytes()).await.unwrap();
+            guest.write_all(&vec![b'j'; size]).await.unwrap();
+        })
+        .await;
+        let response = response.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get("content-length").unwrap(),
+            &size.to_string()
+        );
+        assert_eq!(collect(Ok(response)).await.unwrap().len(), size);
+    }
+
+    #[tokio::test]
+    async fn a_preview_response_cut_short_fails_at_the_client() {
+        let (response, _) = relayed("GET", |mut guest: UnixStream| async move {
+            guest
+                .write_all(b"HTTP/1.0 200 OK\r\ncontent-length: 100\r\n\r\nonly ten b")
+                .await
+                .unwrap();
+        })
+        .await;
+        assert!(collect(response).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_preview_response_without_a_length_runs_until_the_guest_closes() {
+        let (response, _) = relayed("GET", |mut guest: UnixStream| async move {
+            guest
+                .write_all(b"HTTP/1.0 200 OK\r\ncontent-type: text/plain\r\n\r\nfirst ")
+                .await
+                .unwrap();
+            guest.write_all(b"second").await.unwrap();
+        })
+        .await;
+        assert_eq!(collect(response).await.unwrap(), "first second");
+    }
+
+    #[tokio::test]
+    async fn server_sent_events_reach_the_client_as_they_are_sent() {
+        let (send_more, mut more) = tokio::sync::mpsc::channel::<&'static [u8]>(1);
+        let (closed, client_gone) = tokio::sync::oneshot::channel::<()>();
+        let (response, keep) = tokio::time::timeout(
+            Duration::from_secs(5),
+            relayed("GET", move |mut guest: UnixStream| async move {
+                guest
+                    .write_all(
+                        b"HTTP/1.0 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: one\n\n",
+                    )
+                    .await
+                    .unwrap();
+                let event = more.recv().await.unwrap();
+                guest.write_all(event).await.unwrap();
+                let mut probe = [0u8; 1];
+                if guest.read(&mut probe).await.unwrap_or(0) == 0 {
+                    let _ = closed.send(());
+                }
+            }),
+        )
+        .await
+        .expect("the response head waits for the whole stream");
+        let mut body = response.unwrap().into_body();
+        let first = tokio::time::timeout(Duration::from_secs(5), next_data(&mut body))
+            .await
+            .expect("the first event waits for the whole stream");
+        assert_eq!(first.as_deref(), Some(&b"data: one\n\n"[..]));
+        assert_eq!(Arc::strong_count(&keep), 2);
+        send_more.send(b"data: two\n\n").await.unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(5), next_data(&mut body))
+            .await
+            .unwrap();
+        assert_eq!(second.as_deref(), Some(&b"data: two\n\n"[..]));
+        drop(body);
+        tokio::time::timeout(Duration::from_secs(5), client_gone)
+            .await
+            .expect("the guest connection outlives the client")
+            .unwrap();
+        released(&keep).await;
+    }
+
+    #[tokio::test]
+    async fn the_activity_guard_is_held_until_the_body_is_sent() {
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let (response, keep) = relayed("GET", move |mut guest: UnixStream| async move {
+            guest
+                .write_all(b"HTTP/1.0 200 OK\r\ncontent-length: 4\r\n\r\nab")
+                .await
+                .unwrap();
+            let _ = wait.await;
+            guest.write_all(b"cd").await.unwrap();
+        })
+        .await;
+        assert_eq!(Arc::strong_count(&keep), 2);
+        release.send(()).unwrap();
+        assert_eq!(collect(response).await.unwrap(), "abcd");
+        released(&keep).await;
+    }
+
+    #[tokio::test]
+    async fn a_head_or_no_content_answer_does_not_wait_for_a_body() {
+        for (method, head) in [
+            (
+                "HEAD",
+                &b"HTTP/1.0 200 OK\r\ncontent-length: 512\r\n\r\n"[..],
+            ),
+            ("GET", &b"HTTP/1.0 204 No Content\r\n\r\n"[..]),
+            (
+                "GET",
+                &b"HTTP/1.0 304 Not Modified\r\ncontent-length: 512\r\n\r\n"[..],
+            ),
+        ] {
+            let (response, _) = tokio::time::timeout(
+                Duration::from_secs(5),
+                relayed(method, move |mut guest: UnixStream| async move {
+                    guest.write_all(head).await.unwrap();
+                    std::future::pending::<()>().await;
+                }),
+            )
+            .await
+            .expect("a bodyless answer waits for a body");
+            assert!(collect(response).await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_upgrade_relays_both_ways_and_holds_the_guard() {
+        use hyper_util::rt::TokioIo;
+        let (tunnel, mut guest) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            guest
+                .write_all(b"HTTP/1.1 101 Switching Protocols\r\nconnection: Upgrade\r\nupgrade: websocket\r\n\r\n")
+                .await
+                .unwrap();
+            let mut frame = [0u8; 4];
+            guest.read_exact(&mut frame).await.unwrap();
+            guest.write_all(&frame).await.unwrap();
+        });
+        let keep = Arc::new(());
+        let held = keep.clone();
+        let tunnel = std::sync::Mutex::new(Some(tunnel));
+        let (client_io, server_io) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |mut request: Request<Incoming>| {
+                let tunnel = tunnel.lock().unwrap().take().unwrap();
+                let held = held.clone();
+                async move {
+                    super::relay_response(tunnel, &mut request, "tok", "/", true, held)
+                        .await
+                        .map_err(|error| error.to_string())
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(server_io), service)
+                .with_upgrades()
+                .await;
+        });
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(client_io))
+                .await
+                .unwrap();
+        tokio::spawn(connection.with_upgrades());
+        let response = sender
+            .send_request(
+                Request::get("/v1/preview/tok/")
+                    .header("connection", "Upgrade")
+                    .header("upgrade", "websocket")
+                    .body(http_body_util::Empty::<Bytes>::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 101);
+        assert_eq!(response.headers().get("upgrade").unwrap(), "websocket");
+        let mut upgraded = TokioIo::new(hyper::upgrade::on(response).await.unwrap());
+        upgraded.write_all(b"ping").await.unwrap();
+        let mut echoed = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(5), upgraded.read_exact(&mut echoed))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&echoed, b"ping");
+        assert_eq!(Arc::strong_count(&keep), 2);
+        drop(upgraded);
+        released(&keep).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guest_that_goes_quiet_mid_body_fails_at_the_client() {
+        let (response, keep) = relayed("GET", |mut guest: UnixStream| async move {
+            guest
+                .write_all(b"HTTP/1.0 200 OK\r\ncontent-type: text/plain\r\n\r\nsome")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(collect(response).await.is_err());
+        released(&keep).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guest_that_trickles_its_head_times_out() {
+        let (tunnel, mut guest) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            guest.write_all(b"HTTP/1.0 200 OK\r\n").await.unwrap();
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if guest.write_all(b"x-slow: 1\r\n").await.is_err() {
+                    return;
+                }
+            }
+        });
+        let mut request = Request::get("/v1/preview/tok/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let error = super::relay_response(tunnel, &mut request, "tok", "/", true, ())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status(), 504);
+        assert!(started.elapsed() <= Duration::from_secs(60));
+    }
 
     async fn guest_receives<B>(mut request: Request<B>) -> (u16, String)
     where
         B: hyper::body::Body<Data = Bytes> + Unpin,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut tunnel, mut guest) = tokio::net::UnixStream::pair().unwrap();
+        let (mut tunnel, mut guest) = UnixStream::pair().unwrap();
         let reader = tokio::spawn(async move {
             let mut received = Vec::new();
             guest.read_to_end(&mut received).await.map(|_| received)
@@ -1183,8 +1581,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_guest_that_answers_before_reading_the_body_is_still_heard() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut tunnel, mut guest) = tokio::net::UnixStream::pair().unwrap();
+        let (mut tunnel, mut guest) = UnixStream::pair().unwrap();
         tokio::spawn(async move {
             let mut head = [0u8; 64];
             guest.read_exact(&mut head).await.unwrap();
@@ -1206,14 +1603,12 @@ mod tests {
     #[tokio::test]
     async fn a_web_server_in_the_guest_reads_the_relayed_body() {
         use hyper_util::rt::TokioIo;
-        use tokio::io::AsyncReadExt;
-        let (mut tunnel, guest) = tokio::net::UnixStream::pair().unwrap();
+        let (mut tunnel, guest) = UnixStream::pair().unwrap();
         let server = tokio::spawn(async move {
-            let echo =
-                hyper::service::service_fn(|request: Request<hyper::body::Incoming>| async move {
-                    let body = request.into_body().collect().await?.to_bytes();
-                    Ok::<_, hyper::Error>(hyper::Response::new(Full::new(body)))
-                });
+            let echo = hyper::service::service_fn(|request: Request<Incoming>| async move {
+                let body = request.into_body().collect().await?.to_bytes();
+                Ok::<_, hyper::Error>(hyper::Response::new(Full::new(body)))
+            });
             hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(guest), echo)
                 .await
@@ -1242,11 +1637,11 @@ mod tests {
         let daemon = crate::testing::Daemon::new();
         let runtime = daemon.runtime().await;
         let service = daemon.service(runtime.clone()).await;
-        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
         crate::serve(
             server,
             service,
-            std::sync::Arc::new(b"token".to_vec()),
+            Arc::new(b"token".to_vec()),
             super::Listener::Api,
         );
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
@@ -1264,15 +1659,15 @@ mod tests {
             let response = sender.send_request(request).await?;
             response.into_body().collect().await.map(|_| ())
         });
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while runtime.list().await.unwrap().is_empty() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "run never created a sandbox"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             runtime.list().await.unwrap().len(),
             1,
@@ -1280,13 +1675,13 @@ mod tests {
         );
         response.abort();
         connection.abort();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while !runtime.list().await.unwrap().is_empty() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "the sandbox outlived the disconnected run"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -1303,23 +1698,15 @@ mod tests {
         assert_eq!(desktop_view(Stream, &Value::Null), VNC_VIEW);
     }
 
-    async fn fetch_download(
-        size: u64,
-        sent: &[&'static [u8]],
-    ) -> (Option<String>, Result<usize, String>) {
-        use super::sized_stream_response;
-        use http_body_util::{BodyExt, Empty};
+    async fn serve_once(response: hyper::Response<super::Body>) -> Served {
+        use http_body_util::Empty;
         use hyper_util::rt::TokioIo;
         let (client_io, server_io) = tokio::io::duplex(1 << 16);
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        for chunk in sent {
-            sender.send(Bytes::from_static(chunk)).await.unwrap();
-        }
-        let receiver = std::sync::Mutex::new(Some(receiver));
+        let response = std::sync::Mutex::new(Some(response));
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |_request| {
-                let receiver = receiver.lock().unwrap().take().unwrap();
-                async move { Ok::<_, Infallible>(sized_stream_response(size, receiver)) }
+                let response = response.lock().unwrap().take().unwrap();
+                async move { Ok::<_, Infallible>(response) }
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(server_io), service)
@@ -1330,8 +1717,20 @@ mod tests {
                 .await
                 .unwrap();
         tokio::spawn(connection);
-        let response = request_sender
-            .send_request(Request::get("/files").body(Empty::<Bytes>::new()).unwrap())
+        request_sender
+            .send_request(Request::get("/").body(Empty::<Bytes>::new()).unwrap())
+            .await
+    }
+
+    async fn fetch_download(
+        size: u64,
+        sent: &[&'static [u8]],
+    ) -> (Option<String>, Result<usize, String>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        for chunk in sent {
+            sender.send(Bytes::from_static(chunk)).await.unwrap();
+        }
+        let response = serve_once(super::sized_stream_response(size, receiver))
             .await
             .unwrap();
         let declared = response
