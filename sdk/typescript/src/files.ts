@@ -2,6 +2,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Api } from "./api.js";
+import { KumobaError } from "./errors.js";
 import { readBody } from "./http.js";
 import { shellQuote } from "./shell.js";
 import type { FileEntry, FileOptions, ReadOptions, RunResult } from "./types.js";
@@ -85,8 +86,10 @@ export class Files {
   }
 }
 
-export function commandError(command: string, result: RunResult) {
+function commandError(command: string, result: RunResult): KumobaError & { result: RunResult } {
   const detail = result.stderr.trim() || result.stdout.trim();
   const message = `${command.split(" ")[0] ?? command} failed with exit ${String(result.exitCode)}${detail ? `: ${detail}` : ""}`;
-  return Object.assign(new Error(message), { result });
+  return Object.assign(new KumobaError(message, { status: 502, code: "command_failed" }), {
+    result,
+  });
 }

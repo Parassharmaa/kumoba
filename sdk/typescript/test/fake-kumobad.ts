@@ -35,7 +35,8 @@ export type FakeExecCall = {
 
 export type FakeExecReply =
   | { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; signal?: number }
-  | { error: string };
+  | { error: string }
+  | { stdout?: string; cut: "before" | "hang" | "drop" | "end" };
 
 export type FakeAccessEntry = {
   sandboxId: string;
@@ -77,6 +78,25 @@ function send(response: ServerResponse, status: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
+function cutStream(
+  response: ServerResponse,
+  reply: Extract<FakeExecReply, { cut: string }>,
+  lead: unknown[]
+): void {
+  if (reply.cut === "before") return;
+  response.writeHead(200, { "content-type": "application/x-ndjson" });
+  const lines = [
+    ...lead,
+    ...(reply.stdout
+      ? [{ type: "stdout", data: Buffer.from(reply.stdout).toString("base64") }]
+      : []),
+  ];
+  response.write(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), () => {
+    if (reply.cut === "drop") response.destroy();
+    else if (reply.cut === "end") response.end();
+  });
+}
+
 function summary(sandbox: FakeSandbox) {
   const { files: _files, secrets: _secrets, ...rest } = sandbox;
   return rest;
@@ -98,7 +118,9 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     downloadsClosed: 0,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
       rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -144,6 +166,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: "run", ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, [{ type: "sandbox", id: "run" }]);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         const lines = [
           { type: "sandbox", id: "run" },
@@ -280,6 +306,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: sandbox.id, ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, []);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         if ("error" in reply) {
           response.end(`${JSON.stringify({ type: "error", message: reply.error })}\n`);
