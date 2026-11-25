@@ -1,6 +1,8 @@
 import { type Api, type ExecEvent, type ExecRequest, toInfo } from "./api.js";
 import { Desktop } from "./desktop.js";
+import { KumobaError } from "./errors.js";
 import { Files } from "./files.js";
+import { abortedError } from "./http.js";
 import { toNetwork } from "./network.js";
 import { toArgv } from "./shell.js";
 import type {
@@ -183,14 +185,27 @@ export async function collectRun(
         break;
     }
   });
-  if (failure !== undefined) throw new Error(`kumobad could not run the command: ${failure}`);
-  const exitCode = exit?.exitCode ?? null;
+  if (failure !== undefined) {
+    throw new KumobaError(`kumobad could not run the command: ${failure}`, {
+      status: 502,
+      code: "daemon_error",
+    });
+  }
+  if (exit === undefined) {
+    if (options.signal?.aborted) throw abortedError(options.signal);
+    throw new KumobaError("kumobad output stream ended before the command exited", {
+      status: 502,
+      code: "protocol",
+      retryable: true,
+    });
+  }
+  const exitCode = exit.exitCode;
   return {
     exitCode,
     stdout: stdout.text(),
     stderr: stderr.text(),
-    timedOut: exit?.timedOut ?? false,
-    ...(exit?.signal !== undefined ? { signal: exit.signal } : {}),
+    timedOut: exit.timedOut,
+    ...(exit.signal !== undefined ? { signal: exit.signal } : {}),
     ok: exitCode === 0,
     truncated: stdout.truncated || stderr.truncated,
   };

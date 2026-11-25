@@ -11,6 +11,7 @@ export type KumobaErrorCode =
   | "command_failed"
   | "daemon_error"
   | "unreachable"
+  | "aborted"
   | string;
 
 /**

@@ -105,6 +105,19 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 
 ## Errors
 
-Failures throw `KumobaError` with an HTTP `status` and a `code`, such as `not_found` or `unreachable`.
+Failures throw `KumobaError` with a `code`, a `retryable` flag and an HTTP-style `status`: the daemon's own when it answered with an error, 502 or 503 for a failure the SDK detected in its reply or connection, and 0 when no request was made. The exceptions are errors thrown by your own `onStdout` and `onStderr` callbacks, local file errors in `files.upload()` and `files.download()` such as a missing local path, and errors from a stream you pass to `files.write()`; those reach you unchanged.
+
+| `code` | When | `retryable` |
+| --- | --- | --- |
+| `aborted` | The `signal` you passed to `run()` was aborted. `cause` is `signal.reason`. | `false` |
+| `unreachable` | kumobad could not be reached, or the connection broke before the reply was complete, for example because kumobad restarted. | `true` |
+| `protocol` | kumobad sent something the SDK does not understand, a download ended early, or a command's output ended without an exit status. | `true` when a download or a command's output ended early, otherwise `false` |
+| `daemon_error` | kumobad started the request but could not run the command, for example because the guest agent did not answer. | `false` |
+| `command_failed` | A shell helper such as `files.mkdir()`, `files.remove()` or a `desktop` method exited non-zero. For `mkdir` and `remove`, `result` holds the command's `RunResult`. | `false` |
+| `invalid_request` | The SDK refused the arguments before asking kumobad, such as an empty command. | `false` |
+
+Other codes, such as `not_found`, `capacity` or `guest_error`, are the daemon's own and come with its HTTP status (see the [HTTP API](/http-api)). An error reply without a code is `daemon_error`. Errors from the daemon are retryable when the status is 429 or 5xx.
+
+A `run()` that fails with `unreachable` or `protocol` after kumobad accepted it may have started the command, so retry only commands that are safe to run twice.
 
 `files.read()`, `files.readText()`, `files.stream()` and `files.download()` compare the bytes received with the file size the daemon reports. A download that ends early, for example because the sandbox stopped mid-transfer, throws a `KumobaError` with code `protocol` and `retryable: true` instead of returning a short file. A stream emits it as an `error`.

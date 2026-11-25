@@ -35,7 +35,8 @@ export type FakeExecCall = {
 
 export type FakeExecReply =
   | { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; signal?: number }
-  | { error: string };
+  | { error: string }
+  | { stdout?: string; cut: "before" | "hang" | "drop" | "end" };
 
 export type FakeAccessEntry = {
   sandboxId: string;
@@ -64,6 +65,7 @@ export type FakeKumobad = {
   listCap: number;
   downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
   downloadsClosed: number;
+  imagesCut: boolean;
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -79,6 +81,25 @@ async function body(request: IncomingMessage): Promise<Buffer> {
 function send(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
+}
+
+function cutStream(
+  response: ServerResponse,
+  reply: Extract<FakeExecReply, { cut: string }>,
+  lead: unknown[]
+): void {
+  if (reply.cut === "before") return;
+  response.writeHead(200, { "content-type": "application/x-ndjson" });
+  const lines = [
+    ...lead,
+    ...(reply.stdout
+      ? [{ type: "stdout", data: Buffer.from(reply.stdout).toString("base64") }]
+      : []),
+  ];
+  response.write(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), () => {
+    if (reply.cut === "drop") response.destroy();
+    else if (reply.cut === "end") response.end();
+  });
 }
 
 function link(fake: FakeKumobad, path: string) {
@@ -109,10 +130,15 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     listCap: Number.POSITIVE_INFINITY,
     downloadCut: undefined,
     downloadsClosed: 0,
+    imagesCut: false,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await new Promise<void>((resolve) => tcp.close(() => resolve()));
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      const tcpClosed = new Promise<void>((resolve) => tcp.close(() => resolve()));
+      server.closeAllConnections();
+      tcp.closeAllConnections();
+      await closed;
+      await tcpClosed;
       rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -158,6 +184,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: "run", ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, [{ type: "sandbox", id: "run" }]);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         const lines = [
           { type: "sandbox", id: "run" },
@@ -174,6 +204,11 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         return;
       }
       if (method === "GET" && url.pathname === "/v1/images") {
+        if (fake.imagesCut) {
+          response.writeHead(200, { "content-type": "application/json", "content-length": "64" });
+          response.write('{"images":["def', () => response.destroy());
+          return;
+        }
         send(response, 200, { images: ["default", "test"] });
         return;
       }
@@ -295,6 +330,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: sandbox.id, ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, []);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         if ("error" in reply) {
           response.end(`${JSON.stringify({ type: "error", message: reply.error })}\n`);
