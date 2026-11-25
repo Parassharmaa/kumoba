@@ -57,6 +57,7 @@ export type FakeKumobad = {
   accessEntries: FakeAccessEntry[];
   accessPageSize: number;
   execs: FakeExecCall[];
+  listFilters: string[][];
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -90,6 +91,7 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     accessEntries: [],
     accessPageSize: 1000,
     execs: [],
+    listFilters: [],
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -180,10 +182,23 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         return;
       }
       if (method === "GET" && url.pathname === "/v1/sandboxes") {
-        const filters = url.searchParams.getAll("label").map((pair) => pair.split(":"));
+        const raw = url.searchParams.getAll("label");
+        fake.listFilters.push(raw);
+        const malformed = raw.find((filter) => filter.indexOf(":") < 1);
+        if (malformed !== undefined) {
+          send(response, 400, {
+            error: "invalid_request",
+            message: `label filter must be key:value, got ${JSON.stringify(malformed)}`,
+          });
+          return;
+        }
+        const filters = raw.map((filter) => {
+          const split = filter.indexOf(":");
+          return [filter.slice(0, split), filter.slice(split + 1)] as const;
+        });
         const limit = Number(url.searchParams.get("limit") ?? 1000);
         const matched = [...fake.sandboxes.values()].filter((candidate) =>
-          filters.every(([key, value]) => key !== undefined && candidate.labels[key] === value)
+          filters.every(([key, value]) => candidate.labels[key] === value)
         );
         send(response, 200, {
           sandboxes: matched.slice(0, limit).map(summary),

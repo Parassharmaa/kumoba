@@ -282,9 +282,40 @@ pub fn labels_match(labels: &BTreeMap<String, String>, filter: &[(String, String
         .all(|(key, value)| labels.get(key).is_some_and(|actual| actual == value))
 }
 
+pub fn label_filter<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<(String, String)>, String> {
+    values
+        .into_iter()
+        .map(|value| match value.split_once(':') {
+            Some((key, rest)) if !key.is_empty() => Ok((key.to_string(), rest.to_string())),
+            _ => Err(format!("label filter must be key:value, got {value:?}")),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_filter_is_key_colon_value() {
+        let pair = |key: &str, value: &str| (key.to_string(), value.to_string());
+        assert_eq!(
+            label_filter(["task:fix-tests", "k:", "url:http://x:1"]),
+            Ok(vec![
+                pair("task", "fix-tests"),
+                pair("k", ""),
+                pair("url", "http://x:1")
+            ])
+        );
+        assert_eq!(label_filter([]), Ok(vec![]));
+        for malformed in ["task=fix-tests", "", ":v", "task"] {
+            let error = label_filter(["team:a", malformed]).unwrap_err();
+            assert!(error.contains("key:value"), "{malformed}: {error}");
+            assert!(error.contains(malformed), "{malformed}: {error}");
+        }
+    }
 
     #[test]
     fn label_filter_requires_every_pair() {

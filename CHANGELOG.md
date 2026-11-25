@@ -6,6 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
+- `kumobad`: a `label` filter on `GET /v1/sandboxes` that is not `key:value`, such as `task=fix-tests`, is now refused with 400 `invalid_request`. It used to be ignored, so `kumoba list --label task=fix-tests` listed every sandbox. Both CLIs fail on it instead of listing (the Node.js CLI before it asks the daemon), and on an empty `--label`, `--label '[]'` or `--args '{"label":[]}'`, which used to send no filter at all. In the TypeScript SDK, `kumoba.list({ labels })` refuses an empty key or a key with `:`, which a filter cannot express.
 - Live view: a client that connects to `kumoba-view` and sends nothing, or asks for the viewer script and never reads it, gives up its place sooner: a connection has 2 seconds to start its request, down from 5, and 10 seconds to read the reply, which had no limit before. One address can hold at most half of the connections that are still loading the page, so clients from other addresses still get in, and when no place is free the engine answers `503 Service Unavailable` instead of closing the connection without a reply.
 
 ## [0.6.6] - 2026-11-25

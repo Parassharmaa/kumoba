@@ -26,6 +26,8 @@ Before you begin, [install kumoba and start `kumobad`](/getting-started).
    kumoba list --label project:demo
    ```
 
+   A filter is written `key:value`, not `key=value` as on create.
+
 ## Run commands
 
 For an interactive terminal, use [`kumoba shell`](/guide/shell). For single commands:

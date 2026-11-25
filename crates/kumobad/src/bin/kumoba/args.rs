@@ -168,6 +168,33 @@ fn coerce(schema: &Value, raw: &str, name: &str, current: Option<&Value>) -> Res
     }
 }
 
+fn short_list(schema: &Value, values: &Map<String, Value>, prefix: &str) -> Option<String> {
+    for (name, property) in schema.get("properties")?.as_object()? {
+        let dotted = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match values.get(name) {
+            Some(Value::Array(items)) => {
+                if let Some(min) = property.get("minItems").and_then(Value::as_u64)
+                    && u64::try_from(items.len()).unwrap_or(u64::MAX) < min
+                {
+                    let noun = if min == 1 { "value" } else { "values" };
+                    return Some(format!("{} needs at least {min} {noun}", kebab(&dotted)));
+                }
+            }
+            Some(Value::Object(nested)) => {
+                if let Some(error) = short_list(property, nested, &dotted) {
+                    return Some(error);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn insert(values: &mut Map<String, Value>, path: &[String], value: Value) {
     let (last, parents) = path.split_last().expect("non-empty path");
     let mut target = values;
@@ -331,6 +358,11 @@ impl<'a> Command<'a> {
                 Value::Array(rest.iter().cloned().map(Value::String).collect()),
             );
         }
+        if !parsed.help
+            && let Some(error) = short_list(self.schema, &parsed.values, "")
+        {
+            return Err(error);
+        }
         Ok(parsed)
     }
 
@@ -375,7 +407,7 @@ mod tests {
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     "timeoutMs": {"type": "integer"},
                     "tty": {"type": "boolean"},
-                    "label": {"type": "array", "items": {"type": "string"}},
+                    "label": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[^:]+:"}},
                     "content": {"type": "string"},
                     "autoDeleteMinutes": {"type": ["integer", "null"]},
                     "network": {"type": "object", "properties": {
@@ -435,6 +467,26 @@ mod tests {
         assert!(parse(&["--network.mode", "sometimes"]).is_err());
         assert!(parse(&["--timeout-ms", "soon"]).is_err());
         assert!(parse(&["--nope", "1"]).is_err());
+    }
+
+    #[test]
+    fn a_list_with_min_items_cannot_be_left_empty() {
+        let parsed = parse(&["network.hosts="]).unwrap();
+        assert_eq!(
+            Value::Object(parsed.values),
+            json!({"network": {"hosts": []}})
+        );
+        for tokens in [
+            &["--label", ""][..],
+            &["--label", " , "],
+            &["--label", "[]"],
+            &["--args", r#"{"label":[]}"#],
+        ] {
+            let error = parse(tokens).err().unwrap_or_default();
+            assert!(error.contains("label"), "{tokens:?}: {error}");
+        }
+        assert!(parse(&["--label", "x:1"]).is_ok());
+        assert!(parse(&["--args", r#"{"label":["x:1"]}"#]).is_ok());
     }
 
     #[test]

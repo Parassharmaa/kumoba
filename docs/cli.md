@@ -57,9 +57,9 @@ kumoba create --args '{"image":"default","labels":{"team":"qa"}}'
 - **Positional values** fill the command's path arguments in order, such as the sandbox id.
 - **`--kebab-case value`**, `--kebab-case=value` and `camelCase=value` set any argument. A boolean flag needs no value.
 - **Everything after `--`** is the command's trailing list: the program and arguments for `run` and `exec`. A program without a `/` is looked up on the guest's `PATH`.
-- **Types** come from the schema: integers and booleans are checked, enums list their choices, `null` clears a nullable value.
+- **Types** come from the schema: integers and booleans are checked, enums list their choices, `null` clears a nullable value, and a list with `minItems` cannot be left empty, whether it is given as a flag, a JSON array or in `--args`. The Node.js build also checks a value typed as a flag against the schema's `pattern`; the native build, and values given as JSON, leave that check to the daemon.
 - **Lists** take `a,b`, a repeated flag, or a JSON array.
-- **Maps** such as `env` and `labels` take repeated `key=value`: `--env A=1 --env B=2`.
+- **Maps** such as `env` and `labels` take repeated `key=value`: `--env A=1 --env B=2`. A label filter on `list` is written `key:value` instead. `list --label key=value`, an empty `--label` and `--label '[]'` fail instead of listing every sandbox.
 - **Nested objects** take dotted names (`--network.mode`) or JSON.
 - **`@file`** reads a value from a file and **`@-`** from stdin, so secrets stay out of shell history: `env=TOKEN=@token.txt`. Start a value with `@@` for a literal `@`.
 - **`--args '{...}'`** passes all arguments as one JSON object.
