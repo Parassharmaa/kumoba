@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 pub const MAX_INCOMING: usize = 256 * 1024;
 const MAX_BUFFERED: usize = 1024 * 1024;
+const MAX_CONTROL: usize = 125;
 
 pub fn accept_key(key: &str) -> String {
     let mut hash = Sha1::new();
@@ -33,6 +34,8 @@ pub fn frame_header(opcode: u8, length: usize) -> ([u8; 10], usize) {
 
 pub enum Message {
     Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong,
     Close,
 }
 
@@ -95,6 +98,12 @@ impl Reader {
             if length > MAX_INCOMING {
                 return Err(io::Error::other("client frame is too large"));
             }
+            let last = first & 0x80 != 0;
+            if first & 0x08 != 0 && (length > MAX_CONTROL || !last) {
+                return Err(io::Error::other(
+                    "client control frame is too large or fragmented",
+                ));
+            }
             let total = offset + 4 + length;
             if self.buffer.len() < total {
                 return Ok(None);
@@ -110,10 +119,10 @@ impl Reader {
                 *byte ^= mask[index & 3];
             }
             self.buffer.drain(..total);
-            let last = first & 0x80 != 0;
             match first & 0x0f {
                 0x8 => return Ok(Some(Message::Close)),
-                0x9 | 0xa => {}
+                0x9 => return Ok(Some(Message::Ping(payload))),
+                0xa => return Ok(Some(Message::Pong)),
                 0x0..=0x2 => {
                     if self.partial.len() + payload.len() > MAX_INCOMING {
                         return Err(io::Error::other("client message is too large"));
@@ -138,7 +147,19 @@ pub struct Writer {
 
 impl Writer {
     pub fn push(&mut self, payload: &[u8]) {
-        let (header, used) = frame_header(0x2, payload.len());
+        self.frame(0x2, payload);
+    }
+
+    pub fn ping(&mut self) {
+        self.frame(0x9, &[]);
+    }
+
+    pub fn pong(&mut self, payload: &[u8]) {
+        self.frame(0xa, &payload[..payload.len().min(MAX_CONTROL)]);
+    }
+
+    fn frame(&mut self, opcode: u8, payload: &[u8]) {
+        let (header, used) = frame_header(opcode, payload.len());
         let mut frame = Vec::with_capacity(used + payload.len());
         frame.extend_from_slice(&header[..used]);
         frame.extend_from_slice(payload);
@@ -236,5 +257,63 @@ mod tests {
             ..Reader::default()
         };
         assert!(reader.next().is_err());
+    }
+
+    fn control(first: u8, body: &[u8]) -> Reader {
+        let mask = [5u8, 6, 7, 8];
+        let mut buffer = vec![first, 0x80 | 126];
+        buffer.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        buffer.extend_from_slice(&mask);
+        buffer.extend(body.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+        Reader {
+            buffer,
+            ..Reader::default()
+        }
+    }
+
+    #[test]
+    fn hands_over_a_ping_with_its_payload_and_notes_a_pong() {
+        match control(0x89, b"are you there").next().unwrap() {
+            Some(Message::Ping(payload)) => assert_eq!(payload, b"are you there"),
+            _ => panic!("expected a ping"),
+        }
+        assert!(matches!(
+            control(0x8a, b"").next().unwrap(),
+            Some(Message::Pong)
+        ));
+    }
+
+    #[test]
+    fn a_ping_between_the_pieces_of_a_message_leaves_the_message_whole() {
+        let mut reader = control(0x02, b"hel");
+        reader.buffer.extend(control(0x89, b"x").buffer);
+        reader.buffer.extend(control(0x80, b"lo").buffer);
+        assert!(matches!(reader.next().unwrap(), Some(Message::Ping(_))));
+        match reader.next().unwrap() {
+            Some(Message::Binary(payload)) => assert_eq!(payload, b"hello"),
+            _ => panic!("expected the message"),
+        }
+    }
+
+    #[test]
+    fn refuses_control_frames_that_are_too_long_or_split() {
+        for opcode in [0x8, 0x9, 0xa] {
+            assert!(control(0x80 | opcode, &[0u8; 126]).next().is_err());
+            assert!(control(opcode, b"part").next().is_err());
+            assert!(control(0x80 | opcode, &[0u8; 125]).next().is_ok());
+        }
+    }
+
+    #[test]
+    fn writes_pings_and_pongs_as_short_control_frames() {
+        let mut writer = Writer::default();
+        writer.ping();
+        writer.pong(b"abc");
+        writer.pong(&[7u8; 300]);
+        let mut sent = Vec::new();
+        writer.flush(&mut sent).unwrap();
+        let mut expected = vec![0x89, 0x00, 0x8a, 0x03, b'a', b'b', b'c', 0x8a, 125];
+        expected.extend_from_slice(&[7u8; 125]);
+        assert_eq!(sent, expected);
     }
 }

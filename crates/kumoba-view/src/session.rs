@@ -35,9 +35,21 @@ const LOOK_AHEAD: usize = 512;
 const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
+pub struct Keepalive {
+    pub ping: Duration,
+    pub silence: Duration,
+}
+
+pub const KEEPALIVE: Keepalive = Keepalive {
+    ping: Duration::from_secs(15),
+    silence: Duration::from_secs(45),
+};
+
+#[derive(Clone, Copy)]
 pub struct Settings {
     pub fps: u32,
     pub max_mbps: u32,
+    pub keepalive: Keepalive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,14 +197,24 @@ pub fn run<S: Screen>(
     let mut strokes: VecDeque<Stroke> = VecDeque::new();
     let mut strokes_ready = started;
     let mut typed = started;
+    let mut heard = started;
+    let mut next_ping = started + settings.keepalive.ping;
     loop {
         writer.flush(&mut stream)?;
         if !reader.fill(&mut stream)? {
             return Ok(());
         }
+        let mut answered = false;
         while let Some(incoming) = reader.next()? {
-            let Message::Binary(data) = incoming else {
-                return Ok(());
+            answered = true;
+            let data = match incoming {
+                Message::Binary(data) => data,
+                Message::Ping(payload) => {
+                    writer.pong(&payload);
+                    continue;
+                }
+                Message::Pong => continue,
+                Message::Close => return Ok(()),
             };
             if access == Access::Watch
                 && !matches!(data.first(), Some(&(CLIENT_ACK | CLIENT_PAUSE)))
@@ -271,6 +293,16 @@ pub fn run<S: Screen>(
             }
         }
         let now = Instant::now();
+        if answered {
+            heard = now;
+        }
+        if now.duration_since(heard) >= settings.keepalive.silence {
+            return Err("the viewer stopped answering".into());
+        }
+        if now >= next_ping {
+            writer.ping();
+            next_ping = now + settings.keepalive.ping;
+        }
         while now >= strokes_ready {
             match strokes.front() {
                 None => break,
@@ -358,6 +390,11 @@ pub fn run<S: Screen>(
                 .saturating_duration_since(now)
                 .max(Duration::from_millis(1))
         });
+        let alive = next_ping
+            .min(heard + settings.keepalive.silence)
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(1));
+        let typing = sooner(typing, Some(alive));
         if !(wanted && open) {
             let timeout = if paused { None } else { Some(IDLE_WAKE) };
             poll(
@@ -429,9 +466,9 @@ mod tests {
     use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
 
-    const SIZE: usize = 64;
+    const SIDE: usize = 64;
 
     #[derive(Clone, Default)]
     struct Seen {
@@ -455,20 +492,19 @@ mod tests {
         }
     }
 
-    struct Fake {
+    struct Still {
+        wake: UnixStream,
         pixels: Vec<u32>,
-        quiet: UnixStream,
-        _other: UnixStream,
         seen: Seen,
         changing: bool,
     }
 
-    impl Screen for Fake {
+    impl Screen for Still {
         fn size(&self) -> (usize, usize) {
-            (SIZE, SIZE)
+            (SIDE, SIDE)
         }
         fn fd(&self) -> RawFd {
-            self.quiet.as_raw_fd()
+            self.wake.as_raw_fd()
         }
         fn pixels(&self) -> &[u32] {
             &self.pixels
@@ -485,8 +521,8 @@ mod tests {
             Ok(Rect {
                 x: 0,
                 y: 0,
-                width: SIZE,
-                height: SIZE,
+                width: SIDE,
+                height: SIDE,
             })
         }
         fn moves(&mut self) -> Vec<(i32, i32)> {
@@ -534,20 +570,62 @@ mod tests {
         }
     }
 
-    fn masked(payload: &[u8]) -> Vec<u8> {
-        let mut frame = vec![0x82];
-        if payload.len() < 126 {
-            frame.push(0x80 | payload.len() as u8);
-        } else {
-            frame.push(0x80 | 126);
-            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    const QUICK: Keepalive = Keepalive {
+        ping: Duration::from_millis(50),
+        silence: Duration::from_millis(300),
+    };
+
+    fn settings() -> Settings {
+        Settings {
+            fps: 30,
+            max_mbps: 10,
+            keepalive: QUICK,
         }
-        frame.extend_from_slice(&[0, 0, 0, 0]);
-        frame.extend_from_slice(payload);
+    }
+
+    struct Session {
+        browser: UnixStream,
+        ended: mpsc::Receiver<Result<(), String>>,
+        seen: Seen,
+        _wake: UnixStream,
+    }
+
+    fn start(settings: Settings) -> Session {
+        open(settings, Access::Control, false)
+    }
+
+    fn open(settings: Settings, access: Access, changing: bool) -> Session {
+        let (browser, engine) = UnixStream::pair().unwrap();
+        let (wake, screen_end) = UnixStream::pair().unwrap();
+        let (done, ended) = mpsc::channel();
+        let seen = Seen::default();
+        let screen = Still {
+            wake: screen_end,
+            pixels: vec![0x0033_6699; SIDE * SIDE],
+            seen: seen.clone(),
+            changing,
+        };
+        std::thread::spawn(move || {
+            let result = run(engine, settings, access, || Ok(screen));
+            let _ = done.send(result.map_err(|error| error.to_string()));
+        });
+        Session {
+            browser,
+            ended,
+            seen,
+            _wake: wake,
+        }
+    }
+
+    fn masked(opcode: u8, body: &[u8]) -> Vec<u8> {
+        let mask = [3u8, 1, 4, 1];
+        let mut frame = vec![0x80 | opcode, 0x80 | u8::try_from(body.len()).unwrap()];
+        frame.extend_from_slice(&mask);
+        frame.extend(body.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
         frame
     }
 
-    fn heard(browser: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    fn try_frame(browser: &mut UnixStream) -> std::io::Result<(u8, Vec<u8>)> {
         let mut head = [0u8; 2];
         browser.read_exact(&mut head)?;
         let length = match head[1] & 0x7f {
@@ -563,50 +641,148 @@ mod tests {
             }
             short => usize::from(short),
         };
-        let mut payload = vec![0u8; length];
-        browser.read_exact(&mut payload)?;
-        Ok(payload)
+        let mut body = vec![0u8; length];
+        browser.read_exact(&mut body)?;
+        Ok((head[0], body))
     }
 
-    struct Viewer {
-        browser: UnixStream,
-        seen: Seen,
-        session: std::thread::JoinHandle<Result<(), Failure>>,
-        hello: Vec<u8>,
-    }
-
-    impl Viewer {
-        fn open(access: Access, changing: bool) -> Self {
-            let (mut browser, engine) = UnixStream::pair().unwrap();
-            let (quiet, other) = UnixStream::pair().unwrap();
-            let seen = Seen::default();
-            let fake = Fake {
-                pixels: vec![0; SIZE * SIZE],
-                quiet,
-                _other: other,
-                seen: seen.clone(),
-                changing,
-            };
-            let settings = Settings {
-                fps: 60,
-                max_mbps: 100,
-            };
-            let session = std::thread::spawn(move || run(engine, settings, access, || Ok(fake)));
-            let hello = heard(&mut browser).unwrap();
-            assert_eq!(hello[0], SERVER_HELLO);
-            Self {
-                browser,
-                seen,
-                session,
-                hello,
+    fn read_until_frame(browser: &mut UnixStream) -> u32 {
+        loop {
+            let (first, body) = try_frame(browser).unwrap();
+            if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                return u32::from_le_bytes([body[1], body[2], body[3], body[4]]);
             }
         }
+    }
 
+    fn ack(sequence: u32) -> Vec<u8> {
+        let mut body = vec![CLIENT_ACK];
+        body.extend_from_slice(&sequence.to_le_bytes());
+        masked(0x2, &body)
+    }
+
+    fn assert_let_go(session: &Session) {
+        let ended = session
+            .ended
+            .recv_timeout(QUICK.silence * 10)
+            .expect("the session was still open");
+        assert_eq!(ended, Err("the viewer stopped answering".to_string()));
+    }
+
+    #[test]
+    fn a_paused_viewer_that_goes_silent_is_let_go() {
+        let mut session = start(settings());
+        session
+            .browser
+            .write_all(&masked(0x2, &[CLIENT_PAUSE, 1]))
+            .unwrap();
+        assert_let_go(&session);
+    }
+
+    #[test]
+    fn a_viewer_of_a_still_desktop_that_goes_silent_is_let_go() {
+        let mut session = start(settings());
+        let sequence = read_until_frame(&mut session.browser);
+        session.browser.write_all(&ack(sequence)).unwrap();
+        assert_let_go(&session);
+    }
+
+    #[test]
+    fn a_viewer_that_answers_pings_stays_open_while_watching_and_while_paused() {
+        let session = start(settings());
+        let mut browser = session.browser.try_clone().unwrap();
+        let (pause, paused) = mpsc::channel::<()>();
+        let pings = std::thread::spawn(move || {
+            let (mut watching, mut hidden) = (0, 0);
+            let mut is_paused = false;
+            while let Ok((first, body)) = try_frame(&mut browser) {
+                let mut reply = Vec::new();
+                if first == 0x89 {
+                    if is_paused {
+                        hidden += 1;
+                    } else {
+                        watching += 1;
+                    }
+                    reply.extend(masked(0xa, &body));
+                } else if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                    reply.extend(ack(u32::from_le_bytes([
+                        body[1], body[2], body[3], body[4],
+                    ])));
+                }
+                if !is_paused && paused.try_recv().is_ok() {
+                    is_paused = true;
+                    reply.extend(masked(0x2, &[CLIENT_PAUSE, 1]));
+                }
+                if browser.write_all(&reply).is_err() {
+                    break;
+                }
+            }
+            (watching, hidden)
+        });
+        std::thread::sleep(QUICK.silence * 4);
+        assert!(
+            session.ended.try_recv().is_err(),
+            "a watching viewer was let go"
+        );
+        pause.send(()).unwrap();
+        std::thread::sleep(QUICK.silence * 4);
+        assert!(
+            session.ended.try_recv().is_err(),
+            "a paused viewer was let go"
+        );
+        session.browser.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(
+            session.ended.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(())
+        );
+        let (watching, hidden) = pings.join().unwrap();
+        assert!(watching >= 10, "only {watching} pings while watching");
+        assert!(hidden >= 10, "only {hidden} pings while paused");
+    }
+
+    #[test]
+    fn answers_a_viewer_ping_with_the_same_payload() {
+        let mut session = start(settings());
+        session
+            .browser
+            .write_all(&masked(0x9, b"still there?"))
+            .unwrap();
+        loop {
+            let (first, body) = try_frame(&mut session.browser).unwrap();
+            if first == 0x8a {
+                assert_eq!(body, b"still there?");
+                break;
+            }
+        }
+    }
+
+    fn watching(access: Access, changing: bool) -> (Session, u8) {
+        let mut session = open(
+            Settings {
+                fps: 60,
+                max_mbps: 100,
+                keepalive: KEEPALIVE,
+            },
+            access,
+            changing,
+        );
+        let (first, hello) = try_frame(&mut session.browser).unwrap();
+        assert_eq!((first, hello[0]), (0x82, SERVER_HELLO));
+        (session, hello[7])
+    }
+
+    impl Session {
         fn send(&mut self, messages: &[Vec<u8>]) {
             for message in messages {
-                self.browser.write_all(&masked(message)).unwrap();
+                self.browser.write_all(&masked(0x2, message)).unwrap();
             }
             self.seen.after_turns(6);
+        }
+
+        fn pause(&mut self, paused: bool) {
+            self.browser
+                .write_all(&masked(0x2, &[CLIENT_PAUSE, u8::from(paused)]))
+                .unwrap();
         }
 
         fn frames_within(&mut self, wait: Duration) -> usize {
@@ -618,32 +794,25 @@ mod tests {
                     break;
                 }
                 self.browser.set_read_timeout(Some(left)).unwrap();
-                let Ok(message) = heard(&mut self.browser) else {
+                let Ok((first, body)) = try_frame(&mut self.browser) else {
                     break;
                 };
-                if message[0] == SERVER_FRAME {
+                if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
                     frames += 1;
-                    let mut ack = vec![CLIENT_ACK];
-                    ack.extend_from_slice(&message[1..5]);
-                    self.browser.write_all(&masked(&ack)).unwrap();
+                    let sequence = u32::from_le_bytes([body[1], body[2], body[3], body[4]]);
+                    self.browser.write_all(&ack(sequence)).unwrap();
                 }
             }
             frames
         }
 
-        fn pause(&mut self, paused: bool) {
-            self.browser
-                .write_all(&masked(&[CLIENT_PAUSE, u8::from(paused)]))
-                .unwrap();
-        }
-
         fn close(self) -> Vec<String> {
-            drop(self.browser);
-            self.session.join().unwrap().unwrap();
-            Arc::try_unwrap(self.seen.input)
-                .unwrap()
-                .into_inner()
-                .unwrap()
+            self.browser.shutdown(std::net::Shutdown::Both).unwrap();
+            assert_eq!(
+                self.ended.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Ok(())
+            );
+            self.seen.input.lock().unwrap().clone()
         }
     }
 
@@ -666,11 +835,11 @@ mod tests {
 
     #[test]
     fn a_stream_with_control_passes_every_kind_of_input_to_the_desktop() {
-        let mut viewer = Viewer::open(Access::Control, false);
-        assert_eq!(viewer.hello[7], HELLO_CHORDS);
-        viewer.send(&every_input());
+        let (mut session, flags) = watching(Access::Control, false);
+        assert_eq!(flags, HELLO_CHORDS);
+        session.send(&every_input());
         assert_eq!(
-            viewer.close(),
+            session.close(),
             [
                 "pointer 5 7",
                 "button 1 true",
@@ -694,9 +863,9 @@ mod tests {
 
     #[test]
     fn a_watch_stream_says_so_and_never_reaches_the_desktop_whatever_it_sends() {
-        let mut viewer = Viewer::open(Access::Watch, false);
-        assert_eq!(viewer.hello[7], HELLO_CHORDS | HELLO_WATCH);
-        viewer.send(&every_input());
+        let (mut session, flags) = watching(Access::Watch, false);
+        assert_eq!(flags, HELLO_CHORDS | HELLO_WATCH);
+        session.send(&every_input());
         let shapes: [&[u8]; 4] = [
             &[],
             &[1, 1, 1, 1, 1, 1, 1, 1],
@@ -707,19 +876,19 @@ mod tests {
             .flat_map(|kind| shapes.map(|shape| [&[kind][..], shape].concat()))
             .collect();
         sweep.push(vec![CLIENT_PAUSE, 0]);
-        viewer.send(&sweep);
-        assert_eq!(viewer.close(), Vec::<String>::new());
+        session.send(&sweep);
+        assert_eq!(session.close(), Vec::<String>::new());
     }
 
     #[test]
     fn a_watch_stream_still_acknowledges_and_pauses() {
-        let mut viewer = Viewer::open(Access::Watch, true);
-        assert!(viewer.frames_within(Duration::from_millis(300)) > 3);
-        viewer.pause(true);
-        viewer.frames_within(Duration::from_millis(300));
-        assert_eq!(viewer.frames_within(Duration::from_millis(300)), 0);
-        viewer.pause(false);
-        assert!(viewer.frames_within(Duration::from_millis(300)) > 3);
-        assert_eq!(viewer.close(), Vec::<String>::new());
+        let (mut session, _) = watching(Access::Watch, true);
+        assert!(session.frames_within(Duration::from_millis(300)) > 3);
+        session.pause(true);
+        session.frames_within(Duration::from_millis(300));
+        assert_eq!(session.frames_within(Duration::from_millis(300)), 0);
+        session.pause(false);
+        assert!(session.frames_within(Duration::from_millis(300)) > 3);
+        assert_eq!(session.close(), Vec::<String>::new());
     }
 }

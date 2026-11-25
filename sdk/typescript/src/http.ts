@@ -116,6 +116,7 @@ export class Http {
   }
 
   async open(init: HttpInit): Promise<IncomingMessage> {
+    if (init.signal?.aborted) throw abortedError(init.signal);
     const headers: Record<string, string> = { authorization: `Bearer ${this.token}` };
     const payload = init.json === undefined ? undefined : Buffer.from(JSON.stringify(init.json));
     if (payload) {
@@ -131,7 +132,7 @@ export class Http {
     };
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
       const outgoing = httpRequest(options, resolve);
-      outgoing.on("error", (cause) => reject(wrapTransportError(cause, this.endpoint)));
+      outgoing.on("error", (cause) => reject(this.failure(cause, init.signal)));
       if (init.body) {
         pipeline(Readable.from(init.body), outgoing).catch(reject);
       } else {
@@ -140,7 +141,13 @@ export class Http {
     });
     const status = response.statusCode ?? 500;
     if (status < 400) return response;
-    throw await responseError(response);
+    throw responseError(status, await this.body(response, init.signal));
+  }
+
+  failure(cause: unknown, signal: AbortSignal | undefined, stage: "connect" | "lost" = "connect") {
+    if (signal?.aborted) return abortedError(signal);
+    if (cause instanceof KumobaError) return cause;
+    return wrapTransportError(cause, this.endpoint, stage);
   }
 
   async upgrade(
@@ -164,7 +171,10 @@ export class Http {
       });
       outgoing.on("upgrade", (_response, socket, head) => resolve({ socket, head }));
       outgoing.on("response", (response) => {
-        responseError(response).then(reject, reject);
+        this.body(response).then(
+          (body) => reject(responseError(response.statusCode ?? 500, body)),
+          reject
+        );
       });
       outgoing.on("error", (cause) => reject(wrapTransportError(cause, this.endpoint)));
       outgoing.end(payload);
@@ -173,7 +183,7 @@ export class Http {
 
   async json<T>(schema: z.ZodType<T>, init: HttpInit): Promise<T> {
     const response = await this.open(init);
-    const text = (await readBody(response)).toString("utf8");
+    const text = (await this.body(response, init.signal)).toString("utf8");
     const result = schema.safeParse(safeJson(text));
     if (!result.success) {
       throw new KumobaError(`kumobad returned an unexpected ${init.method} ${init.path} response`, {
@@ -184,11 +194,26 @@ export class Http {
     }
     return result.data;
   }
+
+  async body(response: IncomingMessage, signal?: AbortSignal): Promise<Buffer> {
+    try {
+      return await readBody(response);
+    } catch (cause) {
+      throw this.failure(cause, signal, "lost");
+    }
+  }
 }
 
-async function responseError(response: IncomingMessage): Promise<KumobaError> {
-  const status = response.statusCode ?? 500;
-  const text = (await readBody(response)).toString("utf8");
+export function abortedError(signal: AbortSignal): KumobaError {
+  return new KumobaError("kumoba request was aborted", {
+    code: "aborted",
+    retryable: false,
+    cause: signal.reason,
+  });
+}
+
+function responseError(status: number, body: Buffer): KumobaError {
+  const text = body.toString("utf8");
   const parsed = errorSchema.safeParse(safeJson(text));
   const message = parsed.success
     ? (parsed.data.message ?? parsed.data.error ?? text)
@@ -197,11 +222,16 @@ async function responseError(response: IncomingMessage): Promise<KumobaError> {
   return new KumobaError(message, { status, code, retryable: status === 429 || status >= 500 });
 }
 
-function wrapTransportError(cause: unknown, endpoint: Endpoint): KumobaError {
+function wrapTransportError(
+  cause: unknown,
+  endpoint: Endpoint,
+  stage: "connect" | "lost" = "connect"
+): KumobaError {
   const where =
     "socketPath" in endpoint ? endpoint.socketPath : `${endpoint.host}:${String(endpoint.port)}`;
   const detail = cause instanceof Error ? cause.message : String(cause);
-  return new KumobaError(`Cannot reach kumobad at ${where}: ${detail}`, {
+  const lead = stage === "connect" ? "Cannot reach" : "Lost the connection to";
+  return new KumobaError(`${lead} kumobad at ${where}: ${detail}`, {
     status: 503,
     code: "unreachable",
     retryable: true,

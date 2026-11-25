@@ -1,3 +1,5 @@
+import { KumobaError } from "./errors.js";
+
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -10,7 +12,9 @@ export function shellQuote(value: string): string {
 export function toArgv(command: string | readonly string[]): string[] {
   if (typeof command === "string") return ["/bin/sh", "-c", command];
   const [program, ...args] = command;
-  if (program === undefined) throw new Error("run() needs a command");
+  if (program === undefined) {
+    throw new KumobaError("run() needs a command", { code: "invalid_request" });
+  }
   if (program.startsWith("/")) return [program, ...args];
   return ["/bin/sh", "-c", 'exec "$0" "$@"', program, ...args];
 }

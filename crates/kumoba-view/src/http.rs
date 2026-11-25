@@ -657,6 +657,7 @@ mod tests {
         let settings = Settings {
             fps: 30,
             max_mbps: 10,
+            keepalive: session::KEEPALIVE,
         };
         shared(
             guard,
@@ -852,6 +853,7 @@ mod tests {
         let settings = Settings {
             fps: 30,
             max_mbps: 10,
+            keepalive: session::KEEPALIVE,
         };
         let refused = serve(
             "unix:/nonexistent/kumoba-view.sock",

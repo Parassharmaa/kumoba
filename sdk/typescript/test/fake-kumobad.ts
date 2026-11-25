@@ -35,7 +35,8 @@ export type FakeExecCall = {
 
 export type FakeExecReply =
   | { stdout?: string; stderr?: string; exitCode?: number; timedOut?: boolean; signal?: number }
-  | { error: string };
+  | { error: string }
+  | { stdout?: string; cut: "before" | "hang" | "drop" | "end" };
 
 export type FakeAccessEntry = {
   sandboxId: string;
@@ -52,14 +53,19 @@ export type FakeAccessEntry = {
 
 export type FakeKumobad = {
   url: string;
+  httpUrl: string;
+  previewUrl: string | null | undefined;
   token: string;
   sandboxes: Map<string, FakeSandbox>;
   accessEntries: FakeAccessEntry[];
   accessPageSize: number;
   execs: FakeExecCall[];
   listFilters: string[][];
+  listLimits: (string | null)[];
+  listCap: number;
   downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
   downloadsClosed: number;
+  imagesCut: boolean;
   onExec: (call: FakeExecCall) => FakeExecReply;
   close(): Promise<void>;
 };
@@ -77,6 +83,30 @@ function send(response: ServerResponse, status: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
+function cutStream(
+  response: ServerResponse,
+  reply: Extract<FakeExecReply, { cut: string }>,
+  lead: unknown[]
+): void {
+  if (reply.cut === "before") return;
+  response.writeHead(200, { "content-type": "application/x-ndjson" });
+  const lines = [
+    ...lead,
+    ...(reply.stdout
+      ? [{ type: "stdout", data: Buffer.from(reply.stdout).toString("base64") }]
+      : []),
+  ];
+  response.write(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), () => {
+    if (reply.cut === "drop") response.destroy();
+    else if (reply.cut === "end") response.end();
+  });
+}
+
+function link(fake: FakeKumobad, path: string) {
+  if (fake.previewUrl === undefined) return { path };
+  return { url: fake.previewUrl === null ? null : `${fake.previewUrl}${path}`, path };
+}
+
 function summary(sandbox: FakeSandbox) {
   const { files: _files, secrets: _secrets, ...rest } = sandbox;
   return rest;
@@ -88,17 +118,27 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
   let counter = 0;
   const fake: FakeKumobad = {
     url: `unix://${socketPath}`,
+    httpUrl: "",
+    previewUrl: "http://127.0.0.1:7789",
     token: "fake-token-0123456789abcdef0123456789",
     sandboxes: new Map(),
     accessEntries: [],
     accessPageSize: 1000,
     execs: [],
     listFilters: [],
+    listLimits: [],
+    listCap: Number.POSITIVE_INFINITY,
     downloadCut: undefined,
     downloadsClosed: 0,
+    imagesCut: false,
     onExec: () => ({ stdout: "", exitCode: 0 }),
     close: async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      const tcpClosed = new Promise<void>((resolve) => tcp.close(() => resolve()));
+      server.closeAllConnections();
+      tcp.closeAllConnections();
+      await closed;
+      await tcpClosed;
       rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -144,6 +184,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: "run", ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, [{ type: "sandbox", id: "run" }]);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         const lines = [
           { type: "sandbox", id: "run" },
@@ -160,6 +204,11 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         return;
       }
       if (method === "GET" && url.pathname === "/v1/images") {
+        if (fake.imagesCut) {
+          response.writeHead(200, { "content-type": "application/json", "content-length": "64" });
+          response.write('{"images":["def', () => response.destroy());
+          return;
+        }
         send(response, 200, { images: ["default", "test"] });
         return;
       }
@@ -200,7 +249,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           const split = filter.indexOf(":");
           return [filter.slice(0, split), filter.slice(split + 1)] as const;
         });
-        const limit = Number(url.searchParams.get("limit") ?? 1000);
+        fake.listLimits.push(url.searchParams.get("limit"));
+        const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000), fake.listCap);
         const matched = [...fake.sandboxes.values()]
           .filter((candidate) => filters.every(([key, value]) => candidate.labels[key] === value))
           .sort(
@@ -262,13 +312,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
       } else if (method === "POST" && action === "preview") {
         const { port } = JSON.parse((await body(request)).toString()) as { port: number };
         send(response, 200, {
-          path: `/v1/preview/token-${String(port)}/`,
+          ...link(fake, `/v1/preview/token-${String(port)}/`),
           expiresAtMs: Date.now() + 60_000,
         });
       } else if (method === "POST" && action === "desktop") {
         const asked = JSON.parse((await body(request)).toString()) as { ttlSeconds: number };
         send(response, 200, {
-          path: "/v1/preview/token-host/",
+          ...link(fake, "/v1/preview/token-host/"),
           expiresAtMs: Date.now() + asked.ttlSeconds * 1000,
           viewer: "stream",
         });
@@ -280,6 +330,10 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
         const exec = { sandboxId: sandbox.id, ...call };
         fake.execs.push(exec);
         const reply = fake.onExec(exec);
+        if ("cut" in reply) {
+          cutStream(response, reply, []);
+          return;
+        }
         response.writeHead(200, { "content-type": "application/x-ndjson" });
         if ("error" in reply) {
           response.end(`${JSON.stringify({ type: "error", message: reply.error })}\n`);
@@ -378,5 +432,12 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     socket.on("data", handle);
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const tcp: Server = createServer((request, response) =>
+    server.emit("request", request, response)
+  );
+  await new Promise<void>((resolve) => tcp.listen(0, "127.0.0.1", resolve));
+  const address = tcp.address();
+  if (address === null || typeof address === "string") throw new Error("no tcp address");
+  fake.httpUrl = `http://127.0.0.1:${String(address.port)}`;
   return fake;
 }

@@ -71,7 +71,7 @@ export type RunOptions = {
   onStdout?: (text: string) => void;
   /** Called with decoded text as stderr arrives. */
   onStderr?: (text: string) => void;
-  /** Abort the request; the daemon kills the guest process group. */
+  /** Abort the request; the daemon kills the guest process group and `run` throws a `KumobaError` with code `aborted`. */
   signal?: AbortSignal;
   /** Bytes of stdout and of stderr to keep in the result. Defaults to 1 MiB each. */
   maxOutputBytes?: number;
@@ -124,7 +124,7 @@ export type ExposeOptions = {
 export type Exposed = {
   /** Path on the daemon, `/v1/preview/<token>/`. */
   path: string;
-  /** Full URL when the client knows a reachable base URL, otherwise `null`. */
+  /** Full URL for a browser: under `publicUrl` when set, otherwise kumobad's link, or `null` when it has none. */
   url: string | null;
   expiresAt: Date;
 };

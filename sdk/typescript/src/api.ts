@@ -1,7 +1,8 @@
+import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
-import { type Body, checkedDownload, Http, readBody } from "./http.js";
+import { type Body, checkedDownload, Http } from "./http.js";
 import type { Network, SandboxInfo, Secret } from "./types.js";
 
 const networkSchema = z.object({
@@ -66,7 +67,11 @@ const accessLogSchema = z.object({
   nextCursor: z.string().nullable().optional(),
 });
 
-const previewSchema = z.object({ path: z.string(), expiresAtMs: z.number() });
+const previewSchema = z.object({
+  url: z.string().nullish(),
+  path: z.string(),
+  expiresAtMs: z.number(),
+});
 const desktopSchema = previewSchema.extend({ viewer: z.enum(["stream", "vnc"]) });
 const mountedSchema = z.object({ mountedEnvVars: z.array(z.string()) });
 const deletedSchema = z.object({ deletedNames: z.array(z.string()) });
@@ -142,9 +147,17 @@ export class Api {
 
   async list(
     labels: Record<string, string>,
-    limit: number
+    limit: number | undefined
   ): Promise<{ sandboxes: Summary[]; truncated: boolean }> {
-    const query = new URLSearchParams({ limit: String(limit) });
+    const query = new URLSearchParams();
+    if (limit !== undefined) {
+      if (!Number.isSafeInteger(limit) || limit < 0) {
+        throw new KumobaError(`limit must be a whole number of 0 or more, got ${String(limit)}`, {
+          code: "invalid_request",
+        });
+      }
+      query.set("limit", String(limit));
+    }
     for (const [key, value] of Object.entries(labels)) {
       if (key === "" || key.includes(":")) {
         throw new KumobaError(
@@ -269,25 +282,32 @@ export class Api {
       json: request,
       ...(signal ? { signal } : {}),
     });
+    for await (const line of this.lines(response, signal)) onEvent(parseEvent(line));
+  }
+
+  private async *lines(response: IncomingMessage, signal?: AbortSignal): AsyncGenerator<string> {
     let pending = "";
     const decoder = new TextDecoder();
-    for await (const chunk of response) {
-      if (!(chunk instanceof Uint8Array)) continue;
-      pending += decoder.decode(chunk, { stream: true });
-      if (pending.length > MAX_EXEC_LINE) {
-        response.destroy();
-        throw new KumobaError("kumobad exec event exceeds limit", {
-          status: 502,
-          code: "protocol",
-        });
+    try {
+      for await (const chunk of response) {
+        if (!(chunk instanceof Uint8Array)) continue;
+        pending += decoder.decode(chunk, { stream: true });
+        if (pending.length > MAX_EXEC_LINE) {
+          throw new KumobaError("kumobad exec event exceeds limit", {
+            status: 502,
+            code: "protocol",
+          });
+        }
+        let newline = pending.indexOf("\n");
+        while (newline >= 0) {
+          const line = pending.slice(0, newline);
+          pending = pending.slice(newline + 1);
+          if (line.length > 0) yield line;
+          newline = pending.indexOf("\n");
+        }
       }
-      let newline = pending.indexOf("\n");
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-        if (line.length > 0) onEvent(parseEvent(line));
-        newline = pending.indexOf("\n");
-      }
+    } catch (cause) {
+      throw this.http.failure(cause, signal, "lost");
     }
   }
 
@@ -297,7 +317,7 @@ export class Api {
       path: sandboxPath(id, "/files", fileQuery(path, user)),
       body,
     });
-    await readBody(response);
+    await this.http.body(response);
   }
 
   async download(id: string, path: string, user: string | undefined): Promise<Readable> {

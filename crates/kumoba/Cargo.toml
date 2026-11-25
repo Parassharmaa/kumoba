@@ -35,7 +35,7 @@ webpki-roots.workspace = true
 aho-corasick.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["signal", "io-std"] }
+tokio = { workspace = true, features = ["signal", "io-std", "test-util"] }
 
 [lints]
 workspace = true
