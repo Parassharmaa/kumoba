@@ -58,6 +58,14 @@ export type LiveViewOptions = ExposeOptions & {
 
 type Sh = (command: string, options?: { timeoutMs?: number }) => Promise<RunResult>;
 
+function unexpectedOutput(args: readonly (string | number)[], cause: unknown): KumobaError {
+  return new KumobaError(`desktop ${String(args[0])} printed unexpected output`, {
+    status: 502,
+    code: "protocol",
+    cause,
+  });
+}
+
 /**
  * Drive the Xvfb/xfce desktop in images built from `images/default`.
  * Every call shells out to `/usr/local/bin/kumoba-desktop` inside the guest.
@@ -91,7 +99,15 @@ export class Desktop {
   ): Promise<T> {
     const output = await this.helper(args, timeoutMs);
     const line = output.trim().split("\n").at(-1) ?? "";
-    return schema.parse(JSON.parse(line));
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch (cause) {
+      throw unexpectedOutput(args, cause);
+    }
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw unexpectedOutput(args, parsed.error);
+    return parsed.data;
   }
 
   /** Start Xvfb, the window manager and the live views if they are not running. */

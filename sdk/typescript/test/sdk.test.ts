@@ -215,7 +215,100 @@ describe("Sandbox.run", () => {
   it("surfaces daemon-side launch failures as errors", async () => {
     fake.onExec = () => ({ error: "guest agent unreachable" });
     const sandbox = await kumoba.create();
-    await expect(sandbox.run("true")).rejects.toThrow(/guest agent unreachable/);
+    const failure = await sandbox.run("true").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(KumobaError);
+    expect(failure).toMatchObject({ code: "daemon_error", retryable: false });
+    expect((failure as Error).message).toMatch(/guest agent unreachable/);
+    await expect(kumoba.run("true")).rejects.toMatchObject({ code: "daemon_error" });
+  });
+});
+
+describe("run failures", () => {
+  const failure = async (promise: Promise<unknown>) => {
+    const error = await promise.then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(KumobaError);
+    return error as KumobaError;
+  };
+  const execReceived = async () => {
+    while (fake.execs.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  };
+
+  it("reports a cancelled run as aborted and not retryable, wherever it was cancelled", async () => {
+    const sandbox = await kumoba.create();
+    const reason = new Error("user cancelled");
+
+    const early = new AbortController();
+    early.abort(reason);
+    const before = await failure(sandbox.run("true", { signal: early.signal }));
+    expect(before).toMatchObject({ code: "aborted", retryable: false, cause: reason });
+
+    fake.onExec = () => ({ cut: "before" });
+    const waiting = new AbortController();
+    const pending = sandbox.run("sleep 99", { signal: waiting.signal });
+    await execReceived();
+    waiting.abort(reason);
+    expect(await failure(pending)).toMatchObject({
+      code: "aborted",
+      retryable: false,
+      cause: reason,
+    });
+
+    fake.onExec = () => ({ stdout: "started\n", cut: "hang" });
+    const streaming = new AbortController();
+    const running = kumoba.run("sleep 99", {
+      signal: streaming.signal,
+      onStdout: () => streaming.abort(reason),
+    });
+    expect(await failure(running)).toMatchObject({
+      code: "aborted",
+      retryable: false,
+      cause: reason,
+    });
+  });
+
+  it("reports a connection lost mid-run as unreachable and retryable", async () => {
+    fake.onExec = () => ({ stdout: "started\n", cut: "drop" });
+    const sandbox = await kumoba.create();
+    const seen: string[] = [];
+    const lost = await failure(sandbox.run("sleep 99", { onStdout: (text) => seen.push(text) }));
+    expect(lost).toMatchObject({ code: "unreachable", retryable: true });
+    expect(seen).toEqual(["started\n"]);
+    expect(await failure(kumoba.run("sleep 99"))).toMatchObject({ code: "unreachable" });
+  });
+
+  it("reports a reply cut off mid-body as unreachable", async () => {
+    fake.imagesCut = true;
+    const lost = await failure(kumoba.images());
+    expect(lost).toMatchObject({ code: "unreachable", retryable: true });
+    expect(lost.message).toMatch(/^Lost the connection to kumobad/);
+  });
+
+  it("rejects a run whose output ends without an exit status", async () => {
+    fake.onExec = () => ({ stdout: "partial", cut: "end" });
+    const sandbox = await kumoba.create();
+    expect(await failure(sandbox.run("true"))).toMatchObject({ code: "protocol" });
+    expect(await failure(kumoba.run("true"))).toMatchObject({ code: "protocol" });
+  });
+
+  it("passes an error thrown by an output callback through unchanged", async () => {
+    fake.onExec = () => ({ stdout: "x", exitCode: 0 });
+    const sandbox = await kumoba.create();
+    const own = new Error("callback broke");
+    await expect(
+      sandbox.run("true", {
+        onStdout: () => {
+          throw own;
+        },
+      })
+    ).rejects.toBe(own);
+  });
+
+  it("refuses an empty command", async () => {
+    const sandbox = await kumoba.create();
+    expect(await failure(sandbox.run([]))).toMatchObject({ code: "invalid_request" });
   });
 });
 
@@ -297,6 +390,21 @@ describe("Sandbox.files", () => {
       "test -e '/workspace/x'",
     ]);
     expect(fake.execs.every((call) => call.user === "kumoba")).toBe(true);
+  });
+
+  it("raises a KumobaError carrying the result when mkdir or remove fails", async () => {
+    fake.onExec = () => ({ stderr: "mkdir: Permission denied\n", exitCode: 1 });
+    const sandbox = await kumoba.create();
+    for (const attempt of [sandbox.files.mkdir("/root/x"), sandbox.files.remove("/root/x")]) {
+      const error = await attempt.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(KumobaError);
+      expect(error).toMatchObject({
+        code: "command_failed",
+        retryable: false,
+        message: expect.stringMatching(/exit 1: mkdir: Permission denied/),
+        result: { exitCode: 1, ok: false },
+      });
+    }
   });
 });
 
@@ -399,6 +507,16 @@ describe("Sandbox extras", () => {
       path: "/v1/preview/token-6080/",
       viewer: "vnc",
     });
+  });
+
+  it("raises a KumobaError when the desktop helper prints something unexpected", async () => {
+    const sandbox = await kumoba.create();
+    for (const stdout of ["Segmentation fault\n", '{"displays":"none"}\n']) {
+      fake.onExec = () => ({ stdout });
+      const error = await sandbox.desktop.display().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(KumobaError);
+      expect(error).toMatchObject({ code: "protocol" });
+    }
   });
 
   it("asks kumobad for the live view of a sandbox with no desktop helper inside", async () => {
