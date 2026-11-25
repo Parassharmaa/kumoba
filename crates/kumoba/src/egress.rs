@@ -8,7 +8,7 @@ use std::{
     path::Path,
     pin::Pin,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
@@ -30,7 +30,7 @@ const MAX_WEB_CONNECTIONS: usize = 32;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TUNNEL_TIMEOUT: Duration = Duration::from_secs(3600);
-static DNS_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+const DNS_LOOKUPS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "EndpointData")]
@@ -352,11 +352,18 @@ impl EgressConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessDecision {
+    Allowed,
+    Denied,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessRecord {
     pub host: String,
     pub port: u16,
-    pub allowed: bool,
+    pub decision: AccessDecision,
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub started: SystemTime,
@@ -437,17 +444,38 @@ impl AccessScope {
     pub(crate) fn counters(&self) -> Arc<Counters> {
         self.counters.clone()
     }
-    pub(crate) fn record(&self, host: &str, port: u16, allowed: bool) {
+    pub(crate) fn record(&self, host: &str, port: u16, decision: AccessDecision) {
         let Some(sink) = &self.sink else { return };
         sink(AccessRecord {
             host: host.chars().take(253).collect(),
             port,
-            allowed,
+            decision,
             bytes_in: self.counters.to_guest.load(Ordering::Relaxed),
             bytes_out: self.counters.from_guest.load(Ordering::Relaxed),
             started: self.started,
             completed: SystemTime::now(),
         });
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Egress {
+    config: Arc<EgressConfig>,
+    lookups: Arc<Semaphore>,
+}
+
+impl Egress {
+    pub(crate) fn new(config: Arc<EgressConfig>) -> Self {
+        Self {
+            config,
+            lookups: Arc::new(Semaphore::new(DNS_LOOKUPS)),
+        }
+    }
+}
+
+impl Default for Egress {
+    fn default() -> Self {
+        Self::new(Arc::default())
     }
 }
 
@@ -471,7 +499,7 @@ impl Broker {
             Arc::new(policy),
             inspection,
             sink,
-            egress,
+            Egress::new(egress),
             stopped,
         ));
         Ok(Self {
@@ -510,7 +538,7 @@ async fn serve(
     policy: Arc<HttpConnectPolicy>,
     inspection: Option<crate::secret_https::Inspection>,
     sink: Option<AccessSink>,
-    egress: Arc<EgressConfig>,
+    egress: Egress,
     mut stopped: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let mut relays = JoinSet::new();
@@ -665,7 +693,7 @@ async fn connection(
     policy: &HttpConnectPolicy,
     inspection: Option<crate::secret_https::Inspection>,
     scope: AccessScope,
-    egress: &EgressConfig,
+    egress: &Egress,
 ) -> io::Result<()> {
     let (endpoint, pending) = match timeout(SETUP_TIMEOUT, read_head(&mut client)).await {
         Ok(Ok((head, pending))) => match parse_headers(&head) {
@@ -676,7 +704,7 @@ async fn connection(
             }
             Err(error) => {
                 if let Some((host, port)) = raw_connect_target(&head) {
-                    scope.record(&host, port, false);
+                    scope.record(&host, port, AccessDecision::Denied);
                 }
                 let status: &[u8] = if error.kind() == io::ErrorKind::Unsupported {
                     b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -697,7 +725,7 @@ async fn connection(
         }
     };
     if !policy.allows(&endpoint) || (policy.public_web && endpoint.port != 443) {
-        scope.record(endpoint.host(), endpoint.port(), false);
+        scope.record(endpoint.host(), endpoint.port(), AccessDecision::Denied);
         response(
             &mut client,
             b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -708,7 +736,7 @@ async fn connection(
     let remote = match remote_for(&endpoint, &inspection, egress).await {
         Ok(remote) => remote,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            scope.record(endpoint.host(), endpoint.port(), false);
+            scope.record(endpoint.host(), endpoint.port(), AccessDecision::Denied);
             response(
                 &mut client,
                 b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -717,7 +745,7 @@ async fn connection(
             return Ok(());
         }
         Err(_) => {
-            scope.record(endpoint.host(), endpoint.port(), true);
+            scope.record(endpoint.host(), endpoint.port(), AccessDecision::Failed);
             response(
                 &mut client,
                 b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -733,14 +761,14 @@ async fn connection(
         .fetch_add(pending.len() as u64, Ordering::Relaxed);
     let client = Counted::new(client, scope.counters());
     let result = tunnel(client, pending, remote, policy, inspection, &endpoint).await;
-    scope.record(endpoint.host(), endpoint.port(), true);
+    scope.record(endpoint.host(), endpoint.port(), AccessDecision::Allowed);
     result
 }
 
 fn remote_for(
     endpoint: &EgressEndpoint,
     inspection: &Option<crate::secret_https::Inspection>,
-    egress: &EgressConfig,
+    egress: &Egress,
 ) -> impl Future<Output = io::Result<TcpStream>> + use<> {
     let endpoint = endpoint.clone();
     let egress = egress.clone();
@@ -790,31 +818,35 @@ where
     .await
 }
 
-pub(crate) async fn connect(
-    endpoint: &EgressEndpoint,
-    egress: &EgressConfig,
-) -> io::Result<TcpStream> {
-    let proxy = egress.proxy_for(&endpoint.host);
+async fn lookup(endpoint: &EgressEndpoint, egress: &Egress) -> io::Result<Vec<SocketAddrV4>> {
+    timeout(SETUP_TIMEOUT, async {
+        let permit = egress
+            .lookups
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(io::Error::other)?;
+        let target = endpoint.clone();
+        let config = egress.config.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            resolve(&target, &config)
+        })
+        .await
+        .map_err(io::Error::other)?
+    })
+    .await?
+}
+
+pub(crate) async fn connect(endpoint: &EgressEndpoint, egress: &Egress) -> io::Result<TcpStream> {
+    let proxy = egress.config.proxy_for(&endpoint.host);
     if proxy.is_some() && looks_internal(&endpoint.host) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "internal host names are not tunnelled through the upstream proxy",
         ));
     }
-    let permit = DNS_SLOTS
-        .get_or_init(|| Arc::new(Semaphore::new(8)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "DNS capacity exhausted"))?;
-    let target = endpoint.clone();
-    let config = egress.clone();
-    let lookup = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        resolve(&target, &config)
-    });
-    let addresses = timeout(SETUP_TIMEOUT, lookup)
-        .await?
-        .map_err(io::Error::other)??;
+    let addresses = lookup(endpoint, egress).await?;
     if let Some(proxy) = proxy {
         let checked = *addresses
             .first()
@@ -903,19 +935,34 @@ async fn connect_via_proxy(
 
 #[cfg(test)]
 pub(crate) static TEST_DNS: std::sync::Mutex<
-    Option<std::collections::HashMap<String, Vec<Ipv4Addr>>>,
-> = std::sync::Mutex::new(None);
+    std::collections::BTreeMap<String, Option<Vec<Ipv4Addr>>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+#[cfg(test)]
+pub(crate) static TEST_DNS_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+
+#[cfg(test)]
+fn test_answer(host: &str) -> Option<io::Result<Vec<Ipv4Addr>>> {
+    let table = TEST_DNS.lock().unwrap();
+    if !table.contains_key(host) {
+        return None;
+    }
+    let table = TEST_DNS_CHANGED
+        .wait_while(table, |table| matches!(table.get(host), Some(None)))
+        .unwrap();
+    Some(
+        table
+            .get(host)
+            .cloned()
+            .flatten()
+            .ok_or_else(|| io::Error::other("test DNS gave up")),
+    )
+}
 
 fn resolve(endpoint: &EgressEndpoint, egress: &EgressConfig) -> io::Result<Vec<SocketAddrV4>> {
     #[cfg(test)]
-    if let Some(candidates) = TEST_DNS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|table| table.get(&endpoint.host).cloned())
-    {
+    if let Some(candidates) = test_answer(&endpoint.host) {
         return checked_addresses(
-            candidates,
+            candidates?,
             &local_addresses()?,
             endpoint.port,
             &endpoint.host,
@@ -1137,6 +1184,72 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDns(&'static str);
+
+    impl TestDns {
+        fn new(host: &'static str, answer: Option<Vec<Ipv4Addr>>) -> Self {
+            TEST_DNS.lock().unwrap().insert(host.to_string(), answer);
+            TEST_DNS_CHANGED.notify_all();
+            Self(host)
+        }
+    }
+
+    impl Drop for TestDns {
+        fn drop(&mut self) {
+            TEST_DNS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(self.0);
+            TEST_DNS_CHANGED.notify_all();
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_lookups_hold_only_their_own_sandbox_slots() {
+        let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
+        let stalled_dns = TestDns::new("stalled.slots.example", None);
+        let _answer_dns = TestDns::new("answer.slots.example", Some(vec![public]));
+        let stalled = EgressEndpoint::new("stalled.slots.example", 443).unwrap();
+        let answer = EgressEndpoint::new("answer.slots.example", 443).unwrap();
+        let busy = Egress::default();
+        let mut stuck = Vec::new();
+        for _ in 0..DNS_LOOKUPS {
+            let (busy, stalled) = (busy.clone(), stalled.clone());
+            stuck.push(tokio::spawn(async move { lookup(&stalled, &busy).await }));
+        }
+        timeout(Duration::from_secs(2), async {
+            while busy.lookups.available_permits() > 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let other = timeout(Duration::from_secs(1), lookup(&answer, &Egress::default()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(other, vec![SocketAddrV4::new(public, 443)]);
+
+        let queued = {
+            let (busy, answer) = (busy.clone(), answer.clone());
+            tokio::spawn(async move { lookup(&answer, &busy).await })
+        };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!queued.is_finished());
+
+        drop(stalled_dns);
+        for task in stuck {
+            assert!(task.await.unwrap().is_err());
+        }
+        let queued = timeout(Duration::from_secs(1), queued)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(queued, vec![SocketAddrV4::new(public, 443)]);
+    }
 
     async fn sockets() -> (UnixStream, UnixStream, TcpStream, TcpStream) {
         let (client, proxy) = UnixStream::pair().unwrap();
@@ -1457,6 +1570,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unanswered_lookups_fail_within_one_setup_timeout_and_log_as_failed() {
+        let silent_dns = TestDns::new("silent.slots.example", None);
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: AccessSink = {
+            let records = records.clone();
+            Arc::new(move |record| records.lock().unwrap().push(record))
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("egress.sock");
+        let policy =
+            HttpConnectPolicy::new([EgressEndpoint::new("silent.slots.example", 443).unwrap()])
+                .unwrap();
+        let mut broker = Broker::bind(&path, policy, None, Some(sink), Arc::default())
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let mut clients = JoinSet::new();
+        for _ in 0..=DNS_LOOKUPS {
+            let path = path.clone();
+            clients.spawn(async move {
+                let mut client = UnixStream::connect(&path).await.unwrap();
+                client
+                    .write_all(b"CONNECT silent.slots.example:443 HTTP/1.1\r\n\r\n")
+                    .await
+                    .unwrap();
+                let mut reply = String::new();
+                client.read_to_string(&mut reply).await.unwrap();
+                (reply, started.elapsed())
+            });
+        }
+        while let Some(result) = clients.join_next().await {
+            let (reply, elapsed) = result.unwrap();
+            assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
+            assert!(
+                elapsed >= SETUP_TIMEOUT && elapsed < SETUP_TIMEOUT + Duration::from_secs(2),
+                "{elapsed:?}"
+            );
+        }
+        broker.shutdown().await.unwrap();
+        drop(silent_dns);
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), DNS_LOOKUPS + 1);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.decision == AccessDecision::Failed
+                    && record.host == "silent.slots.example")
+        );
+    }
+
+    #[tokio::test]
     async fn broker_records_denied_and_tunnelled_connections_with_byte_counts() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1537,10 +1701,10 @@ mod tests {
 
         let records = records.lock().unwrap();
         assert_eq!(records[0].host, "denied.invalid");
-        assert!(!records[0].allowed);
+        assert_eq!(records[0].decision, AccessDecision::Denied);
         assert_eq!((records[0].bytes_in, records[0].bytes_out), (0, 0));
         assert_eq!(records[1].host, "tunnel.example");
-        assert!(records[1].allowed);
+        assert_eq!(records[1].decision, AccessDecision::Allowed);
         assert_eq!(records[1].bytes_out, 5);
         assert_eq!(records[1].bytes_in, 7);
         assert!(records[1].completed >= records[1].started);
@@ -1661,36 +1825,32 @@ mod tests {
             "direct.example",
         )
         .unwrap();
+        let egress = Egress::new(Arc::new(config.clone()));
         let public: Ipv4Addr = "93.184.216.34".parse().unwrap();
-        *TEST_DNS.lock().unwrap() = Some(std::collections::HashMap::from([
-            ("intranet.example".to_string(), vec![public]),
-            (
-                "rebound.example".to_string(),
-                vec![Ipv4Addr::new(10, 9, 8, 7)],
-            ),
-        ]));
+        let _intranet_dns = TestDns::new("intranet.example", Some(vec![public]));
+        let _rebound_dns = TestDns::new("rebound.example", Some(vec![Ipv4Addr::new(10, 9, 8, 7)]));
         let rebound = connect(
             &EgressEndpoint::new("rebound.example", 443).unwrap(),
-            &config,
+            &egress,
         )
         .await
         .unwrap_err();
         assert_eq!(rebound.kind(), io::ErrorKind::PermissionDenied);
         let unresolvable = connect(
             &EgressEndpoint::new("does-not-resolve.invalid", 443).unwrap(),
-            &config,
+            &egress,
         )
         .await
         .unwrap_err();
         assert_ne!(unresolvable.kind(), io::ErrorKind::PermissionDenied);
         for internal in ["localhost", "git", "db.internal", "printer.local"] {
-            let error = connect(&EgressEndpoint::new(internal, 443).unwrap(), &config)
+            let error = connect(&EgressEndpoint::new(internal, 443).unwrap(), &egress)
                 .await
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{internal}");
         }
         let endpoint = EgressEndpoint::new("intranet.example", 8443).unwrap();
-        let mut stream = connect(&endpoint, &config).await.unwrap();
+        let mut stream = connect(&endpoint, &egress).await.unwrap();
         stream.write_all(b"hello").await.unwrap();
         let mut reply = [0u8; 5];
         stream.read_exact(&mut reply).await.unwrap();
@@ -1700,7 +1860,9 @@ mod tests {
         by_name.upstream_proxy = by_name
             .upstream_proxy
             .map(|proxy| proxy.connect_by_name(true));
-        let mut named = connect(&endpoint, &by_name).await.unwrap();
+        let mut named = connect(&endpoint, &Egress::new(Arc::new(by_name)))
+            .await
+            .unwrap();
         named.write_all(b"hello").await.unwrap();
         named.read_exact(&mut reply).await.unwrap();
         drop(named);
@@ -1736,9 +1898,10 @@ mod tests {
             "",
         )
         .unwrap();
-        let error = connect(&endpoint, &refusing).await.unwrap_err();
+        let error = connect(&endpoint, &Egress::new(Arc::new(refusing)))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        *TEST_DNS.lock().unwrap() = None;
     }
 
     #[tokio::test]

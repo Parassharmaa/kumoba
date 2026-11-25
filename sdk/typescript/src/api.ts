@@ -1,7 +1,7 @@
-import type { IncomingMessage } from "node:http";
+import type { Readable } from "node:stream";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
-import { type Body, Http, readBody } from "./http.js";
+import { type Body, checkedDownload, Http, readBody } from "./http.js";
 import type { Network, SandboxInfo, Secret } from "./types.js";
 
 const networkSchema = z.object({
@@ -53,7 +53,7 @@ const accessEntrySchema = z.object({
   labels: z.record(z.string(), z.string()),
   host: z.string(),
   port: z.number(),
-  decision: z.enum(["allowed", "denied", "dropped"]),
+  decision: z.string(),
   bytesIn: z.number(),
   bytesOut: z.number(),
   startedAtMs: z.number(),
@@ -300,11 +300,12 @@ export class Api {
     await readBody(response);
   }
 
-  async download(id: string, path: string, user: string | undefined): Promise<IncomingMessage> {
-    return this.http.open({
+  async download(id: string, path: string, user: string | undefined): Promise<Readable> {
+    const response = await this.http.open({
       method: "GET",
       path: sandboxPath(id, "/files", fileQuery(path, user)),
     });
+    return checkedDownload(response);
   }
 
   async listFiles(id: string, path: string, user: string | undefined) {
