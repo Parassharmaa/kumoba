@@ -62,6 +62,47 @@ describe("Kumoba", () => {
     expect(await list(2)).toEqual([third.id, second.id]);
   });
 
+  it("lists every matching sandbox when no limit is given", async () => {
+    for (let index = 0; index < 101; index += 1)
+      await kumoba.create({ labels: { job: "cleanup" } });
+    await kumoba.create({ labels: { job: "other" } });
+    expect(await kumoba.list({ labels: { job: "cleanup" } })).toHaveLength(101);
+    expect(await kumoba.list({ labels: { job: "cleanup" }, limit: 100 })).toHaveLength(100);
+  });
+
+  it("reports whether a bounded page left sandboxes out", async () => {
+    for (let index = 0; index < 3; index += 1) await kumoba.create({ labels: { job: "page" } });
+    const page = (limit?: number) =>
+      kumoba
+        .listPage({ labels: { job: "page" }, ...(limit === undefined ? {} : { limit }) })
+        .then(({ sandboxes, truncated }) => ({ count: sandboxes.length, truncated }));
+    expect(await page(2)).toEqual({ count: 2, truncated: true });
+    expect(await page(3)).toEqual({ count: 3, truncated: false });
+    expect(await page(0)).toEqual({ count: 0, truncated: true });
+    expect(await page()).toEqual({ count: 3, truncated: false });
+    expect(fake.listLimits.at(-1)).toBeNull();
+  });
+
+  it("throws instead of returning part of the list when the daemon still cuts it", async () => {
+    for (let index = 0; index < 3; index += 1) await kumoba.create({ labels: { job: "cap" } });
+    fake.listCap = 2;
+    await expect(kumoba.list({ labels: { job: "cap" } })).rejects.toMatchObject({
+      code: "list_truncated",
+      retryable: false,
+    });
+    expect(await kumoba.list({ labels: { job: "cap" }, limit: 2 })).toHaveLength(2);
+    expect(await kumoba.listPage({ labels: { job: "cap" } })).toMatchObject({ truncated: true });
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60])(
+    "refuses a limit of %s before asking the daemon",
+    async (limit) => {
+      await expect(kumoba.listPage({ limit })).rejects.toMatchObject({ code: "invalid_request" });
+      await expect(kumoba.list({ limit })).rejects.toMatchObject({ code: "invalid_request" });
+      expect(fake.listLimits).toEqual([]);
+    }
+  );
+
   it("lists by a label whose value has a colon and refuses keys the filter cannot express", async () => {
     const url = await kumoba.create({ labels: { url: "http://x:1" } });
     await kumoba.create({ labels: { url: "http://y:1" } });

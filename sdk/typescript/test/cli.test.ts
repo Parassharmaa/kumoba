@@ -256,6 +256,21 @@ describe("kumoba CLI", () => {
     expect(fake.listFilters).toEqual([["task:fix-tests"]]);
   });
 
+  it("says on stderr when -q prints only part of the matching sandboxes", async () => {
+    for (let index = 0; index < 2; index += 1) {
+      expect(await main(["create", "--image", "test", "--labels", "job=q", "-q"], io())).toBe(0);
+    }
+    out = [];
+    expect(await main(["list", "--label", "job:q", "--limit", "1", "-q"], io())).toBe(0);
+    expect(text().trim().split("\n")).toHaveLength(1);
+    expect(err.join("")).toContain("--limit");
+    out = [];
+    err = [];
+    expect(await main(["list", "--label", "job:q", "-q"], io())).toBe(0);
+    expect(text().trim().split("\n")).toHaveLength(2);
+    expect(err).toEqual([]);
+  });
+
   it("separates usage errors, daemon errors and an unreachable daemon", async () => {
     expect(await main(["exec"], io())).toBe(2);
     expect(err.join("")).toContain("missing id, argv");
