@@ -33,7 +33,7 @@ Set these in kumobad's environment. `kumobad --help` prints the same list.
 | `KUMOBA_URL` | `unix://$KUMOBA_HOME/kumobad.sock` | The daemon: `unix:///path` or `http://127.0.0.1:port` |
 | `KUMOBA_TOKEN` | contents of `KUMOBA_TOKEN_FILE` | Bearer token |
 | `KUMOBA_TOKEN_FILE` | `$KUMOBA_HOME/token` | File holding the token |
-| `KUMOBA_PUBLIC_URL` | none | SDK only: base URL for `expose()` links when the daemon doesn't return one |
+| `KUMOBA_PUBLIC_URL` | none | SDK only: base URL browsers reach the preview listener at, used for `expose()` and `liveView()` links instead of the daemon's own |
 | `KUMOBA_USER` | the image's default user | SDK only: guest user for commands and files |
 
 ## Installer (`install.sh`)

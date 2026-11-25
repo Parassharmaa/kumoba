@@ -214,11 +214,12 @@ describe("kumoba CLI", () => {
     const sandbox = await new Kumoba({ url: fake.url, token: fake.token }).create({
       image: "test",
     });
-    const exit = await main(
-      ["expose", sandbox.id, "--port", "8080", "--ttl-seconds", "60", "--open"],
-      io()
-    );
-    expect(exit).toBe(1);
+    const args = ["expose", sandbox.id, "--port", "8080", "--ttl-seconds", "60", "--open"];
+    expect(await main(args, io())).toBe(0);
+    expect(opened).toEqual(["http://127.0.0.1:7789/v1/preview/token-8080/"]);
+    opened = [];
+    fake.previewUrl = null;
+    expect(await main(args, io())).toBe(1);
     expect(err.join("")).toContain("no browser URL");
     expect(opened).toEqual([]);
   });
@@ -254,6 +255,21 @@ describe("kumoba CLI", () => {
     }
     expect(text()).toBe("");
     expect(fake.listFilters).toEqual([["task:fix-tests"]]);
+  });
+
+  it("says on stderr when -q prints only part of the matching sandboxes", async () => {
+    for (let index = 0; index < 2; index += 1) {
+      expect(await main(["create", "--image", "test", "--labels", "job=q", "-q"], io())).toBe(0);
+    }
+    out = [];
+    expect(await main(["list", "--label", "job:q", "--limit", "1", "-q"], io())).toBe(0);
+    expect(text().trim().split("\n")).toHaveLength(1);
+    expect(err.join("")).toContain("--limit");
+    out = [];
+    err = [];
+    expect(await main(["list", "--label", "job:q", "-q"], io())).toBe(0);
+    expect(text().trim().split("\n")).toHaveLength(2);
+    expect(err).toEqual([]);
   });
 
   it("separates usage errors, daemon errors and an unreachable daemon", async () => {

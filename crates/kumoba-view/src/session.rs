@@ -35,9 +35,21 @@ const CLOSE_REFUSED: u16 = 1011;
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
+pub struct Keepalive {
+    pub ping: Duration,
+    pub silence: Duration,
+}
+
+pub const KEEPALIVE: Keepalive = Keepalive {
+    ping: Duration::from_secs(15),
+    silence: Duration::from_secs(45),
+};
+
+#[derive(Clone, Copy)]
 pub struct Settings {
     pub fps: u32,
     pub max_mbps: u32,
+    pub keepalive: Keepalive,
 }
 
 enum Stroke {
@@ -226,14 +238,24 @@ pub fn run<S: Screen>(
     let mut strokes: VecDeque<Stroke> = VecDeque::new();
     let mut strokes_ready = started;
     let mut typed = started;
+    let mut heard = started;
+    let mut next_ping = started + settings.keepalive.ping;
     loop {
         writer.flush(&mut stream)?;
         if !reader.fill(&mut stream)? {
             return Ok(());
         }
+        let mut answered = false;
         while let Some(incoming) = reader.next()? {
-            let Message::Binary(data) = incoming else {
-                return Ok(());
+            answered = true;
+            let data = match incoming {
+                Message::Binary(data) => data,
+                Message::Ping(payload) => {
+                    writer.pong(&payload);
+                    continue;
+                }
+                Message::Pong => continue,
+                Message::Close => return Ok(()),
             };
             match data.first() {
                 Some(&CLIENT_ACK) if data.len() >= 5 => {
@@ -307,6 +329,16 @@ pub fn run<S: Screen>(
             }
         }
         let now = Instant::now();
+        if answered {
+            heard = now;
+        }
+        if now.duration_since(heard) >= settings.keepalive.silence {
+            return Err("the viewer stopped answering".into());
+        }
+        if now >= next_ping {
+            writer.ping();
+            next_ping = now + settings.keepalive.ping;
+        }
         while now >= strokes_ready {
             match strokes.front() {
                 None => break,
@@ -394,6 +426,11 @@ pub fn run<S: Screen>(
                 .saturating_duration_since(now)
                 .max(Duration::from_millis(1))
         });
+        let alive = next_ping
+            .min(heard + settings.keepalive.silence)
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(1));
+        let typing = sooner(typing, Some(alive));
         if !(wanted && open) {
             let timeout = if paused { None } else { Some(IDLE_WAKE) };
             poll(
@@ -454,5 +491,263 @@ pub fn run<S: Screen>(
             sequence,
             at: Instant::now(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen::Cursor;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+
+    const SIDE: usize = 64;
+
+    struct Still {
+        wake: UnixStream,
+        pixels: Vec<u32>,
+    }
+
+    impl Screen for Still {
+        fn size(&self) -> (usize, usize) {
+            (SIDE, SIDE)
+        }
+        fn fd(&self) -> RawFd {
+            self.wake.as_raw_fd()
+        }
+        fn pixels(&self) -> &[u32] {
+            &self.pixels
+        }
+        fn drain(&mut self) -> Result<bool, Failure> {
+            Ok(false)
+        }
+        fn resized(&self) -> bool {
+            false
+        }
+        fn grab(&mut self, _full: bool) -> Result<Rect, Failure> {
+            Ok(Rect {
+                x: 0,
+                y: 0,
+                width: SIDE,
+                height: SIDE,
+            })
+        }
+        fn moves(&mut self) -> Vec<(i32, i32)> {
+            Vec::new()
+        }
+        fn cursor(&mut self) -> Result<Option<Cursor>, Failure> {
+            Ok(None)
+        }
+        fn position(&mut self) -> Result<(u16, u16), Failure> {
+            Ok((0, 0))
+        }
+        fn pointer(&mut self, _x: i16, _y: i16) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn button(&mut self, _button: u8, _down: bool) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn key(&mut self, _keycode: u8, _down: bool) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn symbol(&mut self, _symbol: u32, _down: bool) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn needs_key(&self, _symbol: u32) -> bool {
+            false
+        }
+        fn bind(&mut self, _symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
+            Ok(false)
+        }
+        fn chord(&mut self, _letter: u8, _shift: bool) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn offer(&mut self, _text: &[u8]) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn expect_copy(&mut self) {}
+        fn copied(&mut self) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    const QUICK: Keepalive = Keepalive {
+        ping: Duration::from_millis(50),
+        silence: Duration::from_millis(300),
+    };
+
+    fn settings() -> Settings {
+        Settings {
+            fps: 30,
+            max_mbps: 10,
+            keepalive: QUICK,
+        }
+    }
+
+    struct Session {
+        browser: UnixStream,
+        ended: mpsc::Receiver<Result<(), String>>,
+        _wake: UnixStream,
+    }
+
+    fn start(settings: Settings) -> Session {
+        let (browser, engine) = UnixStream::pair().unwrap();
+        let (wake, screen_end) = UnixStream::pair().unwrap();
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run(engine, settings, || {
+                Ok(Still {
+                    wake: screen_end,
+                    pixels: vec![0x0033_6699; SIDE * SIDE],
+                })
+            });
+            let _ = done.send(result.map_err(|error| error.to_string()));
+        });
+        Session {
+            browser,
+            ended,
+            _wake: wake,
+        }
+    }
+
+    fn masked(opcode: u8, body: &[u8]) -> Vec<u8> {
+        let mask = [3u8, 1, 4, 1];
+        let mut frame = vec![0x80 | opcode, 0x80 | u8::try_from(body.len()).unwrap()];
+        frame.extend_from_slice(&mask);
+        frame.extend(body.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+        frame
+    }
+
+    fn try_frame(browser: &mut UnixStream) -> std::io::Result<(u8, Vec<u8>)> {
+        let mut head = [0u8; 2];
+        browser.read_exact(&mut head)?;
+        let length = match head[1] & 0x7f {
+            126 => {
+                let mut wide = [0u8; 2];
+                browser.read_exact(&mut wide)?;
+                usize::from(u16::from_be_bytes(wide))
+            }
+            127 => {
+                let mut wide = [0u8; 8];
+                browser.read_exact(&mut wide)?;
+                usize::try_from(u64::from_be_bytes(wide)).unwrap()
+            }
+            short => usize::from(short),
+        };
+        let mut body = vec![0u8; length];
+        browser.read_exact(&mut body)?;
+        Ok((head[0], body))
+    }
+
+    fn read_until_frame(browser: &mut UnixStream) -> u32 {
+        loop {
+            let (first, body) = try_frame(browser).unwrap();
+            if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                return u32::from_le_bytes([body[1], body[2], body[3], body[4]]);
+            }
+        }
+    }
+
+    fn ack(sequence: u32) -> Vec<u8> {
+        let mut body = vec![CLIENT_ACK];
+        body.extend_from_slice(&sequence.to_le_bytes());
+        masked(0x2, &body)
+    }
+
+    fn assert_let_go(session: &Session) {
+        let ended = session
+            .ended
+            .recv_timeout(QUICK.silence * 10)
+            .expect("the session was still open");
+        assert_eq!(ended, Err("the viewer stopped answering".to_string()));
+    }
+
+    #[test]
+    fn a_paused_viewer_that_goes_silent_is_let_go() {
+        let mut session = start(settings());
+        session
+            .browser
+            .write_all(&masked(0x2, &[CLIENT_PAUSE, 1]))
+            .unwrap();
+        assert_let_go(&session);
+    }
+
+    #[test]
+    fn a_viewer_of_a_still_desktop_that_goes_silent_is_let_go() {
+        let mut session = start(settings());
+        let sequence = read_until_frame(&mut session.browser);
+        session.browser.write_all(&ack(sequence)).unwrap();
+        assert_let_go(&session);
+    }
+
+    #[test]
+    fn a_viewer_that_answers_pings_stays_open_while_watching_and_while_paused() {
+        let session = start(settings());
+        let mut browser = session.browser.try_clone().unwrap();
+        let (pause, paused) = mpsc::channel::<()>();
+        let pings = std::thread::spawn(move || {
+            let (mut watching, mut hidden) = (0, 0);
+            let mut is_paused = false;
+            while let Ok((first, body)) = try_frame(&mut browser) {
+                let mut reply = Vec::new();
+                if first == 0x89 {
+                    if is_paused {
+                        hidden += 1;
+                    } else {
+                        watching += 1;
+                    }
+                    reply.extend(masked(0xa, &body));
+                } else if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                    reply.extend(ack(u32::from_le_bytes([
+                        body[1], body[2], body[3], body[4],
+                    ])));
+                }
+                if !is_paused && paused.try_recv().is_ok() {
+                    is_paused = true;
+                    reply.extend(masked(0x2, &[CLIENT_PAUSE, 1]));
+                }
+                if browser.write_all(&reply).is_err() {
+                    break;
+                }
+            }
+            (watching, hidden)
+        });
+        std::thread::sleep(QUICK.silence * 4);
+        assert!(
+            session.ended.try_recv().is_err(),
+            "a watching viewer was let go"
+        );
+        pause.send(()).unwrap();
+        std::thread::sleep(QUICK.silence * 4);
+        assert!(
+            session.ended.try_recv().is_err(),
+            "a paused viewer was let go"
+        );
+        session.browser.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(
+            session.ended.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(())
+        );
+        let (watching, hidden) = pings.join().unwrap();
+        assert!(watching >= 10, "only {watching} pings while watching");
+        assert!(hidden >= 10, "only {hidden} pings while paused");
+    }
+
+    #[test]
+    fn answers_a_viewer_ping_with_the_same_payload() {
+        let mut session = start(settings());
+        session
+            .browser
+            .write_all(&masked(0x9, b"still there?"))
+            .unwrap();
+        loop {
+            let (first, body) = try_frame(&mut session.browser).unwrap();
+            if first == 0x8a {
+                assert_eq!(body, b"still there?");
+                break;
+            }
+        }
     }
 }
