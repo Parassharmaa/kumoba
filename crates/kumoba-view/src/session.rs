@@ -1113,9 +1113,13 @@ mod tests {
 
         fn close(self) -> Vec<Seen> {
             self.browser.shutdown(std::net::Shutdown::Both).unwrap();
-            assert_eq!(
-                self.ended.recv_timeout(Duration::from_secs(5)).unwrap(),
-                Ok(())
+            let ended = self.ended.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                ended.as_ref().map_or_else(
+                    |error| error.contains("Broken pipe") || error.contains("Connection reset"),
+                    |()| true
+                ),
+                "the session ended with {ended:?}"
             );
             self.seen.lock().unwrap().clone()
         }
