@@ -29,7 +29,9 @@ const IDLE_WAKE: Duration = Duration::from_millis(100);
 const KEYMAP_SETTLE: Duration = Duration::from_millis(50);
 const KEYMAP_RESETTLE: Duration = Duration::from_millis(150);
 const MAX_STROKES: usize = 8192;
-const LOOK_AHEAD: usize = 512;
+const STEPS_PER_TURN: usize = 8192;
+const MAX_WAITING_TEXT: usize = 256 * 1024;
+const LOOK_AHEAD: usize = 256;
 const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
 const CLOSE_REFUSED: u16 = 1011;
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
@@ -60,14 +62,59 @@ enum Stroke {
     Chord(u8, bool),
     Offer(Vec<u8>),
     ExpectCopy,
+    Text(Vec<u32>, usize),
 }
 
-fn queue(strokes: &mut VecDeque<Stroke>, stroke: Stroke) -> Result<(), Failure> {
-    if strokes.len() >= MAX_STROKES {
-        return Err("the viewer sent input faster than the desktop takes it".into());
+struct Strokes {
+    queued: VecDeque<Stroke>,
+    text: usize,
+}
+
+impl Strokes {
+    fn push(&mut self, stroke: Stroke) -> Result<(), Failure> {
+        if self.queued.len() >= MAX_STROKES {
+            return Err("the viewer sent input faster than the desktop takes it".into());
+        }
+        if let Stroke::Text(symbols, _) = &stroke {
+            if self.text + symbols.len() > MAX_WAITING_TEXT {
+                return Err("the viewer sent more text than the desktop can type".into());
+            }
+            self.text += symbols.len();
+        }
+        self.queued.push_back(stroke);
+        Ok(())
     }
-    strokes.push_back(stroke);
-    Ok(())
+
+    fn typing(&self) -> Option<(u32, bool)> {
+        match self.queued.front()? {
+            &Stroke::Symbol(symbol, down) => Some((symbol, down)),
+            Stroke::Text(symbols, step) => Some((symbols[step / 2], step % 2 == 0)),
+            _ => None,
+        }
+    }
+
+    fn ahead(&self) -> impl Iterator<Item = u32> + '_ {
+        self.queued
+            .iter()
+            .flat_map(|stroke| match stroke {
+                Stroke::Symbol(symbol, true) => std::slice::from_ref(symbol),
+                Stroke::Text(symbols, step) => &symbols[step / 2..],
+                _ => &[],
+            })
+            .copied()
+            .take(LOOK_AHEAD)
+    }
+
+    fn advance(&mut self) {
+        if let Some(Stroke::Text(symbols, step)) = self.queued.front_mut() {
+            *step += 1;
+            if *step < symbols.len() * 2 {
+                return;
+            }
+            self.text -= symbols.len();
+        }
+        self.queued.pop_front();
+    }
 }
 
 fn symbol_of(character: char) -> Option<u32> {
@@ -235,7 +282,10 @@ pub fn run<S: Screen>(
     let mut paused = false;
     let mut pointer = (u16::MAX, u16::MAX);
     let mut pointer_checked = started;
-    let mut strokes: VecDeque<Stroke> = VecDeque::new();
+    let mut strokes = Strokes {
+        queued: VecDeque::new(),
+        text: 0,
+    };
     let mut strokes_ready = started;
     let mut typed = started;
     let mut heard = started;
@@ -281,19 +331,19 @@ pub fn run<S: Screen>(
                 Some(&CLIENT_POINTER) if data.len() >= 5 => {
                     let x = u16::from_le_bytes([data[1], data[2]]).min(width as u16 - 1);
                     let y = u16::from_le_bytes([data[3], data[4]]).min(height as u16 - 1);
-                    if let Some(Stroke::Pointer(last_x, last_y)) = strokes.back_mut() {
+                    if let Some(Stroke::Pointer(last_x, last_y)) = strokes.queued.back_mut() {
                         (*last_x, *last_y) = (x as i16, y as i16);
                     } else {
-                        queue(&mut strokes, Stroke::Pointer(x as i16, y as i16))?;
+                        strokes.push(Stroke::Pointer(x as i16, y as i16))?;
                     }
                 }
                 Some(&CLIENT_BUTTON) if data.len() >= 3 && (1..=9).contains(&data[1]) => {
-                    queue(&mut strokes, Stroke::Button(data[1], data[2] != 0))?;
+                    strokes.push(Stroke::Button(data[1], data[2] != 0))?;
                 }
                 Some(&CLIENT_KEY) if data.len() >= 4 => {
                     let code = u16::from_le_bytes([data[1], data[2]]);
                     if let Ok(keycode) = u8::try_from(code + 8) {
-                        queue(&mut strokes, Stroke::Code(keycode, data[3] != 0))?;
+                        strokes.push(Stroke::Code(keycode, data[3] != 0))?;
                     }
                 }
                 Some(&CLIENT_WHEEL) if data.len() >= 3 => {
@@ -301,29 +351,28 @@ pub fn run<S: Screen>(
                     for (delta, negative, positive) in [(dy, 4u8, 5u8), (dx, 6, 7)] {
                         let button = if delta < 0 { negative } else { positive };
                         for _ in 0..delta.unsigned_abs().min(10) {
-                            queue(&mut strokes, Stroke::Button(button, true))?;
-                            queue(&mut strokes, Stroke::Button(button, false))?;
+                            strokes.push(Stroke::Button(button, true))?;
+                            strokes.push(Stroke::Button(button, false))?;
                         }
                     }
                 }
                 Some(&CLIENT_PAUSE) if data.len() >= 2 => paused = data[1] != 0,
                 Some(&CLIENT_SYMBOL) if data.len() >= 6 => {
                     let symbol = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-                    queue(&mut strokes, Stroke::Symbol(symbol, data[5] != 0))?;
+                    strokes.push(Stroke::Symbol(symbol, data[5] != 0))?;
                 }
                 Some(&CLIENT_TEXT) => {
                     if let Ok(text) = std::str::from_utf8(&data[1..]) {
-                        let room = MAX_STROKES.saturating_sub(strokes.len()) / 2;
-                        for symbol in text.chars().filter_map(symbol_of).take(room) {
-                            strokes.push_back(Stroke::Symbol(symbol, true));
-                            strokes.push_back(Stroke::Symbol(symbol, false));
+                        let symbols: Vec<u32> = text.chars().filter_map(symbol_of).collect();
+                        if !symbols.is_empty() {
+                            strokes.push(Stroke::Text(symbols, 0))?;
                         }
                     }
                 }
-                Some(&CLIENT_CLIPBOARD) => queue(&mut strokes, Stroke::Offer(data[1..].to_vec()))?,
-                Some(&CLIENT_COPY) => queue(&mut strokes, Stroke::ExpectCopy)?,
+                Some(&CLIENT_CLIPBOARD) => strokes.push(Stroke::Offer(data[1..].to_vec()))?,
+                Some(&CLIENT_COPY) => strokes.push(Stroke::ExpectCopy)?,
                 Some(&CLIENT_CHORD) if data.len() >= 3 && b"cvx".contains(&data[1]) => {
-                    queue(&mut strokes, Stroke::Chord(data[1], data[2] != 0))?;
+                    strokes.push(Stroke::Chord(data[1], data[2] != 0))?;
                 }
                 _ => {}
             }
@@ -339,44 +388,40 @@ pub fn run<S: Screen>(
             writer.ping();
             next_ping = now + settings.keepalive.ping;
         }
-        while now >= strokes_ready {
-            match strokes.front() {
-                None => break,
-                Some(&Stroke::Code(keycode, down)) => screen.key(keycode, down)?,
-                Some(&Stroke::Symbol(symbol, down)) => {
-                    if down && screen.needs_key(symbol) {
-                        let settled = typed + KEYMAP_RESETTLE;
-                        if now < settled {
-                            strokes_ready = settled;
-                            break;
-                        }
-                        let ahead =
-                            strokes
-                                .iter()
-                                .take(LOOK_AHEAD)
-                                .filter_map(|stroke| match stroke {
-                                    &Stroke::Symbol(symbol, true) => Some(symbol),
-                                    _ => None,
-                                });
-                        let reused = screen.bind(ahead)?;
-                        strokes_ready = now
-                            + if reused {
-                                KEYMAP_RESETTLE
-                            } else {
-                                KEYMAP_SETTLE
-                            };
+        let mut steps = 0;
+        while now >= strokes_ready && steps < STEPS_PER_TURN {
+            steps += 1;
+            if let Some((symbol, down)) = strokes.typing() {
+                if down && screen.needs_key(symbol) {
+                    let settled = typed + KEYMAP_RESETTLE;
+                    if now < settled {
+                        strokes_ready = settled;
                         break;
                     }
-                    screen.symbol(symbol, down)?;
-                    typed = now;
+                    let reused = screen.bind(strokes.ahead())?;
+                    strokes_ready = now
+                        + if reused {
+                            KEYMAP_RESETTLE
+                        } else {
+                            KEYMAP_SETTLE
+                        };
+                    break;
                 }
-                Some(&Stroke::Pointer(x, y)) => screen.pointer(x, y)?,
-                Some(&Stroke::Button(button, down)) => screen.button(button, down)?,
-                Some(&Stroke::Chord(letter, shift)) => screen.chord(letter, shift)?,
-                Some(Stroke::Offer(text)) => screen.offer(text)?,
-                Some(Stroke::ExpectCopy) => screen.expect_copy(),
+                screen.symbol(symbol, down)?;
+                typed = now;
+            } else {
+                match strokes.queued.front() {
+                    None => break,
+                    Some(&Stroke::Code(keycode, down)) => screen.key(keycode, down)?,
+                    Some(&Stroke::Pointer(x, y)) => screen.pointer(x, y)?,
+                    Some(&Stroke::Button(button, down)) => screen.button(button, down)?,
+                    Some(&Stroke::Chord(letter, shift)) => screen.chord(letter, shift)?,
+                    Some(Stroke::Offer(text)) => screen.offer(text)?,
+                    Some(Stroke::ExpectCopy) => screen.expect_copy(),
+                    Some(Stroke::Symbol(..) | Stroke::Text(..)) => {}
+                }
             }
-            strokes.pop_front();
+            strokes.advance();
         }
         if flight
             .front()
@@ -421,7 +466,7 @@ pub fn run<S: Screen>(
         let wanted = dirty || encoder.pending();
         let open = !paused && flight.len() < flow.window() && writer.queued() < MAX_QUEUED_BYTES;
         let writable = writer.queued() > 0;
-        let typing = (!strokes.is_empty()).then(|| {
+        let typing = (!strokes.queued.is_empty()).then(|| {
             strokes_ready
                 .saturating_duration_since(now)
                 .max(Duration::from_millis(1))
@@ -497,17 +542,51 @@ pub fn run<S: Screen>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::{Keymap, Place, SHIFT_LEFT};
     use crate::screen::Cursor;
+    use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::net::UnixStream;
-    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex, mpsc};
 
     const SIDE: usize = 64;
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Seen {
+        Symbol(u32, bool),
+        Key(u8, bool),
+        Pointer(i16, i16),
+        Button(u8, bool),
+    }
+
+    struct Layout {
+        keys: Keymap,
+        bound: HashMap<u8, u32>,
+    }
+
+    fn layout() -> Layout {
+        let mut symbols = vec![0u32; 2 * 16];
+        symbols[0..2].copy_from_slice(&[0x61, 0x41]);
+        symbols[2..4].copy_from_slice(&[0x62, 0x42]);
+        symbols[4..6].copy_from_slice(&[SHIFT_LEFT, 0]);
+        Layout {
+            keys: Keymap::new(8, 2, &symbols, &[]),
+            bound: HashMap::new(),
+        }
+    }
 
     struct Still {
         wake: UnixStream,
         pixels: Vec<u32>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+        layout: Option<Layout>,
+    }
+
+    impl Still {
+        fn saw(&self, seen: Seen) {
+            self.seen.lock().unwrap().push(seen);
+        }
     }
 
     impl Screen for Still {
@@ -543,23 +622,43 @@ mod tests {
         fn position(&mut self) -> Result<(u16, u16), Failure> {
             Ok((0, 0))
         }
-        fn pointer(&mut self, _x: i16, _y: i16) -> Result<(), Failure> {
+        fn pointer(&mut self, x: i16, y: i16) -> Result<(), Failure> {
+            self.saw(Seen::Pointer(x, y));
             Ok(())
         }
-        fn button(&mut self, _button: u8, _down: bool) -> Result<(), Failure> {
+        fn button(&mut self, button: u8, down: bool) -> Result<(), Failure> {
+            self.saw(Seen::Button(button, down));
             Ok(())
         }
-        fn key(&mut self, _keycode: u8, _down: bool) -> Result<(), Failure> {
+        fn key(&mut self, keycode: u8, down: bool) -> Result<(), Failure> {
+            self.saw(Seen::Key(keycode, down));
             Ok(())
         }
-        fn symbol(&mut self, _symbol: u32, _down: bool) -> Result<(), Failure> {
+        fn symbol(&mut self, symbol: u32, down: bool) -> Result<(), Failure> {
+            let typed = match self.layout.as_mut() {
+                Some(layout) if down => match layout.keys.place(symbol) {
+                    Some(Place::Key(code, _)) => layout.bound.get(&code).copied().unwrap_or(symbol),
+                    _ => return Ok(()),
+                },
+                _ => symbol,
+            };
+            self.saw(Seen::Symbol(typed, down));
             Ok(())
         }
-        fn needs_key(&self, _symbol: u32) -> bool {
-            false
+        fn needs_key(&self, symbol: u32) -> bool {
+            self.layout
+                .as_ref()
+                .is_some_and(|layout| layout.keys.needs_key(symbol))
         }
-        fn bind(&mut self, _symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
-            Ok(false)
+        fn bind(&mut self, symbols: impl Iterator<Item = u32>) -> Result<bool, Failure> {
+            let Some(layout) = self.layout.as_mut() else {
+                return Ok(false);
+            };
+            let binds = layout.keys.plan(symbols);
+            for &(code, symbol, _) in &binds {
+                layout.bound.insert(code, symbol);
+            }
+            Ok(binds.iter().any(|&(_, _, reused)| reused))
         }
         fn chord(&mut self, _letter: u8, _shift: bool) -> Result<(), Failure> {
             Ok(())
@@ -589,18 +688,27 @@ mod tests {
     struct Session {
         browser: UnixStream,
         ended: mpsc::Receiver<Result<(), String>>,
+        seen: Arc<Mutex<Vec<Seen>>>,
         _wake: UnixStream,
     }
 
     fn start(settings: Settings) -> Session {
+        open_with(settings, None)
+    }
+
+    fn open_with(settings: Settings, layout: Option<Layout>) -> Session {
         let (browser, engine) = UnixStream::pair().unwrap();
         let (wake, screen_end) = UnixStream::pair().unwrap();
         let (done, ended) = mpsc::channel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
         std::thread::spawn(move || {
             let result = run(engine, settings, || {
                 Ok(Still {
                     wake: screen_end,
                     pixels: vec![0x0033_6699; SIDE * SIDE],
+                    seen: recorded,
+                    layout,
                 })
             });
             let _ = done.send(result.map_err(|error| error.to_string()));
@@ -608,13 +716,25 @@ mod tests {
         Session {
             browser,
             ended,
+            seen,
             _wake: wake,
         }
     }
 
     fn masked(opcode: u8, body: &[u8]) -> Vec<u8> {
         let mask = [3u8, 1, 4, 1];
-        let mut frame = vec![0x80 | opcode, 0x80 | u8::try_from(body.len()).unwrap()];
+        let mut frame = vec![0x80 | opcode];
+        match body.len() {
+            short @ ..126 => frame.push(0x80 | short as u8),
+            wide @ ..=0xffff => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(wide as u16).to_be_bytes());
+            }
+            long => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(long as u64).to_be_bytes());
+            }
+        }
         frame.extend_from_slice(&mask);
         frame.extend(body.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
         frame
@@ -749,5 +869,148 @@ mod tests {
                 break;
             }
         }
+    }
+
+    fn steady() -> Settings {
+        Settings {
+            fps: 30,
+            max_mbps: 10,
+            keepalive: KEEPALIVE,
+        }
+    }
+
+    fn answering(session: &Session) {
+        let mut browser = session.browser.try_clone().unwrap();
+        std::thread::spawn(move || {
+            while let Ok((first, body)) = try_frame(&mut browser) {
+                let reply = if first == 0x89 {
+                    masked(0xa, &body)
+                } else if first == 0x82 && body.first() == Some(&SERVER_FRAME) {
+                    ack(u32::from_le_bytes([body[1], body[2], body[3], body[4]]))
+                } else {
+                    continue;
+                };
+                if browser.write_all(&reply).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn text(body: &str) -> Vec<u8> {
+        let mut message = vec![CLIENT_TEXT];
+        message.extend_from_slice(body.as_bytes());
+        masked(0x2, &message)
+    }
+
+    fn pointer_to(x: u16, y: u16) -> Vec<u8> {
+        let mut message = vec![CLIENT_POINTER];
+        message.extend_from_slice(&x.to_le_bytes());
+        message.extend_from_slice(&y.to_le_bytes());
+        masked(0x2, &message)
+    }
+
+    fn off_layout(count: usize, distinct: usize) -> String {
+        (0..count)
+            .map(|index| char::from_u32(0x4e00 + (index % distinct) as u32).unwrap())
+            .collect()
+    }
+
+    fn typed(text: &str) -> Vec<Seen> {
+        text.chars()
+            .filter_map(symbol_of)
+            .flat_map(|symbol| [Seen::Symbol(symbol, true), Seen::Symbol(symbol, false)])
+            .collect()
+    }
+
+    fn wait_for(session: &Session, count: usize) -> Vec<Seen> {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let seen = session.seen.lock().unwrap().clone();
+            if seen.len() >= count || Instant::now() >= until {
+                return seen;
+            }
+            if let Ok(ended) = session.ended.try_recv() {
+                panic!("the view ended: {ended:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn long_typed_text_arrives_in_full_and_before_the_input_sent_after_it() {
+        let mut session = open_with(steady(), None);
+        let long = "the quick brown fox jumps over the lazy dog\n".repeat(120);
+        assert!(long.chars().count() > 5000);
+        session.browser.write_all(&text(&long)).unwrap();
+        session
+            .browser
+            .write_all(&masked(0x2, &[CLIENT_KEY, 30, 0, 1]))
+            .unwrap();
+        answering(&session);
+        let mut expected = typed(&long);
+        expected.push(Seen::Key(38, true));
+        assert_eq!(wait_for(&session, expected.len()), expected);
+    }
+
+    #[test]
+    fn pointer_moves_during_long_off_layout_text_wait_for_it_and_keep_the_view_open() {
+        let mut session = open_with(steady(), Some(layout()));
+        let long = off_layout(5000, 100);
+        session.browser.write_all(&text(&long)).unwrap();
+        session.browser.write_all(&pointer_to(10, 20)).unwrap();
+        session.browser.write_all(&pointer_to(30, 40)).unwrap();
+        answering(&session);
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(session.ended.try_recv(), Err(mpsc::TryRecvError::Empty));
+        let seen = session.seen.lock().unwrap().clone();
+        assert!(seen.len() >= 16, "only {} strokes typed", seen.len());
+        assert_eq!(seen, typed(&long)[..seen.len()]);
+    }
+
+    #[test]
+    fn clicks_and_keys_after_off_layout_text_happen_after_all_of_it() {
+        let mut session = open_with(steady(), Some(layout()));
+        let mixed: String = off_layout(30, 30)
+            .chars()
+            .enumerate()
+            .flat_map(|(index, character)| [character, if index % 2 == 0 { 'a' } else { 'B' }])
+            .collect();
+        session.browser.write_all(&text(&mixed)).unwrap();
+        session.browser.write_all(&pointer_to(5, 6)).unwrap();
+        for message in [[CLIENT_BUTTON, 1, 1], [CLIENT_BUTTON, 1, 0]] {
+            session.browser.write_all(&masked(0x2, &message)).unwrap();
+        }
+        session
+            .browser
+            .write_all(&masked(0x2, &[CLIENT_KEY, 30, 0, 1]))
+            .unwrap();
+        answering(&session);
+        let mut expected = typed(&mixed);
+        expected.extend([
+            Seen::Pointer(5, 6),
+            Seen::Button(1, true),
+            Seen::Button(1, false),
+            Seen::Key(38, true),
+        ]);
+        assert_eq!(wait_for(&session, expected.len()), expected);
+    }
+
+    #[test]
+    fn a_viewer_with_more_text_waiting_than_allowed_is_let_go() {
+        let mut session = open_with(steady(), Some(layout()));
+        let part = off_layout(80_000, 1000);
+        for _ in 0..4 {
+            if session.browser.write_all(&text(&part)).is_err() {
+                break;
+            }
+        }
+        answering(&session);
+        assert_eq!(
+            session.ended.recv_timeout(Duration::from_secs(10)),
+            Ok(Err(
+                "the viewer sent more text than the desktop can type".to_string()
+            ))
+        );
     }
 }
