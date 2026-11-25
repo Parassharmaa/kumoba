@@ -50,6 +50,18 @@ describe("Kumoba", () => {
     await expect(kumoba.get("nope")).rejects.toMatchObject({ notFound: true, status: 404 });
   });
 
+  it("lists the newest sandboxes first and keeps them when the limit cuts the list", async () => {
+    const [first, second, third] = [
+      await kumoba.create({ labels: { batch: "order" } }),
+      await kumoba.create({ labels: { batch: "order" } }),
+      await kumoba.create({ labels: { batch: "order" } }),
+    ];
+    const list = (limit: number) =>
+      kumoba.list({ labels: { batch: "order" }, limit }).then((all) => all.map((s) => s.id));
+    expect(await list(10)).toEqual([third.id, second.id, first.id]);
+    expect(await list(2)).toEqual([third.id, second.id]);
+  });
+
   it("lists by a label whose value has a colon and refuses keys the filter cannot express", async () => {
     const url = await kumoba.create({ labels: { url: "http://x:1" } });
     await kumoba.create({ labels: { url: "http://y:1" } });

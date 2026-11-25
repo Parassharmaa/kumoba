@@ -14,6 +14,7 @@ daemon=$!
 trap 'kill $daemon 2>/dev/null; wait $daemon 2>/dev/null; rm -rf "$work"' EXIT
 for _ in $(seq 50); do [[ -S "$socket" ]] && break; sleep 0.1; done
 api() { curl -sS --fail-with-body --unix-socket "$socket" -H "authorization: Bearer $token" "$@"; }
+activity() { api "http://d/v1/sandboxes/$id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lastActivityAtMs"])'; }
 check() { if [[ "$2" != *"$3"* ]]; then printf 'FAIL %s: %s\n' "$1" "$2" >&2; cat "$work/daemon.log" >&2; exit 1; fi; printf 'ok   %s\n' "$1"; }
 
 check unauthorized "$(curl -sS --unix-socket "$socket" http://d/v1/sandboxes)" unauthorized
@@ -35,7 +36,9 @@ head -c 2500000 /dev/urandom > "$work/blob"
 check upload "$(api -X PUT --data-binary @"$work/blob" "http://d/v1/sandboxes/$id/files?path=/home/kumoba/up/blob&user=kumoba")" '"written":2500000'
 api -o "$work/back" "http://d/v1/sandboxes/$id/files?path=/home/kumoba/up/blob"
 cmp "$work/blob" "$work/back" && echo "ok   download-matches"
+before=$(activity); sleep 0.1
 check list-files "$(api "http://d/v1/sandboxes/$id/files/list?path=/home/kumoba/up")" '"name":"blob"'
+check list-files-activity "$(( $(activity) > before ))" 1
 api -m 2 -X POST "http://d/v1/sandboxes/$id/exec" -H 'content-type: application/json' \
   -d '{"argv":["/bin/sh","-c","echo $$ > /tmp/abort.pid; sleep 60"],"timeoutMs":60000}' >/dev/null 2>&1 || true
 sleep 1
@@ -46,7 +49,9 @@ check timeout "$(api -X POST "http://d/v1/sandboxes/$id/exec" -H 'content-type: 
 api -X POST "http://d/v1/sandboxes/$id/exec" -H 'content-type: application/json' \
   -d '{"argv":["/bin/sh","-c","echo preview-ok > /workspace/index.html && setsid /usr/local/bin/http-fixture >/dev/null 2>&1 & while [ ! -f /workspace/http-ready ]; do sleep 0.1; done"],"timeoutMs":10000}' >/dev/null
 preview_path=$(api -X POST "http://d/v1/sandboxes/$id/preview" -H 'content-type: application/json' -d '{"port":8080,"ttlSeconds":60}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
+before=$(activity); sleep 0.1
 check preview-tunnel "$(curl -sS --unix-socket "$socket" "http://d${preview_path}index.html")" preview-ok
+check preview-activity "$(( $(activity) > before ))" 1
 check preview-forged "$(curl -sS --unix-socket "$socket" "http://d/v1/preview/AAAA.BBBB/index.html")" invalid
 check access-log-empty "$(api "http://d/v1/access-log?sinceMs=0&untilMs=9999999999999")" '"entries":[]'
 check stop "$(api -X POST "http://d/v1/sandboxes/$id/stop")" '"state":"stopped"'
