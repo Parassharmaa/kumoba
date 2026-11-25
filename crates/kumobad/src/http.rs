@@ -181,7 +181,7 @@ async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResu
             let body: CreateRequest = read_json(request.into_body()).await?;
             Ok(json_response(
                 200,
-                serde_json::to_value(service.create(body).await?).unwrap(),
+                serde_json::to_value(service.create(body, false).await?).unwrap(),
             ))
         }
         Operation::List => {
@@ -547,15 +547,34 @@ async fn desktop(
 
 async fn run(service: Arc<Service>, body: RunRequest) -> ApiResult<Response<Body>> {
     let (create, exec_request) = body.split();
-    let id = service.create(create).await?.meta.id;
-    let started = match service.start(&id).await {
-        Ok(_) => exec(service.clone(), &id, exec_request, true).await,
-        Err(error) => Err(error),
-    };
-    if started.is_err() {
-        let _ = service.delete(&id).await;
-    }
-    started
+    let (mut reply, response) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let id = match service.create(create, true).await {
+            Ok(summary) => summary.meta.id,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let started = tokio::select! {
+            started = async {
+                service.start(&id).await?;
+                exec(service.clone(), &id, exec_request, true).await
+            } => Some(started),
+            () = reply.closed() => None,
+        };
+        if !matches!(started, Some(Ok(_)))
+            && let Err(error) = service.delete(&id).await
+        {
+            crate::service::log("run_delete_failed", &id, Some(error));
+        }
+        if let Some(started) = started {
+            let _ = reply.send(started);
+        }
+    });
+    response
+        .await
+        .unwrap_or_else(|_| Err(ApiError::Status(500, "the run stopped unexpectedly".into())))
 }
 
 struct EventWriter {
@@ -1216,6 +1235,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn run_deletes_its_sandbox_when_the_client_disconnects_during_boot() {
+        use http_body_util::{BodyExt, Full};
+        use hyper_util::rt::TokioIo;
+        let daemon = crate::testing::Daemon::new();
+        let runtime = daemon.runtime().await;
+        let service = daemon.service(runtime.clone()).await;
+        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        crate::serve(
+            server,
+            service,
+            std::sync::Arc::new(b"token".to_vec()),
+            super::Listener::Api,
+        );
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+            .await
+            .unwrap();
+        let connection = tokio::spawn(connection);
+        let request = Request::post("/v1/run")
+            .header("authorization", "Bearer token")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from_static(
+                br#"{"argv":["true"],"network":{"mode":"blocked"}}"#,
+            )))
+            .unwrap();
+        let response = tokio::spawn(async move {
+            let response = sender.send_request(request).await?;
+            response.into_body().collect().await.map(|_| ())
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while runtime.list().await.unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "run never created a sandbox"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            runtime.list().await.unwrap().len(),
+            1,
+            "the sandbox must still be booting when the client leaves"
+        );
+        response.abort();
+        connection.abort();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !runtime.list().await.unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the sandbox outlived the disconnected run"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     #[test]
     fn the_desktop_link_prefers_the_stream_viewer_only_when_it_runs() {
         use super::{STREAM_VIEW, VNC_VIEW, desktop_view};
@@ -1239,13 +1313,13 @@ mod tests {
         let (client_io, server_io) = tokio::io::duplex(1 << 16);
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         for chunk in sent {
-            sender.send(bytes::Bytes::from_static(chunk)).await.unwrap();
+            sender.send(Bytes::from_static(chunk)).await.unwrap();
         }
         let receiver = std::sync::Mutex::new(Some(receiver));
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |_request| {
                 let receiver = receiver.lock().unwrap().take().unwrap();
-                async move { Ok::<_, std::convert::Infallible>(sized_stream_response(size, receiver)) }
+                async move { Ok::<_, Infallible>(sized_stream_response(size, receiver)) }
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(server_io), service)
@@ -1257,11 +1331,7 @@ mod tests {
                 .unwrap();
         tokio::spawn(connection);
         let response = request_sender
-            .send_request(
-                hyper::Request::get("/files")
-                    .body(Empty::<bytes::Bytes>::new())
-                    .unwrap(),
-            )
+            .send_request(Request::get("/files").body(Empty::<Bytes>::new()).unwrap())
             .await
             .unwrap();
         let declared = response
