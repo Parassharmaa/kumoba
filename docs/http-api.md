@@ -118,6 +118,8 @@ Closing the connection ends the shell. A request without the upgrade gets `426 u
 ## Files
 
 - `PUT /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` with the raw bytes as the body → `{"written": <bytes>}`. Parent directories must exist. The file is created `0644` as `user`.
+
+  The bytes go to a hidden file next to the target, which takes the target's place only after the last byte is on disk. Programs in the sandbox see the old file or the new one, never part of the upload, and an upload that fails or is cut off leaves the old file as it was. A replaced file keeps its mode and owner. Three cases are written in place instead, as before: a file with more than one hard link, a file in a directory `user` cannot write to, and a file whose owner `user` cannot keep. Images built by an older kumoba release also write in place. An upload whose body sends nothing for 60 seconds is answered `408`.
 - `GET /v1/sandboxes/{id}/files?path=/abs/path[&user=name]` → the raw bytes, `application/octet-stream`.
 - `GET /v1/sandboxes/{id}/files/list?path=/abs/dir[&user=name]` → `{"entries": [{"name": "a.txt", "kind": "file", "size": 5}, ...]}`. `kind` is `file`, `directory` or `other`.
 
