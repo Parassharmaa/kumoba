@@ -9,6 +9,7 @@ export type JsonSchema = {
   required?: string[];
   description?: string;
   default?: unknown;
+  pattern?: string;
 };
 
 export type CommandSpec = {
@@ -90,6 +91,9 @@ function scalar(schema: JsonSchema, raw: string, name: string): unknown {
       if (schema.enum && !schema.enum.includes(raw)) {
         throw new UsageError(`${name} must be one of ${schema.enum.map(String).join(", ")}`);
       }
+      if (schema.pattern !== undefined && !new RegExp(schema.pattern, "u").test(raw)) {
+        throw new UsageError(`${name} must match ${schema.pattern}, got ${raw}`);
+      }
       return raw;
   }
 }
@@ -127,6 +131,9 @@ function coerce(
       .split(/[,\n]/)
       .map((part) => part.trim())
       .filter(Boolean);
+    if (parts.length === 0 && schema.items?.pattern !== undefined) {
+      throw new UsageError(`${name} needs a value matching ${schema.items.pattern}`);
+    }
     return [...existing, ...parts.map((part) => scalar(schema.items ?? {}, part, name))];
   }
   if (kind === "object") return parseJson(text, name);

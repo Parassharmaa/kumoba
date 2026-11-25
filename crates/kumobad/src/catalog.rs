@@ -34,7 +34,7 @@ pub enum Operation {
 pub enum Kind {
     String,
     Integer,
-    Strings,
+    LabelFilters,
 }
 
 pub struct Param {
@@ -157,8 +157,8 @@ pub static SPECS: &[Spec] = &[
         query: &[
             param(
                 "label",
-                Kind::Strings,
-                "Only sandboxes with this key:value label; repeat to require several",
+                Kind::LabelFilters,
+                "Only sandboxes with this label, written key:value (not key=value); repeat to require several",
             ),
             param("limit", Kind::Integer, "Maximum sandboxes to return"),
         ],
@@ -389,9 +389,11 @@ fn kind_schema(kind: Kind, description: &str) -> Value {
     match kind {
         Kind::String => json!({"type": "string", "description": description}),
         Kind::Integer => json!({"type": "integer", "description": description}),
-        Kind::Strings => {
-            json!({"type": "array", "items": {"type": "string"}, "description": description})
-        }
+        Kind::LabelFilters => json!({
+            "type": "array",
+            "items": {"type": "string", "pattern": "^[^:]+:"},
+            "description": description,
+        }),
     }
 }
 

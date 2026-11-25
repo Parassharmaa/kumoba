@@ -141,12 +141,19 @@ fn coerce(schema: &Value, raw: &str, name: &str, current: Option<&Value>) -> Res
                 Some(Value::Array(existing)) => existing.clone(),
                 _ => Vec::new(),
             };
+            let mut given = 0;
             for part in raw
                 .split([',', '\n'])
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
             {
                 values.push(scalar(&items, part, name)?);
+                given += 1;
+            }
+            if given == 0
+                && let Some(pattern) = items.get("pattern").and_then(Value::as_str)
+            {
+                return Err(format!("{name} needs a value matching {pattern}"));
             }
             Ok(Value::Array(values))
         }
@@ -375,7 +382,7 @@ mod tests {
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     "timeoutMs": {"type": "integer"},
                     "tty": {"type": "boolean"},
-                    "label": {"type": "array", "items": {"type": "string"}},
+                    "label": {"type": "array", "items": {"type": "string", "pattern": "^[^:]+:"}},
                     "content": {"type": "string"},
                     "autoDeleteMinutes": {"type": ["integer", "null"]},
                     "network": {"type": "object", "properties": {
@@ -435,6 +442,19 @@ mod tests {
         assert!(parse(&["--network.mode", "sometimes"]).is_err());
         assert!(parse(&["--timeout-ms", "soon"]).is_err());
         assert!(parse(&["--nope", "1"]).is_err());
+    }
+
+    #[test]
+    fn an_empty_value_clears_a_list_unless_its_items_have_a_pattern() {
+        let parsed = parse(&["network.hosts="]).unwrap();
+        assert_eq!(
+            Value::Object(parsed.values),
+            json!({"network": {"hosts": []}})
+        );
+        for empty in ["", " ", ","] {
+            let error = parse(&["--label", empty]).err().unwrap();
+            assert_eq!(error, "label needs a value matching ^[^:]+:");
+        }
     }
 
     #[test]

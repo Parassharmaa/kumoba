@@ -109,6 +109,24 @@ describe("argument parsing", () => {
     expect(() => parseArgs(spec("create"), ["--cpu", "two"])).toThrow(/integer/);
     expect(() => parseArgs(spec("create"), ["--nope", "1"])).toThrow(/unknown option/);
   });
+
+  it("checks strings against the schema's pattern", () => {
+    const parsed = parseArgs(spec("list"), ["--label", "task:fix-tests", "label=url:http://x:1"]);
+    expect(parsed.values).toEqual({ label: ["task:fix-tests", "url:http://x:1"] });
+    for (const malformed of ["task=fix-tests", ":v", "task"]) {
+      expect(() => parseArgs(spec("list"), ["--label", malformed])).toThrow(
+        `label must match ^[^:]+:, got ${malformed}`
+      );
+    }
+    for (const empty of ["", " ", ","]) {
+      expect(() => parseArgs(spec("list"), ["--label", empty])).toThrow(
+        "label needs a value matching ^[^:]+:"
+      );
+    }
+    expect(parseArgs(spec("create"), ["network.hosts="]).values).toEqual({
+      network: { hosts: [] },
+    });
+  });
 });
 
 describe("kumoba CLI", () => {
@@ -179,6 +197,22 @@ describe("kumoba CLI", () => {
     stdin = Buffer.from("echo hi\n");
     expect(await main(["shell", sandbox.id], io())).toBe(3);
     expect(text()).toBe("ECHO HI\n");
+  });
+
+  it("lists by label and refuses a malformed label filter before asking the daemon", async () => {
+    expect(
+      await main(["create", "--image", "test", "--labels", "task=fix-tests", "-q"], io())
+    ).toBe(0);
+    const id = text().trim();
+    expect(await main(["create", "--image", "test", "--labels", "task=other", "-q"], io())).toBe(0);
+    out = [];
+    expect(await main(["list", "--label", "task:fix-tests", "-q"], io())).toBe(0);
+    expect(text().trim()).toBe(id);
+    out = [];
+    expect(await main(["list", "--label", "task=fix-tests", "-q"], io())).toBe(2);
+    expect(text()).toBe("");
+    expect(err.join("")).toContain("label must match ^[^:]+:, got task=fix-tests");
+    expect(fake.listFilters).toEqual([["task:fix-tests"]]);
   });
 
   it("separates usage errors, daemon errors and an unreachable daemon", async () => {

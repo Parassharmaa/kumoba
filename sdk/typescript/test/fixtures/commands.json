@@ -245,8 +245,9 @@
       "inputSchema": {
         "properties": {
           "label": {
-            "description": "Only sandboxes with this key:value label; repeat to require several",
+            "description": "Only sandboxes with this label, written key:value (not key=value); repeat to require several",
             "items": {
+              "pattern": "^[^:]+:",
               "type": "string"
             },
             "type": "array"
