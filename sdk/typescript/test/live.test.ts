@@ -52,10 +52,9 @@ describe.skipIf(!live)("against a real kumobad", () => {
     );
     const link = await sandbox.expose(8080, { ttlSeconds: 60 });
     expect(link.path).toMatch(/^\/v1\/preview\/.+\/$/);
-    if (link.url) {
-      const response = await fetch(`${link.url}index.html`);
-      expect(await response.text()).toContain("preview-ok");
-    }
+    expect(link.url, "the daemon needs a preview listener").not.toBeNull();
+    const response = await fetch(`${link.url ?? ""}index.html`);
+    expect(await response.text()).toContain("preview-ok");
 
     await sandbox.stop();
     expect(sandbox.state).toBe("stopped");
