@@ -95,6 +95,7 @@ pub fn serve(config: &Config) -> io::Result<()> {
         session::Settings {
             fps: config.fps.clamp(1, 120),
             max_mbps: config.max_mbps.clamp(1, 1000),
+            keepalive: session::KEEPALIVE,
         },
         &source,
     )
