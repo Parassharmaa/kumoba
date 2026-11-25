@@ -13,6 +13,7 @@ const CLIENT = {
   clipboard: 9,
   copy: 10,
   chord: 11,
+  pull: 12,
 } as const;
 const FRAME_HEADER_BYTES = 13;
 const CURSOR_HEADER_BYTES = 9;
@@ -46,7 +47,8 @@ export type ClientMessage =
   | { type: "text"; text: string }
   | { type: "clipboard"; text: string }
   | { type: "copy" }
-  | { type: "chord"; letter: "c" | "v" | "x"; shift: boolean };
+  | { type: "chord"; letter: "c" | "v" | "x"; shift: boolean }
+  | { type: "pull" };
 
 export function parseMessage(buffer: ArrayBuffer): ServerMessage {
   const view = new DataView(buffer);
@@ -173,6 +175,8 @@ export function encodeMessage(input: ClientMessage): ArrayBuffer {
       view.setUint8(2, input.shift ? 1 : 0);
       return buffer;
     }
+    case "pull":
+      return message(CLIENT.pull, 0).buffer;
   }
 }
 

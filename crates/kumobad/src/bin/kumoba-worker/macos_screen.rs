@@ -3,7 +3,7 @@ use crate::macos_clipboard::{Action, clipboard};
 use dispatch2::DispatchQueue;
 use kumoba_protocol::screen::{
     CLIPBOARD, CLIPBOARD_SET, COPY, DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_CURSOR, MAX_SIDE,
-    MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, cursor, frame, pair, size, text,
+    MIDDLE, PASTE, POINTER, PULL, Parser, REFUSED, RIGHT, WHEEL, cursor, frame, pair, size, text,
 };
 use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly,
@@ -837,8 +837,18 @@ fn watch_copy(vm: &Arc<Vm>, viewer: &Arc<Viewer>) {
             return;
         }
     };
+    answer_copy(vm, viewer, turn, Action::Copied, count);
+}
+
+fn pull(vm: &Arc<Vm>, viewer: &Arc<Viewer>) {
+    settle_typing(vm, true);
+    let turn = CLIPBOARD_TURN.fetch_add(1, Ordering::AcqRel) + 1;
+    answer_copy(vm, viewer, turn, Action::Read, String::new());
+}
+
+fn answer_copy(vm: &Arc<Vm>, viewer: &Arc<Viewer>, turn: u64, action: Action, value: String) {
     let (vm, viewer) = (vm.clone(), viewer.clone());
-    std::thread::spawn(move || match clipboard(&vm, Action::Copied, &[], &count) {
+    std::thread::spawn(move || match clipboard(&vm, action, &[], &value) {
         Ok(Some(copied)) if CLIPBOARD_TURN.load(Ordering::Acquire) == turn => {
             let _ = viewer.write(&frame(CLIPBOARD, text(&copied.text)));
         }
@@ -928,6 +938,7 @@ fn act(vm: &Arc<Vm>, viewer: &Arc<Viewer>, size: (f64, f64), kind: u8, payload: 
         (PASTE, typed) => type_text(vm, typed),
         (CLIPBOARD_SET, offered) => offer(vm, offered),
         (COPY, _) => watch_copy(vm, viewer),
+        (PULL, _) => pull(vm, viewer),
         _ => {}
     }
 }

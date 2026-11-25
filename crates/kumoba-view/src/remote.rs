@@ -2,7 +2,7 @@ use crate::mackeys::{self, COMMAND, SHIFT, SHIFT_RIGHT};
 use crate::screen::{Cursor, Failure, Screen};
 use kumoba_protocol::screen::{
     CLIPBOARD, CLIPBOARD_SET, COPY, CURSOR, DAMAGE, GRAB, GRABBED, HELLO, KEY, LEFT, MAX_SIDE,
-    MAX_TEXT, MIDDLE, PASTE, POINTER, Parser, REFUSED, RIGHT, WHEEL, frame, pair, text,
+    MAX_TEXT, MIDDLE, PASTE, POINTER, PULL, Parser, REFUSED, RIGHT, WHEEL, frame, pair, text,
 };
 use kumoba_view_codec::Rect;
 use std::collections::HashMap;
@@ -335,10 +335,10 @@ impl Remote {
         self.send(KEY, &[code[0], code[1], u8::from(down)])
     }
 
-    fn watch_copy(&mut self) -> Result<(), Failure> {
+    fn watch_copy(&mut self, kind: u8) -> Result<(), Failure> {
         self.copy_until = Some(Instant::now() + COPY_WINDOW);
         self.copied = None;
-        self.send(COPY, &[])
+        self.send(kind, &[])
     }
 }
 
@@ -530,7 +530,7 @@ impl Screen for Remote {
         };
         self.flush()?;
         if letter != b'v' {
-            self.watch_copy()?;
+            self.watch_copy(COPY)?;
         }
         self.press(COMMAND, true)?;
         self.shift(shift)?;
@@ -546,7 +546,12 @@ impl Screen for Remote {
     }
 
     fn expect_copy(&mut self) {
-        let _ = self.watch_copy();
+        let _ = self.watch_copy(COPY);
+    }
+
+    fn pull(&mut self) -> Result<(), Failure> {
+        self.flush()?;
+        self.watch_copy(PULL)
     }
 
     fn copied(&mut self) -> Option<Vec<u8>> {
@@ -1041,6 +1046,25 @@ mod tests {
         remote.drain().unwrap();
         assert_eq!(remote.copied(), Some(b"copied in the sandbox".to_vec()));
         sandbox.say(CLIPBOARD, b"a second answer");
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert_eq!(remote.copied(), None);
+    }
+
+    #[test]
+    fn a_pull_asks_for_the_clipboard_after_any_typed_text_without_pressing_keys() {
+        let (remote, mut sandbox) = connected("pull", (WIDTH, HEIGHT));
+        let mut remote = remote.unwrap();
+        remote.symbol(0xdc, true).unwrap();
+        remote.symbol(0xdc, false).unwrap();
+        remote.pull().unwrap();
+        assert_eq!(sandbox.heard(), (PASTE, "Ü".as_bytes().to_vec()));
+        assert_eq!(sandbox.heard(), (PULL, Vec::new()));
+        sandbox.say(CLIPBOARD, "copied from a menu".as_bytes());
+        std::thread::sleep(Duration::from_millis(50));
+        remote.drain().unwrap();
+        assert_eq!(remote.copied(), Some(b"copied from a menu".to_vec()));
+        sandbox.say(CLIPBOARD, b"not asked for");
         std::thread::sleep(Duration::from_millis(50));
         remote.drain().unwrap();
         assert_eq!(remote.copied(), None);

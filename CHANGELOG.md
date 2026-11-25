@@ -6,6 +6,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Added
 
+- Live view: a **Copy from desktop** button at the top right of the viewer page puts the text on the sandbox's clipboard on your clipboard, for text copied with an app's menu, such as right-click, Copy in a browser or Edit, Copy in a terminal. Before, text came back only within two seconds of a copy shortcut pressed in the live view. The browser client has the same as `viewer.copyFromDesktop()`, whose answer arrives through `onClipboard`. Text still leaves the sandbox only when you ask for it. An engine older than this release ignores the request.
 - TypeScript SDK: every call that talks to kumobad, not only `run()`, takes `signal` and `timeoutMs`: `create`, `start`, `stop`, `delete`, `get`, `find`, `list`, `listPage`, `refresh`, `update`, `images`, `accessLog`, `deleteSecrets`, `expose`, `setSecrets`, every `files` method and every `desktop` method. A cancelled call fails with code `aborted`, and one that runs past `timeoutMs` fails with the new code `timeout` (`retryable: true`). The time limit covers every request the call makes, so `create({ timeoutMs })` counts the boot too, and a `create()` cancelled while the sandbox boots deletes it. A stuck boot or a hung file read used to block the caller for good. There is no default time limit. The SDK now needs Node 20.3 or later.
 - TypeScript SDK: `kumoba.listPage({ labels, limit })` returns at most `limit` sandboxes, newest first, and `truncated`, which is true when more matched.
 
