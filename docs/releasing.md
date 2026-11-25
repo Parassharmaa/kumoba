@@ -39,6 +39,10 @@ Every publish step skips a version the registry already has, so rerunning a fail
 - A broken tarball with good packages: fix the script, rerun the workflow. `publish-release.sh` replaces assets on an existing release.
 - A tag on the wrong commit that has not been pushed: `git tag -d vX.Y.Z` and `git reset --hard HEAD~1`, then start again.
 
+## Pinned tools
+
+Actions, npm and the image base are pinned, so a new upstream release does not change what a tag builds or publishes. Every action in `.github/workflows/` is pinned to a full commit SHA with its version in a trailing comment (the `cargo-deny` version comes with the `taiki-e/install-action` commit), the image Dockerfiles pin `debian:trixie-slim` by digest, and `publish-npm` installs npm 11.21.3, a version that supports trusted publishing and runs on Node 22. Dependabot (`.github/dependabot.yml`) opens weekly pull requests for new action commits, image digests, crates and SDK dependencies. It does not see the npm version in the `run:` step or the actionlint version in `scripts/install-actionlint.sh`; bump those by hand. Pin any new action or base image the same way.
+
 ## Registry setup
 
 Done for kumoba 0.1.0: the four crates and the npm package trust `release.yml` in this repository through OIDC, so releases publish without stored tokens, npm attaches provenance, and nothing needs a manual publish. Repository rulesets stop `v*` tags from being moved or deleted and stop force pushes to or deletion of `main`.
