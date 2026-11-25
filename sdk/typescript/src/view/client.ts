@@ -123,6 +123,7 @@ export function connectViewer(
 
   const applyCursor = () => {
     canvas.style.cursor = viewOnly ? "default" : remoteCursor;
+    canvas.style.touchAction = viewOnly ? "" : "none";
   };
   applyCursor();
 
@@ -323,33 +324,46 @@ export function connectViewer(
   );
   document.addEventListener("visibilitychange", onVisibility);
 
-  const position = (event: MouseEvent) => {
+  const locate = (event: MouseEvent) => {
     const bounds = canvas.getBoundingClientRect();
     const width = canvas.width || 1;
     const height = canvas.height || 1;
     const scale = Math.min(bounds.width / width, bounds.height / height) || 1;
     const left = bounds.left + (bounds.width - width * scale) / 2;
     const top = bounds.top + (bounds.height - height * scale) / 2;
+    const x = Math.floor((event.clientX - left) / scale);
+    const y = Math.floor((event.clientY - top) / scale);
     return {
-      x: Math.max(0, Math.min(width - 1, Math.round((event.clientX - left) / scale))),
-      y: Math.max(0, Math.min(height - 1, Math.round((event.clientY - top) / scale))),
+      inside: x >= 0 && x < width && y >= 0 && y < height,
+      x: Math.max(0, Math.min(width - 1, x)),
+      y: Math.max(0, Math.min(height - 1, y)),
     };
   };
-  const onPointerMove = (event: PointerEvent) => send({ type: "pointer", ...position(event) });
+  const moveTo = ({ x, y }: { x: number; y: number }) => send({ type: "pointer", x, y });
+  const onPointerMove = (event: PointerEvent) => {
+    const place = locate(event);
+    if (place.inside || buttons.size > 0) moveTo(place);
+  };
   const onPointerDown = (event: PointerEvent) => {
     const button = POINTER_BUTTONS[event.button];
     if (!button || viewOnly) return;
+    const place = locate(event);
+    if (!place.inside) return;
     event.preventDefault();
     canvas.setPointerCapture(event.pointerId);
-    send({ type: "pointer", ...position(event) });
+    moveTo(place);
     buttons.add(button);
     send({ type: "button", button, down: true });
   };
   const onPointerUp = (event: PointerEvent) => {
     const button = POINTER_BUTTONS[event.button];
     if (!button || !buttons.delete(button)) return;
-    send({ type: "pointer", ...position(event) });
+    moveTo(locate(event));
     send({ type: "button", button, down: false });
+  };
+  const releaseButtons = () => {
+    for (const button of buttons) send({ type: "button", button, down: false });
+    buttons.clear();
   };
   const onWheel = (event: WheelEvent) => {
     if (viewOnly) return;
@@ -370,6 +384,7 @@ export function connectViewer(
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", releaseButtons);
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("contextmenu", onContextMenu);
 
@@ -382,6 +397,7 @@ export function connectViewer(
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointerdown", onPointerDown);
     canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", releaseButtons);
     canvas.removeEventListener("wheel", onWheel);
     canvas.removeEventListener("contextmenu", onContextMenu);
     queue = [];
@@ -495,8 +511,7 @@ export function connectViewer(
     },
     releaseHeldInput: () => {
       releaseKeys();
-      for (const button of buttons) send({ type: "button", button, down: false });
-      buttons.clear();
+      releaseButtons();
     },
     close: shutdown,
   };

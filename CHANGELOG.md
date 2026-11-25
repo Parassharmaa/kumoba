@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed
+
+- `kumoba/view`: a press in the empty bars around the desktop image no longer clicks the nearest edge of the desktop. Moves over the bars are ignored unless a button is held, a click lands on the pixel under the pointer instead of half a pixel off, a touch drag on the view drags on the desktop instead of scrolling the page, and a press the browser cancels no longer leaves the button held.
+
 ## [0.6.5] - 2026-11-23
 
 The first release with these changes; the v0.6.4 tag was never published.
