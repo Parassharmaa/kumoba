@@ -17,6 +17,8 @@ import type {
 export type OneShotOptions = RunOptions &
   Pick<CreateOptions, "image" | "cpu" | "memoryMib" | "labels" | "network">;
 
+export type ListPage = { sandboxes: Sandbox[]; truncated: boolean };
+
 export type KumobaOptions = {
   /**
    * `unix:///path/to/kumobad.sock` or `http://127.0.0.1:<port>`.
@@ -154,10 +156,34 @@ export class Kumoba {
     }
   }
 
-  /** Sandboxes whose labels include every entry of `labels`, newest first. */
+  /**
+   * Sandboxes whose labels include every entry of `labels`, newest first. Without
+   * `limit` it returns every match, or throws a `KumobaError` with code
+   * `list_truncated` if the daemon still cut the list. With `limit` it returns at
+   * most that many and does not say whether more matched; use `listPage` for that.
+   */
   async list(options: ListOptions = {}): Promise<Sandbox[]> {
-    const { sandboxes } = await this.api.list(options.labels ?? {}, options.limit ?? 100);
-    return sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary)));
+    if (options.limit !== undefined) return (await this.listPage(options)).sandboxes;
+    const page = await this.listPage({ ...options, limit: Number.MAX_SAFE_INTEGER });
+    if (page.truncated) {
+      throw new KumobaError(
+        `kumobad returned ${String(page.sandboxes.length)} sandboxes and said more matched; use listPage() to read a bounded page`,
+        { code: "list_truncated" }
+      );
+    }
+    return page.sandboxes;
+  }
+
+  /**
+   * At most `limit` matching sandboxes, newest first (the daemon's default of 1000
+   * when `limit` is left out), and whether more matched.
+   */
+  async listPage(options: ListOptions = {}): Promise<ListPage> {
+    const { sandboxes, truncated } = await this.api.list(options.labels ?? {}, options.limit);
+    return {
+      sandboxes: sandboxes.map((summary) => new Sandbox(this.context(undefined), toInfo(summary))),
+      truncated,
+    };
   }
 
   /**

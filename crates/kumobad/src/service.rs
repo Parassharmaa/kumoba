@@ -101,6 +101,7 @@ pub struct Entry {
     stopped_at_ms: AtomicU64,
     started: AtomicBool,
     operations: AtomicUsize,
+    last_state: std::sync::Mutex<State>,
     secrets: std::sync::Mutex<BTreeMap<String, (SecretId, Vec<String>)>>,
 }
 
@@ -165,6 +166,7 @@ impl Entry {
             stopped_at_ms: AtomicU64::new(stopped_at_ms),
             started: AtomicBool::new(false),
             operations: AtomicUsize::new(0),
+            last_state: std::sync::Mutex::new(State::Stopped),
             secrets: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
@@ -178,16 +180,26 @@ impl Entry {
         }
     }
 
-    async fn observed_state(&self) -> kumoba::Result<State> {
-        let mut sandbox = self.sandbox.lock().await;
+    fn observe(&self, sandbox: &mut Sandbox) -> kumoba::Result<State> {
         let state = sandbox.state()?;
         if let Some(stamp) = exit_stamp(state, self.snapshot(), now_ms()) {
             let _ =
                 self.stopped_at_ms
                     .compare_exchange(0, stamp, Ordering::SeqCst, Ordering::SeqCst);
         }
-        drop(sandbox);
+        *self.last_state.lock().expect("state lock") = state;
         Ok(state)
+    }
+
+    fn try_observe(&self) -> kumoba::Result<Option<State>> {
+        let Ok(mut sandbox) = self.sandbox.try_lock() else {
+            return Ok(None);
+        };
+        self.observe(&mut sandbox).map(Some)
+    }
+
+    fn last_state(&self) -> State {
+        *self.last_state.lock().expect("state lock")
     }
 
     pub fn touch(&self) {
@@ -464,8 +476,11 @@ impl Service {
             .ok_or_else(ApiError::not_found)
     }
 
-    pub async fn summary(&self, entry: &Arc<Entry>) -> ApiResult<Summary> {
-        let state = entry.observed_state().await?;
+    pub fn summary(&self, entry: &Arc<Entry>) -> ApiResult<Summary> {
+        let state = match entry.try_observe()? {
+            Some(state) => state,
+            None => entry.last_state(),
+        };
         Ok(Summary {
             meta: entry.meta(),
             state: state_name(state),
@@ -498,7 +513,7 @@ impl Service {
             .write()
             .await
             .insert(meta.id.clone(), entry.clone());
-        self.summary(&entry).await
+        self.summary(&entry)
     }
 
     pub async fn list(
@@ -510,7 +525,7 @@ impl Service {
         let mut matched = Vec::new();
         for entry in entries {
             if labels_match(&entry.meta().labels, filter) {
-                matched.push(self.summary(&entry).await?);
+                matched.push(self.summary(&entry)?);
             }
         }
         Ok(newest_first(matched, limit))
@@ -544,7 +559,7 @@ impl Service {
             meta.clone()
         };
         self.persist(&meta)?;
-        self.summary(&entry).await
+        self.summary(&entry)
     }
 
     pub async fn start(&self, id: &str) -> ApiResult<Summary> {
@@ -556,16 +571,21 @@ impl Service {
             }
             entry.started.store(true, Ordering::SeqCst);
             entry.stopped_at_ms.store(0, Ordering::SeqCst);
+            entry.touch();
+            entry.observe(&mut sandbox)?;
         }
-        entry.touch();
-        self.summary(&entry).await
+        self.summary(&entry)
     }
 
     pub async fn stop(&self, id: &str) -> ApiResult<Summary> {
         let entry = self.entry(id).await?;
-        entry.sandbox.lock().await.stop().await?;
-        entry.stopped_at_ms.store(now_ms(), Ordering::SeqCst);
-        self.summary(&entry).await
+        {
+            let mut sandbox = entry.sandbox.lock().await;
+            sandbox.stop().await?;
+            entry.stopped_at_ms.store(now_ms(), Ordering::SeqCst);
+            entry.observe(&mut sandbox)?;
+        }
+        self.summary(&entry)
     }
 
     async fn forget(&self, id: &str, entry: &Entry) {
@@ -771,12 +791,14 @@ impl Service {
         let now = now_ms();
         for (id, entry) in entries {
             let meta = entry.meta();
-            let Ok(state) = entry.observed_state().await else {
+            let Ok(Some(state)) = entry.try_observe() else {
                 continue;
             };
             match reap_action(state, &meta, entry.snapshot(), now) {
                 Some(ReapAction::Stop) => {
-                    let mut sandbox = entry.sandbox.lock().await;
+                    let Ok(mut sandbox) = entry.sandbox.try_lock() else {
+                        continue;
+                    };
                     if matches!(sandbox.state(), Ok(State::Running))
                         && reap_action(State::Running, &meta, entry.snapshot(), now_ms())
                             == Some(ReapAction::Stop)
@@ -784,6 +806,7 @@ impl Service {
                         let result = sandbox.stop().await;
                         if result.is_ok() {
                             entry.stopped_at_ms.store(now_ms(), Ordering::SeqCst);
+                            let _ = entry.observe(&mut sandbox);
                         }
                         log("auto_stop", &id, result.err().map(ApiError::from));
                     }
@@ -794,7 +817,9 @@ impl Service {
             }
             let stopped_at = entry.stopped_at_ms.load(Ordering::SeqCst);
             {
-                let mut sandbox = entry.sandbox.lock().await;
+                let Ok(mut sandbox) = entry.sandbox.try_lock() else {
+                    continue;
+                };
                 if !matches!(sandbox.state(), Ok(State::Stopped))
                     || entry.stopped_at_ms.load(Ordering::SeqCst) != stopped_at
                     || entry.operations.load(Ordering::SeqCst) > 0
@@ -924,7 +949,7 @@ mod tests {
         assert!(service.entry(&run.to_string()).await.is_err());
         let adopted = service.entry(&kept.to_string()).await.unwrap();
         assert!(!adopted.meta().ephemeral);
-        let summary = serde_json::to_value(service.summary(&adopted).await.unwrap()).unwrap();
+        let summary = serde_json::to_value(service.summary(&adopted).unwrap()).unwrap();
         assert!(summary.get("ephemeral").is_none());
     }
 
@@ -1005,6 +1030,118 @@ mod tests {
             .await
             .unwrap();
         Entry::new(meta(15, None), sandbox, 0)
+    }
+
+    async fn booting_service(
+        root: &std::path::Path,
+        boot_timeout: Duration,
+    ) -> (Arc<Service>, String) {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["library", "firmware", "image.raw"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+        let worker = root.join("worker");
+        std::fs::write(&worker, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config = kumoba::RuntimeConfig::new(
+            worker,
+            root.join("library"),
+            root.join("firmware"),
+            root.join("state"),
+        );
+        config.boot_timeout = boot_timeout;
+        let runtime = Runtime::open(config).await.unwrap();
+        let (_access, receiver) = tokio::sync::mpsc::channel(1);
+        let service = Service::open(
+            runtime,
+            SecretStore::new(),
+            ServiceConfig {
+                state_dir: root.join("daemon"),
+                images: BTreeMap::from([("test".to_string(), root.join("image.raw"))]),
+                view: root.join("kumoba-view"),
+            },
+            receiver,
+            DroppedRecords::default(),
+        )
+        .await
+        .unwrap();
+        let created = service
+            .create(
+                CreateRequest {
+                    image: "test".into(),
+                    labels: BTreeMap::new(),
+                    cpu: 1,
+                    memory_mib: 512,
+                    auto_stop_minutes: 1,
+                    auto_delete_minutes: Some(1),
+                    network: crate::model::NetworkSpec::default(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        (service, created.meta.id)
+    }
+
+    async fn begin_boot(
+        service: &Arc<Service>,
+        id: &str,
+    ) -> tokio::task::JoinHandle<ApiResult<Summary>> {
+        let entry = service.entry(id).await.unwrap();
+        let booting = {
+            let service = service.clone();
+            let id = id.to_string();
+            tokio::spawn(async move { service.start(&id).await })
+        };
+        while entry.sandbox.try_lock().is_ok() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        booting
+    }
+
+    const PROMPTLY: Duration = Duration::from_millis(500);
+
+    #[tokio::test]
+    async fn listing_and_reaping_do_not_wait_for_a_boot() {
+        let root = tempfile::tempdir().unwrap();
+        let (service, id) = booting_service(root.path(), Duration::from_secs(60)).await;
+        let entry = service.entry(&id).await.unwrap();
+        let booting = begin_boot(&service, &id).await;
+        entry.activity_ms.store(0, Ordering::SeqCst);
+
+        let (listed, _) = tokio::time::timeout(PROMPTLY, service.list(&[], 10))
+            .await
+            .expect("list waited for the boot")
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].state, "stopped");
+        assert_eq!(service.summary(&entry).unwrap().state, "stopped");
+        tokio::time::timeout(PROMPTLY, service.reap())
+            .await
+            .expect("the reaper waited for the boot");
+
+        assert!(!booting.is_finished());
+        assert!(service.entry(&id).await.is_ok());
+        booting.abort();
+    }
+
+    #[tokio::test]
+    async fn stopping_or_deleting_a_booting_sandbox_waits_for_the_boot() {
+        let root = tempfile::tempdir().unwrap();
+        let (service, id) = booting_service(root.path(), Duration::from_secs(1)).await;
+        let booting = begin_boot(&service, &id).await;
+        let stopped = service.stop(&id).await.unwrap();
+        assert!(booting.is_finished());
+        assert!(booting.await.unwrap().is_err());
+        assert_eq!(stopped.state, "stopped");
+        let listed = service.list(&[], 10).await.unwrap().0;
+        assert_eq!(listed[0].state, "stopped");
+
+        let booting = begin_boot(&service, &id).await;
+        service.delete(&id).await.unwrap();
+        assert!(booting.await.unwrap().is_err());
+        assert!(service.entry(&id).await.is_err());
+        assert!(service.list(&[], 10).await.unwrap().0.is_empty());
     }
 
     #[tokio::test]

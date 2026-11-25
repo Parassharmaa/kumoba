@@ -58,6 +58,8 @@ export type FakeKumobad = {
   accessPageSize: number;
   execs: FakeExecCall[];
   listFilters: string[][];
+  listLimits: (string | null)[];
+  listCap: number;
   downloadCut: { bytes: number; finish: "end" | "abort" | "hang" } | undefined;
   downloadsClosed: number;
   onExec: (call: FakeExecCall) => FakeExecReply;
@@ -94,6 +96,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
     accessPageSize: 1000,
     execs: [],
     listFilters: [],
+    listLimits: [],
+    listCap: Number.POSITIVE_INFINITY,
     downloadCut: undefined,
     downloadsClosed: 0,
     onExec: () => ({ stdout: "", exitCode: 0 }),
@@ -200,7 +204,8 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           const split = filter.indexOf(":");
           return [filter.slice(0, split), filter.slice(split + 1)] as const;
         });
-        const limit = Number(url.searchParams.get("limit") ?? 1000);
+        fake.listLimits.push(url.searchParams.get("limit"));
+        const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000), fake.listCap);
         const matched = [...fake.sandboxes.values()]
           .filter((candidate) => filters.every(([key, value]) => candidate.labels[key] === value))
           .sort(
