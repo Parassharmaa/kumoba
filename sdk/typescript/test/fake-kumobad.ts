@@ -197,9 +197,13 @@ export async function startFakeKumobad(): Promise<FakeKumobad> {
           return [filter.slice(0, split), filter.slice(split + 1)] as const;
         });
         const limit = Number(url.searchParams.get("limit") ?? 1000);
-        const matched = [...fake.sandboxes.values()].filter((candidate) =>
-          filters.every(([key, value]) => candidate.labels[key] === value)
-        );
+        const matched = [...fake.sandboxes.values()]
+          .filter((candidate) => filters.every(([key, value]) => candidate.labels[key] === value))
+          .sort(
+            (left, right) =>
+              right.createdAtMs - left.createdAtMs ||
+              (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+          );
         send(response, 200, {
           sandboxes: matched.slice(0, limit).map(summary),
           truncated: matched.length > limit,
