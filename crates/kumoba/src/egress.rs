@@ -28,8 +28,8 @@ const MAX_ADDRESSES: usize = 64;
 const MAX_CONNECTIONS: usize = 16;
 const MAX_WEB_CONNECTIONS: usize = 32;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const TUNNEL_TIMEOUT: Duration = Duration::from_secs(3600);
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const TUNNEL_TIMEOUT: Duration = Duration::from_secs(3600);
 const DNS_LOOKUPS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1152,7 +1152,7 @@ where
 {
     let (client_read, client_write) = tokio::io::split(client);
     let (remote_read, remote_write) = remote.into_split();
-    let (activity, mut changes) = watch::channel(Instant::now());
+    let (activity, changes) = watch::channel(Instant::now());
     timeout(TUNNEL_TIMEOUT, async {
         let copying = async {
             let upload = copy_active(client_read, remote_write, activity.clone());
@@ -1168,17 +1168,18 @@ where
                 },
             }
         };
-        let idle = async {
-            loop {
-                let expires = *changes.borrow_and_update() + IDLE_TIMEOUT;
-                tokio::select! {
-                    _ = tokio::time::sleep_until(expires) => return Err(io::Error::new(io::ErrorKind::TimedOut, "egress tunnel idle")),
-                    changed = changes.changed() => { if changed.is_err() { return Ok(()); } }
-                }
-            }
-        };
-        tokio::select! { result = copying => result, result = idle => result }
+        tokio::select! { result = copying => result, result = idle(changes, IDLE_TIMEOUT) => result }
     }).await?
+}
+
+pub(crate) async fn idle(mut changes: watch::Receiver<Instant>, limit: Duration) -> io::Result<()> {
+    loop {
+        let expires = *changes.borrow_and_update() + limit;
+        tokio::select! {
+            _ = tokio::time::sleep_until(expires) => return Err(io::Error::new(io::ErrorKind::TimedOut, "egress tunnel idle")),
+            changed = changes.changed() => { if changed.is_err() { return Ok(()); } }
+        }
+    }
 }
 
 #[cfg(test)]
