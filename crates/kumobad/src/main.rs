@@ -5,6 +5,8 @@ mod model;
 mod preview;
 mod service;
 mod terminal;
+#[cfg(test)]
+mod testing;
 
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;

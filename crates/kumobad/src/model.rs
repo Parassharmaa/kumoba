@@ -90,6 +90,8 @@ pub struct Meta {
     pub auto_delete_minutes: Option<u32>,
     pub network: NetworkSpec,
     pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
