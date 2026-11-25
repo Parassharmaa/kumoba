@@ -50,6 +50,21 @@ describe("Kumoba", () => {
     await expect(kumoba.get("nope")).rejects.toMatchObject({ notFound: true, status: 404 });
   });
 
+  it("lists by a label whose value has a colon and refuses keys the filter cannot express", async () => {
+    const url = await kumoba.create({ labels: { url: "http://x:1" } });
+    await kumoba.create({ labels: { url: "http://y:1" } });
+    expect((await kumoba.list({ labels: { url: "http://x:1" } })).map((s) => s.id)).toEqual([
+      url.id,
+    ]);
+    fake.listFilters = [];
+    for (const key of ["", "a:b"]) {
+      await expect(kumoba.list({ labels: { team: "a", [key]: "c" } })).rejects.toMatchObject({
+        code: "invalid_request",
+      });
+    }
+    expect(fake.listFilters).toEqual([]);
+  });
+
   it("rejects a wrong token with a KumobaError", async () => {
     const wrong = new Kumoba({ url: fake.url, token: "bad" });
     await expect(wrong.images()).rejects.toBeInstanceOf(KumobaError);

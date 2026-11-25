@@ -189,15 +189,13 @@ async fn route(mut request: Request<Incoming>, service: Arc<Service>) -> ApiResu
             let limit = optional_param(&params, "limit")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1000usize);
-            let filter: Vec<(String, String)> = params
-                .iter()
-                .filter(|(key, _)| key == "label")
-                .filter_map(|(_, value)| {
-                    value
-                        .split_once(':')
-                        .map(|(key, value)| (key.to_string(), value.to_string()))
-                })
-                .collect();
+            let filter = crate::model::label_filter(
+                params
+                    .iter()
+                    .filter(|(key, _)| key == "label")
+                    .map(|(_, value)| value.as_str()),
+            )
+            .map_err(ApiError::bad_request)?;
             let (sandboxes, truncated) = service.list(&filter, limit).await?;
             Ok(json_response(
                 200,

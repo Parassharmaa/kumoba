@@ -9,6 +9,9 @@ export type JsonSchema = {
   required?: string[];
   description?: string;
   default?: unknown;
+  pattern?: string;
+  examples?: unknown[];
+  minItems?: number;
 };
 
 export type CommandSpec = {
@@ -90,6 +93,12 @@ function scalar(schema: JsonSchema, raw: string, name: string): unknown {
       if (schema.enum && !schema.enum.includes(raw)) {
         throw new UsageError(`${name} must be one of ${schema.enum.map(String).join(", ")}`);
       }
+      if (schema.pattern !== undefined && !new RegExp(schema.pattern, "u").test(raw)) {
+        const example = schema.examples?.[0];
+        const expected =
+          typeof example === "string" ? `look like ${example}` : `match ${schema.pattern}`;
+        throw new UsageError(`${name} must ${expected}, got ${raw}`);
+      }
       return raw;
   }
 }
@@ -150,6 +159,27 @@ function get(values: Record<string, unknown>, path: string[]): unknown {
     target = (target as Record<string, unknown>)[name];
   }
   return target;
+}
+
+function shortList(
+  schema: JsonSchema,
+  values: Record<string, unknown>,
+  prefix: string
+): string | undefined {
+  for (const [name, property] of Object.entries(schema.properties ?? {})) {
+    const dotted = prefix === "" ? name : `${prefix}.${name}`;
+    const value = values[name];
+    if (Array.isArray(value)) {
+      const min = property.minItems;
+      if (min !== undefined && value.length < min) {
+        return `${kebab(dotted)} needs at least ${String(min)} ${min === 1 ? "value" : "values"}`;
+      }
+    } else if (value && typeof value === "object") {
+      const error = shortList(property, value as Record<string, unknown>, dotted);
+      if (error !== undefined) return error;
+    }
+  }
+  return undefined;
 }
 
 export function bytesField(spec: CommandSpec): string | undefined {
@@ -231,6 +261,8 @@ export function parseArgs(
     if (!spec.rest) throw new UsageError("this command takes no arguments after --");
     parsed.values[spec.rest] = [...rest];
   }
+  const short = parsed.help ? undefined : shortList(spec.inputSchema, parsed.values, "");
+  if (short !== undefined) throw new UsageError(short);
   return parsed;
 }
 
