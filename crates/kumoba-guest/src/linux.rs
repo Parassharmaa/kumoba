@@ -55,6 +55,7 @@ async fn accept(listener: &AsyncFd<OwnedFd>) -> io::Result<UnixStream> {
 }
 
 pub async fn run() -> io::Result<()> {
+    crate::files::umask();
     let scope = crate::shutdown::Scope::capture()?;
     std::fs::create_dir_all("/workspace")?;
     ensure_hosts()?;

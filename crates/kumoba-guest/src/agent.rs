@@ -167,7 +167,7 @@ pub(crate) async fn serve(
                 reply(stream, &response).await?;
             }
             Request::Upload { path, user } => {
-                upload(stream, &path, user.as_deref()).await?;
+                upload(stream, &path, user.as_deref(), UPLOAD_IDLE).await?;
                 return Ok(false);
             }
             Request::List { path, user } => {
@@ -183,7 +183,14 @@ pub(crate) async fn serve(
     }
 }
 
-async fn upload(stream: &mut UnixStream, path: &str, user: Option<&str>) -> io::Result<()> {
+const UPLOAD_IDLE: Duration = Duration::from_secs(120);
+
+async fn upload(
+    stream: &mut UnixStream,
+    path: &str,
+    user: Option<&str>,
+    idle: Duration,
+) -> io::Result<()> {
     let begun = match owner_of(user) {
         Ok(owner) => crate::files::Upload::begin(path, owner).await,
         Err(error) => Err(error),
@@ -194,7 +201,10 @@ async fn upload(stream: &mut UnixStream, path: &str, user: Option<&str>) -> io::
     };
     reply(stream, &Response::Ok).await?;
     loop {
-        match receive::<_, UploadInput>(stream).await? {
+        let Ok(input) = tokio::time::timeout(idle, receive::<_, UploadInput>(stream)).await else {
+            return Ok(());
+        };
+        match input? {
             UploadInput::Data(data) => {
                 if let Err(error) = upload.write(&data).await {
                     return reply(stream, &Response::Error(error.to_string())).await;
@@ -340,7 +350,7 @@ mod tests {
         let (mut host, mut guest) = UnixStream::pair().unwrap();
         let target = path.to_str().unwrap().to_string();
         let server = tokio::spawn(async move {
-            let _ = upload(&mut guest, &target, None).await;
+            let _ = upload(&mut guest, &target, None, UPLOAD_IDLE).await;
         });
         assert!(matches!(
             receive::<_, Response>(&mut host).await.unwrap(),
@@ -388,6 +398,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn silent_upload_is_abandoned_and_its_staging_file_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let target = path.to_str().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            upload(&mut guest, &target, None, Duration::from_millis(200)).await
+        });
+        assert!(matches!(
+            receive::<_, Response>(&mut host).await.unwrap(),
+            Response::Ok
+        ));
+        host.write_u8(1).await.unwrap();
+        let reply = exchange(&mut host, &UploadInput::Data(STANDARD.encode(b"partial"))).await;
+        assert!(matches!(reply, Response::Ok));
+        let finished = tokio::time::timeout(Duration::from_secs(5), server).await;
+        assert!(finished.is_ok(), "upload still holds its connection");
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let mut rest = Vec::new();
+        assert_eq!(host.read_to_end(&mut rest).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn refused_upload_reports_the_reason() {
         let dir = tempfile::tempdir().unwrap();
         let (mut host, mut guest) = UnixStream::pair().unwrap();
@@ -395,7 +430,8 @@ mod tests {
         let c_path = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
         let target = pipe.to_str().unwrap().to_string();
-        let server = tokio::spawn(async move { upload(&mut guest, &target, None).await });
+        let server =
+            tokio::spawn(async move { upload(&mut guest, &target, None, UPLOAD_IDLE).await });
         let reply = receive::<_, Response>(&mut host).await.unwrap();
         host.write_u8(1).await.unwrap();
         server.await.unwrap().unwrap();

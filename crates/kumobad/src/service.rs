@@ -14,7 +14,9 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore, SemaphorePermit};
+
+pub const UPLOAD_SLOTS: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -103,6 +105,7 @@ pub struct Entry {
     operations: AtomicUsize,
     last_state: std::sync::Mutex<State>,
     secrets: std::sync::Mutex<BTreeMap<String, (SecretId, Vec<String>)>>,
+    uploads: Semaphore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +171,15 @@ impl Entry {
             operations: AtomicUsize::new(0),
             last_state: std::sync::Mutex::new(State::Stopped),
             secrets: std::sync::Mutex::new(BTreeMap::new()),
+            uploads: Semaphore::new(UPLOAD_SLOTS),
         })
+    }
+
+    pub async fn upload_slot(&self) -> SemaphorePermit<'_> {
+        self.uploads
+            .acquire()
+            .await
+            .expect("upload slots are never closed")
     }
 
     pub fn snapshot(&self) -> EntrySnapshot {
@@ -1142,6 +1153,21 @@ mod tests {
         assert!(booting.await.unwrap().is_err());
         assert!(service.entry(&id).await.is_err());
         assert!(service.list(&[], 10).await.unwrap().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn uploads_past_the_slot_limit_wait_for_a_free_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = stopped_entry(root.path()).await;
+        let mut held = Vec::new();
+        for _ in 0..UPLOAD_SLOTS {
+            held.push(entry.upload_slot().await);
+        }
+        let waiting = tokio::time::timeout(Duration::from_millis(100), entry.upload_slot()).await;
+        assert!(waiting.is_err());
+        held.pop();
+        let freed = tokio::time::timeout(Duration::from_secs(5), entry.upload_slot()).await;
+        assert!(freed.is_ok());
     }
 
     #[tokio::test]

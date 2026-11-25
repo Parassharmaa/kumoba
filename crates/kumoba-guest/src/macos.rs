@@ -93,6 +93,7 @@ fn listen(connections: &mpsc::Sender<StdUnixStream>) -> io::Result<()> {
 }
 
 pub async fn run() -> io::Result<()> {
+    crate::files::umask();
     let desktop = std::sync::Arc::new(tokio::sync::Mutex::new(crate::desktop::Desktop));
     let mut tasks = tokio::task::JoinSet::new();
     let proxy = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 3128)).await?;
