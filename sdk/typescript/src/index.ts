@@ -9,6 +9,12 @@ export {
 } from "./desktop.js";
 export { KumobaError, type KumobaErrorCode } from "./errors.js";
 export { type FileContent, Files } from "./files.js";
-export { Kumoba, type KumobaOptions, type ListPage, type OneShotOptions } from "./kumoba.js";
+export {
+  type GetOptions,
+  Kumoba,
+  type KumobaOptions,
+  type ListPage,
+  type OneShotOptions,
+} from "./kumoba.js";
 export { Sandbox } from "./sandbox.js";
 export type * from "./types.js";

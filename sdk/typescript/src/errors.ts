@@ -12,6 +12,7 @@ export type KumobaErrorCode =
   | "daemon_error"
   | "unreachable"
   | "aborted"
+  | "timeout"
   | string;
 
 /**

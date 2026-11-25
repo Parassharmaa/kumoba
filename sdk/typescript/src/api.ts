@@ -133,21 +133,28 @@ export class Api {
     this.http = new Http(url, token);
   }
 
-  async images(): Promise<string[]> {
-    return (await this.http.json(imagesSchema, { method: "GET", path: "/v1/images" })).images;
+  async images(signal?: AbortSignal): Promise<string[]> {
+    return (await this.http.json(imagesSchema, { method: "GET", path: "/v1/images", signal }))
+      .images;
   }
 
-  async create(request: CreateRequest): Promise<Summary> {
-    return this.http.json(summarySchema, { method: "POST", path: "/v1/sandboxes", json: request });
+  async create(request: CreateRequest, signal?: AbortSignal): Promise<Summary> {
+    return this.http.json(summarySchema, {
+      method: "POST",
+      path: "/v1/sandboxes",
+      json: request,
+      signal,
+    });
   }
 
-  async get(id: string): Promise<Summary> {
-    return this.http.json(summarySchema, { method: "GET", path: sandboxPath(id) });
+  async get(id: string, signal?: AbortSignal): Promise<Summary> {
+    return this.http.json(summarySchema, { method: "GET", path: sandboxPath(id), signal });
   }
 
   async list(
     labels: Record<string, string>,
-    limit: number | undefined
+    limit: number | undefined,
+    signal?: AbortSignal
   ): Promise<{ sandboxes: Summary[]; truncated: boolean }> {
     const query = new URLSearchParams();
     if (limit !== undefined) {
@@ -167,34 +174,55 @@ export class Api {
       }
       query.append("label", `${key}:${value}`);
     }
-    return this.http.json(listSchema, { method: "GET", path: `/v1/sandboxes?${query.toString()}` });
+    return this.http.json(listSchema, {
+      method: "GET",
+      path: `/v1/sandboxes?${query.toString()}`,
+      signal,
+    });
   }
 
   async update(
     id: string,
-    patch: { labels?: Record<string, string>; autoStopMinutes?: number; network?: Network }
+    patch: { labels?: Record<string, string>; autoStopMinutes?: number; network?: Network },
+    signal?: AbortSignal
   ): Promise<Summary> {
-    return this.http.json(summarySchema, { method: "PATCH", path: sandboxPath(id), json: patch });
+    return this.http.json(summarySchema, {
+      method: "PATCH",
+      path: sandboxPath(id),
+      json: patch,
+      signal,
+    });
   }
 
-  async start(id: string): Promise<Summary> {
-    return this.http.json(summarySchema, { method: "POST", path: sandboxPath(id, "/start") });
+  async start(id: string, signal?: AbortSignal): Promise<Summary> {
+    return this.http.json(summarySchema, {
+      method: "POST",
+      path: sandboxPath(id, "/start"),
+      signal,
+    });
   }
 
-  async stop(id: string): Promise<Summary> {
-    return this.http.json(summarySchema, { method: "POST", path: sandboxPath(id, "/stop") });
+  async stop(id: string, signal?: AbortSignal): Promise<Summary> {
+    return this.http.json(summarySchema, {
+      method: "POST",
+      path: sandboxPath(id, "/stop"),
+      signal,
+    });
   }
 
-  async delete(id: string): Promise<void> {
-    await this.http.json(anySchema, { method: "DELETE", path: sandboxPath(id) });
+  async delete(id: string, signal?: AbortSignal): Promise<void> {
+    await this.http.json(anySchema, { method: "DELETE", path: sandboxPath(id), signal });
   }
 
-  async accessLog(query: {
-    sinceMs: number;
-    untilMs: number;
-    limit: number;
-    cursor?: string;
-  }): Promise<{
+  async accessLog(
+    query: {
+      sinceMs: number;
+      untilMs: number;
+      limit: number;
+      cursor?: string;
+    },
+    signal?: AbortSignal
+  ): Promise<{
     entries: AccessEntrySummary[];
     truncated: boolean;
     nextCursor?: string | null | undefined;
@@ -208,47 +236,58 @@ export class Api {
     return this.http.json(accessLogSchema, {
       method: "GET",
       path: `/v1/access-log?${params.toString()}`,
+      signal,
     });
   }
 
   async preview(
     id: string,
     port: number,
-    ttlSeconds: number
+    ttlSeconds: number,
+    signal?: AbortSignal
   ): Promise<{ path: string; expiresAtMs: number }> {
     return this.http.json(previewSchema, {
       method: "POST",
       path: sandboxPath(id, "/preview"),
       json: { port, ttlSeconds },
+      signal,
     });
   }
 
   async desktop(
     id: string,
     ttlSeconds: number,
-    viewer?: "stream" | "vnc"
+    viewer?: "stream" | "vnc",
+    signal?: AbortSignal
   ): Promise<{ path: string; expiresAtMs: number; viewer: "stream" | "vnc" }> {
     return this.http.json(desktopSchema, {
       method: "POST",
       path: sandboxPath(id, "/desktop"),
       json: { ttlSeconds, ...(viewer === undefined ? {} : { viewer }) },
+      signal,
     });
   }
 
-  async putSecrets(id: string, secrets: readonly Secret[]): Promise<string[]> {
+  async putSecrets(
+    id: string,
+    secrets: readonly Secret[],
+    signal?: AbortSignal
+  ): Promise<string[]> {
     const result = await this.http.json(mountedSchema, {
       method: "PUT",
       path: sandboxPath(id, "/secrets"),
       json: { secrets },
+      signal,
     });
     return result.mountedEnvVars;
   }
 
-  async deleteSecrets(names: readonly string[]): Promise<string[]> {
+  async deleteSecrets(names: readonly string[], signal?: AbortSignal): Promise<string[]> {
     const result = await this.http.json(deletedSchema, {
       method: "POST",
       path: "/v1/secrets/delete",
       json: { names },
+      signal,
     });
     return result.deletedNames;
   }
@@ -276,12 +315,7 @@ export class Api {
     onEvent: (event: ExecEvent) => void,
     signal?: AbortSignal
   ): Promise<void> {
-    const response = await this.http.open({
-      method: "POST",
-      path,
-      json: request,
-      ...(signal ? { signal } : {}),
-    });
+    const response = await this.http.open({ method: "POST", path, json: request, signal });
     for await (const line of this.lines(response, signal)) onEvent(parseEvent(line));
   }
 
@@ -311,27 +345,41 @@ export class Api {
     }
   }
 
-  async upload(id: string, path: string, body: Body, user: string | undefined): Promise<void> {
+  async upload(
+    id: string,
+    path: string,
+    body: Body,
+    user: string | undefined,
+    signal?: AbortSignal
+  ): Promise<void> {
     const response = await this.http.open({
       method: "PUT",
       path: sandboxPath(id, "/files", fileQuery(path, user)),
       body,
+      signal,
     });
-    await this.http.body(response);
+    await this.http.body(response, signal);
   }
 
-  async download(id: string, path: string, user: string | undefined): Promise<Readable> {
+  async download(
+    id: string,
+    path: string,
+    user: string | undefined,
+    signal?: AbortSignal
+  ): Promise<Readable> {
     const response = await this.http.open({
       method: "GET",
       path: sandboxPath(id, "/files", fileQuery(path, user)),
+      signal,
     });
-    return checkedDownload(response);
+    return checkedDownload(response, signal);
   }
 
-  async listFiles(id: string, path: string, user: string | undefined) {
+  async listFiles(id: string, path: string, user: string | undefined, signal?: AbortSignal) {
     const result = await this.http.json(entriesSchema, {
       method: "GET",
       path: sandboxPath(id, "/files/list", fileQuery(path, user)),
+      signal,
     });
     return result.entries;
   }

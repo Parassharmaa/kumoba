@@ -2,10 +2,11 @@ import { type Api, type ExecEvent, type ExecRequest, toInfo } from "./api.js";
 import { Desktop } from "./desktop.js";
 import { KumobaError } from "./errors.js";
 import { Files } from "./files.js";
-import { abortedError } from "./http.js";
+import { abortedError, withDeadline } from "./http.js";
 import { toNetwork } from "./network.js";
 import { toArgv } from "./shell.js";
 import type {
+  CallOptions,
   Exposed,
   ExposeOptions,
   RunOptions,
@@ -48,7 +49,12 @@ export class Sandbox implements AsyncDisposable {
       this.files,
       async (port, options) => this.expose(port, options),
       async (options) => {
-        const view = await context.api.desktop(this.id, options.ttlSeconds ?? 600, options.viewer);
+        const view = await context.api.desktop(
+          this.id,
+          options.ttlSeconds ?? 600,
+          options.viewer,
+          options.signal
+        );
         return { ...this.link(view), viewer: view.viewer };
       }
     );
@@ -67,34 +73,42 @@ export class Sandbox implements AsyncDisposable {
     return this.current.labels;
   }
 
-  async refresh(): Promise<SandboxInfo> {
-    this.current = toInfo(await this.context.api.get(this.id));
+  async refresh(options: CallOptions = {}): Promise<SandboxInfo> {
+    this.current = toInfo(
+      await withDeadline(options, (signal) => this.context.api.get(this.id, signal))
+    );
     return this.current;
   }
 
   /** Boot the VM. No-op when it is already running. */
-  async start(): Promise<void> {
-    this.current = toInfo(await this.context.api.start(this.id));
+  async start(options: CallOptions = {}): Promise<void> {
+    this.current = toInfo(
+      await withDeadline(options, (signal) => this.context.api.start(this.id, signal))
+    );
   }
 
   /** Shut the VM down; its disk is kept and `start()` resumes from it. */
-  async stop(): Promise<void> {
-    this.current = toInfo(await this.context.api.stop(this.id));
+  async stop(options: CallOptions = {}): Promise<void> {
+    this.current = toInfo(
+      await withDeadline(options, (signal) => this.context.api.stop(this.id, signal))
+    );
   }
 
   /** Destroy the VM and its disk. */
-  async delete(): Promise<void> {
-    await this.context.api.delete(this.id);
+  async delete(options: CallOptions = {}): Promise<void> {
+    await withDeadline(options, (signal) => this.context.api.delete(this.id, signal));
     this.current = { ...this.current, state: "destroyed" };
   }
 
   async update(options: UpdateOptions): Promise<SandboxInfo> {
-    const { network, ...rest } = options;
+    const { labels, autoStopMinutes, network } = options;
+    const patch = {
+      ...(labels === undefined ? {} : { labels }),
+      ...(autoStopMinutes === undefined ? {} : { autoStopMinutes }),
+      ...(network === undefined ? {} : { network: toNetwork(network) }),
+    };
     this.current = toInfo(
-      await this.context.api.update(this.id, {
-        ...rest,
-        ...(network === undefined ? {} : { network: toNetwork(network) }),
-      })
+      await withDeadline(options, (signal) => this.context.api.update(this.id, patch, signal))
     );
     return this.current;
   }
@@ -117,7 +131,10 @@ export class Sandbox implements AsyncDisposable {
    * `null` when kumobad has no preview listener. `path` is always set.
    */
   async expose(port: number, options: ExposeOptions = {}): Promise<Exposed> {
-    return this.link(await this.context.api.preview(this.id, port, options.ttlSeconds ?? 600));
+    const preview = await withDeadline(options, (signal) =>
+      this.context.api.preview(this.id, port, options.ttlSeconds ?? 600, signal)
+    );
+    return this.link(preview);
   }
 
   private link(preview: { url?: string | null; path: string; expiresAtMs: number }): Exposed {
@@ -133,8 +150,8 @@ export class Sandbox implements AsyncDisposable {
    * Attach secrets. The guest only sees placeholders in `envVars`; kumobad swaps
    * in the real value on HTTPS requests to `hosts`. Returns the mounted variable names.
    */
-  async setSecrets(secrets: readonly Secret[]): Promise<string[]> {
-    return this.context.api.putSecrets(this.id, secrets);
+  async setSecrets(secrets: readonly Secret[], options: CallOptions = {}): Promise<string[]> {
+    return withDeadline(options, (signal) => this.context.api.putSecrets(this.id, secrets, signal));
   }
 
   /** `await using sandbox = await kumoba.create()` deletes the sandbox on scope exit. */
