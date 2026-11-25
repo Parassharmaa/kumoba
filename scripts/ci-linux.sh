@@ -6,6 +6,6 @@ source scripts/host-env.sh
 sudo chmod 0666 /dev/kvm
 bash scripts/prepare-linux-host.sh
 source .local/linux-host.env
-cargo test --locked --workspace --lib
+cargo test --locked --workspace --lib --bins
 bash scripts/test-vm.sh
 bash scripts/smoke-daemon.sh
