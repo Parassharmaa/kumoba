@@ -2,11 +2,19 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use kumoba_protocol::{
     ExecEvent, ExecRequest, MAX_DATA, MAX_OUTPUT_CHUNK, MAX_OUTPUT_LIMIT, OutputKind, send,
 };
-use std::{io, os::unix::process::ExitStatusExt, process::Stdio, time::Duration};
+use std::{
+    io,
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::process::ExitStatusExt,
+    },
+    process::Stdio,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
-    sync::mpsc,
+    sync::{mpsc, watch},
 };
 
 const OUTPUT_QUEUE: usize = 16;
@@ -74,33 +82,77 @@ fn validate(request: &ExecRequest) -> io::Result<Vec<u8>> {
     Ok(input)
 }
 
-async fn pump(
-    mut reader: impl AsyncRead + Unpin,
+struct Forwarder {
     stream: OutputKind,
     limit: usize,
+    forwarded: usize,
+    truncated: bool,
     sender: mpsc::Sender<OutputChunk>,
-) -> io::Result<bool> {
-    let mut buffer = [0; MAX_OUTPUT_CHUNK];
-    let mut forwarded = 0;
-    let mut truncated = false;
-    loop {
-        let count = reader.read(&mut buffer).await?;
-        if count == 0 {
-            return Ok(truncated);
-        }
-        let keep = count.min(limit.saturating_sub(forwarded));
-        truncated |= keep != count;
+}
+
+impl Forwarder {
+    async fn take(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let keep = bytes.len().min(self.limit.saturating_sub(self.forwarded));
+        self.truncated |= keep != bytes.len();
         if keep != 0 {
-            sender
+            self.sender
                 .send(OutputChunk {
-                    stream,
-                    bytes: buffer[..keep].to_vec(),
+                    stream: self.stream,
+                    bytes: bytes[..keep].to_vec(),
                 })
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "output writer ended"))?;
-            forwarded += keep;
+            self.forwarded += keep;
         }
+        Ok(())
     }
+}
+
+fn buffered(fd: RawFd) -> io::Result<usize> {
+    let mut count: libc::c_int = 0;
+    if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut count) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(usize::try_from(count).unwrap_or(0))
+}
+
+async fn pump(
+    mut reader: impl AsyncRead + AsRawFd + Unpin,
+    stream: OutputKind,
+    limit: usize,
+    sender: mpsc::Sender<OutputChunk>,
+    mut detach: watch::Receiver<bool>,
+) -> io::Result<bool> {
+    let mut buffer = [0; MAX_OUTPUT_CHUNK];
+    let mut output = Forwarder {
+        stream,
+        limit,
+        forwarded: 0,
+        truncated: false,
+        sender,
+    };
+    loop {
+        let count = tokio::select! {
+            biased;
+            _ = detach.wait_for(|detached| *detached) => break,
+            count = reader.read(&mut buffer) => count?,
+        };
+        if count == 0 {
+            return Ok(output.truncated);
+        }
+        output.take(&buffer[..count]).await?;
+    }
+    let mut pending = buffered(reader.as_raw_fd())?;
+    while pending != 0 {
+        let wanted = pending.min(buffer.len());
+        let count = reader.read(&mut buffer[..wanted]).await?;
+        if count == 0 {
+            break;
+        }
+        pending -= count;
+        output.take(&buffer[..count]).await?;
+    }
+    Ok(output.truncated)
 }
 
 async fn event(stream: &mut UnixStream, event: &ExecEvent, wire_idle: &mut bool) -> io::Result<()> {
@@ -259,28 +311,33 @@ pub(crate) async fn exec(stream: &mut UnixStream, request: ExecRequest) -> io::R
     let completed = async {
         let limit = request.output_limit;
         let work = async {
-            let out = tokio::spawn(pump(stdout, OutputKind::Stdout, limit, sender));
-            let err = tokio::spawn(pump(stderr, OutputKind::Stderr, limit, stderr_sender));
+            let (detach, detached) = watch::channel(false);
+            let out = tokio::spawn(pump(
+                stdout,
+                OutputKind::Stdout,
+                limit,
+                sender,
+                detached.clone(),
+            ));
+            let err = tokio::spawn(pump(
+                stderr,
+                OutputKind::Stderr,
+                limit,
+                stderr_sender,
+                detached,
+            ));
             let feed = tokio::spawn(async move {
                 let _ = input.write_all(&input_bytes).await;
             });
             let status = child.wait().await?;
             feed.abort();
-            let (out_abort, err_abort) = (out.abort_handle(), err.abort_handle());
-            let drained = tokio::time::timeout(DETACH_DRAIN, async {
-                let out = out.await.map_err(io::Error::other)??;
-                let err = err.await.map_err(io::Error::other)??;
-                Ok::<_, io::Error>((out, err))
-            })
-            .await;
-            let (out_truncated, err_truncated) = match drained {
-                Ok(result) => result?,
-                Err(_) => {
-                    out_abort.abort();
-                    err_abort.abort();
-                    (true, true)
-                }
-            };
+            let detach_later = tokio::spawn(async move {
+                tokio::time::sleep(DETACH_DRAIN).await;
+                let _ = detach.send(true);
+            });
+            let out_truncated = out.await.map_err(io::Error::other)??;
+            let err_truncated = err.await.map_err(io::Error::other)??;
+            detach_later.abort();
             Ok::<_, io::Error>((out_truncated, err_truncated, (), status))
         };
         let ((out_truncated, err_truncated, (), status), ()) =
@@ -359,11 +416,15 @@ mod tests {
         truncated: bool,
     }
 
-    async fn collect(host: &mut UnixStream) -> Collected {
+    async fn collect(host: &mut UnixStream, first_ack_delay: Duration) -> Collected {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+        let mut delay = Some(first_ack_delay);
         loop {
             let event: ExecEvent = receive_limited(host, MAX_EXEC_FRAME).await.unwrap();
+            if let Some(delay) = delay.take() {
+                tokio::time::sleep(delay).await;
+            }
             host.write_u8(1).await.unwrap();
             match event {
                 ExecEvent::Output { stream, data } => {
@@ -408,7 +469,7 @@ mod tests {
                 Request::Hello
             ));
         });
-        let result = collect(&mut host).await;
+        let result = collect(&mut host, Duration::ZERO).await;
         send(&mut host, &Request::Hello).await.unwrap();
         assert_eq!(result.code, Some(0));
         assert!(!result.timed_out);
@@ -426,7 +487,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let result = collect(&mut host).await;
+        let result = collect(&mut host, Duration::ZERO).await;
         assert_eq!(result.code, Some(0));
         assert!(!result.truncated);
         assert_eq!(result.stdout, b"abc");
@@ -434,26 +495,55 @@ mod tests {
         runner.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn output_cut_before_a_background_process_lets_go_is_reported_truncated() {
-        for script in [
-            "seq 1 200000; sleep 2 &",
-            "seq 1 200000 >&2; sleep 2 &",
-            "printf abc; sleep 2 &",
-        ] {
-            let (mut host, mut guest) = UnixStream::pair().unwrap();
-            let runner = tokio::spawn(async move {
-                exec(&mut guest, shell(script, 1024, 10_000)).await.unwrap();
-            });
-            let result = tokio::time::timeout(Duration::from_secs(5), collect(&mut host))
+    async fn run_bounded(
+        script: &'static str,
+        limit: usize,
+        first_ack_delay: Duration,
+    ) -> Collected {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let runner = tokio::spawn(async move {
+            exec(&mut guest, shell(script, limit, 10_000))
+                .await
+                .unwrap();
+        });
+        let result =
+            tokio::time::timeout(Duration::from_secs(8), collect(&mut host, first_ack_delay))
                 .await
                 .expect("execution did not finish");
-            runner.await.unwrap();
-            assert_eq!(result.code, Some(0), "{script}");
-            assert!(!result.timed_out, "{script}");
+        runner.await.unwrap();
+        assert_eq!(result.code, Some(0), "{script}");
+        assert!(!result.timed_out, "{script}");
+        result
+    }
+
+    #[tokio::test]
+    async fn output_cut_while_a_background_process_holds_the_pipe_is_reported_truncated() {
+        for script in ["seq 1 200000; sleep 2 &", "seq 1 200000 >&2; sleep 2 &"] {
+            let result = run_bounded(script, 1024, Duration::ZERO).await;
             assert!(result.truncated, "{script}");
             assert!(result.stdout.len() <= 1024 && result.stderr.len() <= 1024);
         }
+    }
+
+    #[tokio::test]
+    async fn complete_output_with_a_background_process_holding_the_pipe_is_not_truncated() {
+        let result = run_bounded("printf abc; sleep 2 &", 1024, Duration::ZERO).await;
+        assert!(!result.truncated);
+        assert_eq!(result.stdout, b"abc");
+        assert!(result.stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn output_waiting_in_the_pipe_when_the_command_ends_is_returned() {
+        let result = run_bounded(
+            "for i in $(seq 1 40); do printf '%s,' $i; sleep 0.01; done; printf end; sleep 3 &",
+            MAX_DATA,
+            Duration::from_millis(1500),
+        )
+        .await;
+        let expected = (1..=40).map(|i| format!("{i},")).collect::<String>() + "end";
+        assert!(!result.truncated);
+        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected);
     }
 
     #[tokio::test]
