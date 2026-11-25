@@ -7,7 +7,7 @@ Two builds behave the same:
 | Build | Install |
 | --- | --- |
 | Native, no runtime needed | `scripts/install.sh` puts it in `~/.kumoba/bin`; also `cargo install kumobad` |
-| Node.js 20 or later | `npm install -g kumoba`, or `npx kumoba <command>` |
+| Node.js 20.3 or later | `npm install -g kumoba`, or `npx kumoba <command>` |
 
 ## Connecting
 
