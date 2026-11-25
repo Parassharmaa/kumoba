@@ -84,7 +84,7 @@ See [Show it in your own page](https://parassharmaa.github.io/kumoba/guide/live-
 - `setSecrets([...])`: values never enter the guest; they are injected into HTTPS requests to the hosts you name.
 - `expose(port, { ttlSeconds })`: a signed, expiring link through `kumobad` to a port in the VM.
 - `desktop.start / screenshot / click / type / hotkey` on images with the desktop installed, and `desktop.liveView()` for a link that shows the desktop in a browser. `liveView()` also works on macOS sandboxes.
-- `start / stop / delete / update({ network })`, plus `kumoba.list`, `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
+- `start / stop / delete / update({ network })`, plus `kumoba.list` (every match), `kumoba.listPage` (a bounded page and whether more matched), `kumoba.get`, `kumoba.find` and `kumoba.accessLog()` for every proxied connection.
 
 `await using` deletes the sandbox when the scope ends; it needs TypeScript 5.2 or later, or Node 24 or later for plain JavaScript. On older runtimes call `sandbox.delete()` in a `finally`. Errors are `KumobaError` with `code`, `status` and `retryable`; a run cancelled through its `signal` fails with code `aborted`, which is not retryable.
 

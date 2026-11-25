@@ -143,9 +143,17 @@ export class Api {
 
   async list(
     labels: Record<string, string>,
-    limit: number
+    limit: number | undefined
   ): Promise<{ sandboxes: Summary[]; truncated: boolean }> {
-    const query = new URLSearchParams({ limit: String(limit) });
+    const query = new URLSearchParams();
+    if (limit !== undefined) {
+      if (!Number.isSafeInteger(limit) || limit < 0) {
+        throw new KumobaError(`limit must be a whole number of 0 or more, got ${String(limit)}`, {
+          code: "invalid_request",
+        });
+      }
+      query.set("limit", String(limit));
+    }
     for (const [key, value] of Object.entries(labels)) {
       if (key === "" || key.includes(":")) {
         throw new KumobaError(

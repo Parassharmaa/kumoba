@@ -89,6 +89,7 @@ console.log(view.url, view.viewer);
 
 ```ts
 const sandboxes = await kumoba.list({ labels: { project: "demo" } });
+const { sandboxes: newest, truncated } = await kumoba.listPage({ limit: 20 });
 const one = await kumoba.get(id);
 
 for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_000) })) {
@@ -96,7 +97,9 @@ for await (const entry of kumoba.accessLog({ since: new Date(Date.now() - 3_600_
 }
 ```
 
-`list()` throws a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it.
+`list()` without `limit` returns every matching sandbox, newest first, so a cleanup loop over it reaches them all. If the daemon still cuts the list it throws a `KumobaError` with code `list_truncated` instead of returning part of it. `list({ limit })` returns at most `limit` sandboxes and does not say whether more matched. `listPage({ labels, limit })` returns `{ sandboxes, truncated }`, at most `limit` sandboxes (the daemon's default of 1000 when `limit` is left out) and whether more matched.
+
+`list()` and `listPage()` throw a `KumobaError` with code `invalid_request`, before asking the daemon, when a `labels` key is empty or contains `:`, since a filter cannot express it, or when `limit` is not a whole number of 0 or more.
 
 ## Errors
 

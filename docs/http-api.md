@@ -63,7 +63,7 @@ The new sandbox is **stopped**. Returns a summary:
 
 ### Start and stop
 
-- `POST /v1/sandboxes/{id}/start` → summary with `"state": "started"`. Boots the VM and waits for the guest agent.
+- `POST /v1/sandboxes/{id}/start` → summary with `"state": "started"`. Boots the VM and waits for the guest agent. While it boots, listing and getting the sandbox answer at once with `"state": "stopped"`; it reads `started` once the boot completes. Stopping or deleting it, or running a command in it, waits for the boot to finish first.
 - `POST /v1/sandboxes/{id}/stop` → summary with `"state": "stopped"`. The disk is kept.
 
 Every exec, file or preview call counts as activity for auto-stop.

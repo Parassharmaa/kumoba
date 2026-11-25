@@ -457,10 +457,25 @@ fn ids(value: &Value) -> Vec<String> {
         .collect()
 }
 
+fn truncated_note(value: &Value) -> Option<String> {
+    if value.get("truncated").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(match value.get("nextCursor").and_then(Value::as_str) {
+        Some(cursor) => {
+            format!("more matched than were listed; pass --cursor {cursor} for the next page")
+        }
+        None => "more matched than were listed; raise --limit to see them".to_string(),
+    })
+}
+
 fn print_json(value: &Value, parsed: &args::Parsed) {
     if parsed.quiet {
         for id in ids(value) {
             say!("{id}");
+        }
+        if let Some(note) = truncated_note(value) {
+            eprintln!("kumoba: {note}");
         }
     } else if parsed.json || !std::io::stdout().is_terminal() {
         say!("{value}");
@@ -526,4 +541,26 @@ async fn stream_events(response: hyper::Response<hyper::body::Incoming>) -> Resu
     Err(Failure::Api(
         "output stream ended before the command exited".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncated_note;
+    use serde_json::json;
+
+    #[test]
+    fn truncated_note_only_for_cut_replies() {
+        let cut = json!({"sandboxes": [{"id": "a"}], "truncated": true});
+        assert!(truncated_note(&cut).unwrap().contains("--limit"));
+        let paged = json!({"entries": [], "truncated": true, "nextCursor": "7"});
+        assert!(truncated_note(&paged).unwrap().contains("--cursor 7"));
+        for whole in [
+            json!({"sandboxes": [], "truncated": false}),
+            json!({"entries": [], "truncated": false, "nextCursor": null}),
+            json!({"id": "a"}),
+            json!(null),
+        ] {
+            assert_eq!(truncated_note(&whole), None);
+        }
+    }
 }
