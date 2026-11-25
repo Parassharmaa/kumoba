@@ -10,6 +10,7 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
+- `kumobad`: port previews forward the request body. A form post, a JSON `fetch` or a GraphQL mutation through a preview used to reach the app in the sandbox with no body, so it answered 400 or acted on empty input. The body reaches the guest with its `content-length`, a chunked body included, and a body over 10 MiB is refused with 413.
 - Egress: one sandbox can no longer use up DNS lookups for every sandbox. Each sandbox now has its own 8 lookups at a time, and a connection that finds them busy waits for one within the 5 second setup timeout instead of failing at once with 502. Before, 8 lookups of names whose nameserver never answers, from any one sandbox, made every sandbox's new connections fail for as long as the host resolver kept trying, and a page that opened more than 8 new domains at once could get random 502s.
 
 - `kumobad`: `GET /v1/sandboxes`, `kumoba list` and `kumoba.list()` return the newest sandboxes first, as documented. They used to return the oldest first, so with more matches than `limit` the sandboxes created most recently were the ones left out.
