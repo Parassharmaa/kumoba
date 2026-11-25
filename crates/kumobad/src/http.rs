@@ -1029,6 +1029,11 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            runtime.list().await.unwrap().len(),
+            1,
+            "the sandbox must still be booting when the client leaves"
+        );
         response.abort();
         connection.abort();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
