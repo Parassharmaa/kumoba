@@ -40,6 +40,8 @@ kumoba run --timeout-ms 30000 --cpu 1 --memory-mib 1024 -- python3 job.py
 
 A command that runs past its timeout is killed and `kumoba run` exits with status 124.
 
+Stopping `kumoba run` with Ctrl-C deletes the sandbox too, even while it is still booting. If `kumobad` stops during a run, it deletes that sandbox the next time it starts.
+
 ## From code
 
 ```ts

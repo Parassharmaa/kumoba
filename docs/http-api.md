@@ -94,7 +94,7 @@ A bare `argv[0]` such as `python3` is looked up on the guest's `PATH` through `/
 
 ### One-shot
 
-`POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects. The stream starts with `{"type":"sandbox","id":"..."}`.
+`POST /v1/run` takes the exec fields plus the create fields (`image`, default `"default"`, `cpu`, `memoryMib`, `labels`, `network`). It creates a sandbox, starts it, streams the command's events exactly like exec, and deletes the sandbox when the command ends or the client disconnects, including a disconnect while the sandbox is still booting. The stream starts with `{"type":"sandbox","id":"..."}`. The sandbox's summary carries `"ephemeral": true` while it exists, and if kumobad stops during a run it deletes that sandbox when it starts again.
 
 ## Shell
 
