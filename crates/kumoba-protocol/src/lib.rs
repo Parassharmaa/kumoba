@@ -86,6 +86,17 @@ pub enum Request {
     SetClock {
         unix_micros: u64,
     },
+    Upload {
+        path: String,
+        #[serde(default)]
+        user: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UploadInput {
+    Data(String),
+    Commit,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -155,6 +166,8 @@ pub enum Response {
         os: String,
         #[serde(default)]
         clock: bool,
+        #[serde(default)]
+        upload: bool,
     },
     Desktop {
         width: u16,
@@ -241,6 +254,31 @@ pub async fn receive_limited<R: AsyncRead + Unpin, T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn older_guest_hello_parses_without_upload() {
+        let hello: Response =
+            serde_json::from_str(r#"{"Hello":{"version":3,"arch":"x86_64","shell":true}}"#)
+                .unwrap();
+        assert!(matches!(hello, Response::Hello { upload: false, .. }));
+    }
+
+    #[test]
+    fn older_host_write_at_still_parses() {
+        let request: Request = serde_json::from_str(
+            r#"{"WriteAt":{"path":"/a","offset":4,"data":"","truncate":false}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request,
+            Request::WriteAt {
+                offset: 4,
+                truncate: false,
+                user: None,
+                ..
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn reject_oversized_length_without_allocating_body() {
         let (mut a, mut b) = tokio::io::duplex(16);

@@ -88,4 +88,4 @@ await sandbox.desktop.click(200, 300);
 await sandbox.desktop.type("hello");
 ```
 
-`await sandbox.desktop.liveView()` returns the live view's link, so code can hand a person the page to watch. See the [TypeScript SDK](/typescript) for every desktop method. These methods drive the desktop of a Linux image; on a macOS sandbox only `liveView()` works.
+`await sandbox.desktop.liveView()` returns the live view's link, so code can hand a person the page to watch. It is the link kumobad prints, unless the client sets `publicUrl`. See the [TypeScript SDK](/typescript) for every desktop method. These methods drive the desktop of a Linux image; on a macOS sandbox only `liveView()` works.

@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use kumoba_protocol::{MAX_DATA, Request, Response, VERSION, receive, send};
+use kumoba_protocol::{MAX_DATA, Request, Response, UploadInput, VERSION, receive, send};
 use std::{io, os::unix::fs::OpenOptionsExt, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -57,6 +57,7 @@ pub(crate) async fn serve(
                         shell: true,
                         os: std::env::consts::OS.into(),
                         clock: true,
+                        upload: true,
                     },
                 )
                 .await?;
@@ -165,6 +166,10 @@ pub(crate) async fn serve(
                 };
                 reply(stream, &response).await?;
             }
+            Request::Upload { path, user } => {
+                upload(stream, &path, user.as_deref()).await?;
+                return Ok(false);
+            }
             Request::List { path, user } => {
                 let response = match owner_of(user.as_deref())
                     .and_then(|owner| crate::files::list(&path, owner))
@@ -173,6 +178,35 @@ pub(crate) async fn serve(
                     Err(e) => Response::Error(e.to_string()),
                 };
                 reply(stream, &response).await?;
+            }
+        }
+    }
+}
+
+async fn upload(stream: &mut UnixStream, path: &str, user: Option<&str>) -> io::Result<()> {
+    let begun = match owner_of(user) {
+        Ok(owner) => crate::files::Upload::begin(path, owner).await,
+        Err(error) => Err(error),
+    };
+    let mut upload = match begun {
+        Ok(upload) => upload,
+        Err(error) => return reply(stream, &Response::Error(error.to_string())).await,
+    };
+    reply(stream, &Response::Ok).await?;
+    loop {
+        match receive::<_, UploadInput>(stream).await? {
+            UploadInput::Data(data) => {
+                if let Err(error) = upload.write(&data).await {
+                    return reply(stream, &Response::Error(error.to_string())).await;
+                }
+                reply(stream, &Response::Ok).await?;
+            }
+            UploadInput::Commit => {
+                let response = match upload.commit().await {
+                    Ok(()) => Response::Ok,
+                    Err(error) => Response::Error(error.to_string()),
+                };
+                return reply(stream, &response).await;
             }
         }
     }
@@ -289,4 +323,84 @@ pub(crate) fn initgroups_gid(gid: u32) -> libc::c_int {
 #[cfg(target_os = "linux")]
 pub(crate) fn initgroups_gid(gid: u32) -> libc::gid_t {
     gid
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn exchange(host: &mut UnixStream, input: &UploadInput) -> Response {
+        send(host, input).await.unwrap();
+        let response = receive::<_, Response>(host).await.unwrap();
+        host.write_u8(1).await.unwrap();
+        response
+    }
+
+    async fn started(path: &std::path::Path) -> (UnixStream, tokio::task::JoinHandle<()>) {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let target = path.to_str().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let _ = upload(&mut guest, &target, None).await;
+        });
+        assert!(matches!(
+            receive::<_, Response>(&mut host).await.unwrap(),
+            Response::Ok
+        ));
+        host.write_u8(1).await.unwrap();
+        (host, server)
+    }
+
+    #[tokio::test]
+    async fn upload_over_the_wire_replaces_the_file_on_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        let (mut host, server) = started(&path).await;
+        for part in [&b"new "[..], b"config"] {
+            let reply = exchange(&mut host, &UploadInput::Data(STANDARD.encode(part))).await;
+            assert!(matches!(reply, Response::Ok));
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        assert!(matches!(
+            exchange(&mut host, &UploadInput::Commit).await,
+            Response::Ok
+        ));
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new config");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_upload_connection_keeps_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original config").unwrap();
+        let (mut host, server) = started(&path).await;
+        let chunk = STANDARD.encode(vec![1u8; MAX_DATA]);
+        for _ in 0..2 {
+            let reply = exchange(&mut host, &UploadInput::Data(chunk.clone())).await;
+            assert!(matches!(reply, Response::Ok));
+        }
+        drop(host);
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original config");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn refused_upload_reports_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let pipe = dir.path().join("pipe");
+        let c_path = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+        let target = pipe.to_str().unwrap().to_string();
+        let server = tokio::spawn(async move { upload(&mut guest, &target, None).await });
+        let reply = receive::<_, Response>(&mut host).await.unwrap();
+        host.write_u8(1).await.unwrap();
+        server.await.unwrap().unwrap();
+        assert!(
+            matches!(reply, Response::Error(message) if message == "only regular files are supported")
+        );
+    }
 }
