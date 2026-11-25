@@ -27,7 +27,7 @@ An image is a raw ext4 filesystem. Creating a sandbox copies it. On APFS, XFS an
 
 A guest has no network device. Its traffic goes through the worker's proxy, which applies the sandbox's policy (`open`, `allowlist` or `blocked`) and always refuses private addresses. TLS stays end to end, except for hosts with a secret: the proxy terminates those with a per-daemon CA that the guest trusts, so it can add the secret to the request. See [Control network access](/guide/network) and [How secrets work](/secrets).
 
-Every connection attempt, allowed or denied, goes to an access log under the state directory. kumobad keeps 72 hours of it.
+Every connection attempt goes to an access log under the state directory, marked allowed, denied, or failed when an allowed destination could not be reached. kumobad keeps 72 hours of it.
 
 ## Previews
 

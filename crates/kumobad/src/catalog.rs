@@ -323,7 +323,7 @@ pub static SPECS: &[Spec] = &[
     Spec {
         operation: Operation::AccessLog,
         name: "access-log",
-        summary: "Show proxied network connections, allowed and denied",
+        summary: "Show proxied network connections: allowed, denied, or allowed but failed to connect",
         method: Method::GET,
         path: "/v1/access-log",
         query: &[

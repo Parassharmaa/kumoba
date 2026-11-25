@@ -10,7 +10,7 @@ pub use platform::HostPlatform;
 mod desktop;
 mod disk_copy;
 mod egress;
-pub use egress::{AccessRecord, EgressConfig, PrivateAllow, UpstreamProxy};
+pub use egress::{AccessDecision, AccessRecord, EgressConfig, PrivateAllow, UpstreamProxy};
 mod execution;
 mod public_http;
 mod runtime;

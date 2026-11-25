@@ -71,21 +71,22 @@ const SCRIPT: &[u8] = include_bytes!("../viewer/viewer.js");
 const CLIENT: &[u8] = include_bytes!("../viewer/view.js");
 const MAX_HEAD: usize = 16 * 1024;
 const MAX_WAITING: usize = 64;
-const MAX_WAITING_PER_PEER: usize = 32;
+const MAX_WAITING_PER_PEER: usize = 8;
 const MAX_STREAMS: usize = 16;
 const MAX_REFUSING: usize = 16;
+const MAX_REFUSING_PER_PEER: usize = 2;
 const BUSY: &[u8] = b"the live view is busy, try again in a moment\n";
 
 #[derive(Clone, Copy)]
 struct Waits {
-    first_byte: Duration,
+    idle: Duration,
     head: Duration,
     reply: Duration,
     refusal: Duration,
 }
 
 const WAITS: Waits = Waits {
-    first_byte: Duration::from_secs(2),
+    idle: Duration::from_secs(2),
     head: Duration::from_secs(5),
     reply: Duration::from_secs(10),
     refusal: Duration::from_secs(1),
@@ -109,20 +110,17 @@ impl Request {
 
 fn read_request(
     stream: &mut impl Link,
-    first_byte: Duration,
+    idle: Duration,
     whole: Duration,
 ) -> io::Result<Option<Request>> {
-    let opened = Instant::now();
-    let (first_byte, whole) = (opened + first_byte, opened + whole);
+    let mut heard = Instant::now();
+    let whole = heard + whole;
     let mut head = Vec::new();
     let mut chunk = [0u8; 2048];
     while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-        let deadline = if head.is_empty() {
-            first_byte.min(whole)
-        } else {
-            whole
-        };
-        let left = deadline.saturating_duration_since(Instant::now());
+        let left = (heard + idle)
+            .min(whole)
+            .saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Ok(None);
         }
@@ -143,6 +141,7 @@ fn read_request(
             return Ok(None);
         }
         head.extend_from_slice(&chunk[..count]);
+        heard = Instant::now();
     }
     let text = String::from_utf8_lossy(&head);
     let mut lines = text.split("\r\n");
@@ -391,8 +390,7 @@ fn handle(
     waiting: Slot,
     shared: &Shared,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some(request) = read_request(&mut stream, shared.waits.first_byte, shared.waits.head)?
-    else {
+    let Some(request) = read_request(&mut stream, shared.waits.idle, shared.waits.head)? else {
         return Ok(());
     };
     let deadline = Instant::now() + shared.waits.reply;
@@ -494,13 +492,14 @@ fn handle(
 
 fn accept<L: Link>(incoming: impl Iterator<Item = io::Result<L>>, shared: &Arc<Shared>) {
     let waiting = Gate::new(MAX_WAITING, MAX_WAITING_PER_PEER);
-    let refusing = Gate::new(MAX_REFUSING, MAX_REFUSING);
+    let refusing = Gate::new(MAX_REFUSING, MAX_REFUSING_PER_PEER);
     for stream in incoming {
         let Ok(stream) = stream else { continue };
-        let Some(slot) = waiting.take(stream.peer()) else {
-            if let Some(refusal) = refusing.take(None) {
+        let peer = stream.peer();
+        let Some(slot) = waiting.take(peer) else {
+            if let Some(refusal) = refusing.take(peer) {
                 let wait = shared.waits.refusal;
-                std::thread::spawn(move || {
+                let _ = std::thread::Builder::new().spawn(move || {
                     let _ = refuse(stream, wait);
                     drop(refusal);
                 });
@@ -508,7 +507,7 @@ fn accept<L: Link>(incoming: impl Iterator<Item = io::Result<L>>, shared: &Arc<S
             continue;
         };
         let shared = Arc::clone(shared);
-        std::thread::spawn(move || {
+        let _ = std::thread::Builder::new().spawn(move || {
             if let Err(error) = handle(stream, slot, &shared) {
                 eprintln!("kumoba-view: connection ended: {error}");
             }
@@ -588,7 +587,7 @@ mod tests {
     use super::*;
 
     const QUICK: Waits = Waits {
-        first_byte: Duration::from_millis(200),
+        idle: Duration::from_millis(200),
         head: Duration::from_millis(400),
         reply: Duration::from_millis(300),
         refusal: Duration::from_millis(200),
@@ -731,34 +730,43 @@ mod tests {
     }
 
     #[test]
-    fn a_client_that_sends_its_request_too_slowly_is_let_go() {
+    fn a_client_that_keeps_trickling_its_request_is_let_go_at_the_head_wait() {
+        let (idle, whole) = (Duration::from_secs(1), Duration::from_secs(2));
         let (mut browser, engine) = UnixStream::pair().unwrap();
         browser.write_all(b"GET / HTTP/1.1\r\n").unwrap();
         let started = Instant::now();
         let serving = std::thread::spawn(move || {
             let mut engine = engine;
-            read_request(&mut engine, QUICK.first_byte, QUICK.head)
-                .unwrap()
-                .is_none()
+            read_request(&mut engine, idle, whole).unwrap().is_none()
         });
-        std::thread::sleep(QUICK.first_byte + Duration::from_millis(50));
-        browser.write_all(b"host: example\r\n").unwrap();
+        while !serving.is_finished() && started.elapsed() < whole * 10 {
+            let _ = browser.write(b"x");
+            std::thread::sleep(Duration::from_millis(30));
+        }
         assert!(serving.join().unwrap());
-        assert!(started.elapsed() >= QUICK.head);
+        let waited = started.elapsed();
+        assert!(waited >= whole, "{waited:?}");
+        assert!(waited < whole + Duration::from_secs(5), "{waited:?}");
     }
 
     #[test]
-    fn a_client_that_sends_nothing_is_let_go_before_the_whole_head_wait() {
-        let (_browser, mut engine) = UnixStream::pair().unwrap();
-        let started = Instant::now();
-        assert!(
-            read_request(&mut engine, QUICK.first_byte, QUICK.head)
-                .unwrap()
-                .is_none()
-        );
-        let waited = started.elapsed();
-        assert!(waited >= QUICK.first_byte, "{waited:?}");
-        assert!(waited < QUICK.head, "{waited:?}");
+    fn a_client_that_goes_quiet_is_let_go_after_the_idle_wait_whatever_it_sent() {
+        let (idle, whole) = (Duration::from_millis(200), Duration::from_secs(4));
+        for sent in [
+            &b""[..],
+            b"G",
+            b"GET / HTTP/1.1\r\n",
+            b"GET / HTTP/1.1\r\nhost: x\r\n",
+        ] {
+            let (mut browser, mut engine) = UnixStream::pair().unwrap();
+            browser.write_all(sent).unwrap();
+            let started = Instant::now();
+            assert!(read_request(&mut engine, idle, whole).unwrap().is_none());
+            let waited = started.elapsed();
+            let sent = String::from_utf8_lossy(sent);
+            assert!(waited >= idle, "{sent:?} {waited:?}");
+            assert!(waited < whole / 2, "{sent:?} {waited:?}");
+        }
     }
 
     fn serve_big_reply(engine: UnixStream) -> std::thread::JoinHandle<(io::Result<()>, Duration)> {
@@ -784,7 +792,7 @@ mod tests {
         let (sent, took) = serve_big_reply(engine).join().unwrap();
         assert_eq!(sent.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert!(took >= QUICK.reply, "{took:?}");
-        assert!(took < QUICK.reply * 3, "{took:?}");
+        assert!(took < QUICK.reply + Duration::from_secs(5), "{took:?}");
     }
 
     #[test]
@@ -798,7 +806,7 @@ mod tests {
         }
         let (sent, took) = serving.join().unwrap();
         assert_eq!(sent.unwrap_err().kind(), io::ErrorKind::TimedOut);
-        assert!(took < QUICK.reply * 3, "{took:?}");
+        assert!(took < QUICK.reply + Duration::from_secs(5), "{took:?}");
     }
 
     #[test]
@@ -872,16 +880,164 @@ mod tests {
     fn a_client_over_the_limit_hears_busy_and_gets_in_once_the_idle_ones_are_let_go() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let shared = engine_for(Guard::Private, QUICK);
+        let waits = Waits {
+            idle: Duration::from_secs(1),
+            head: Duration::from_secs(2),
+            ..QUICK
+        };
+        let shared = engine_for(Guard::Private, waits);
         std::thread::spawn(move || accept(listener.incoming(), &shared));
         let idle: Vec<_> = (0..MAX_WAITING_PER_PEER)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();
-        let busy = fetch(port).unwrap();
-        assert_eq!(busy, "HTTP/1.1 503 Service Unavailable");
-        std::thread::sleep(QUICK.first_byte * 2);
-        assert_eq!(fetch(port).unwrap(), "HTTP/1.1 200 OK");
+        let started = Instant::now();
+        assert_eq!(fetch(port).unwrap(), "HTTP/1.1 503 Service Unavailable");
+        assert!(started.elapsed() < waits.idle, "{:?}", started.elapsed());
+        let mut answer = String::new();
+        while started.elapsed() < Duration::from_secs(15) {
+            answer = fetch(port).unwrap();
+            if answer == "HTTP/1.1 200 OK" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(answer, "HTTP/1.1 200 OK");
         drop(idle);
+    }
+
+    struct Peered {
+        stream: UnixStream,
+        peer: IpAddr,
+    }
+
+    impl Read for Peered {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.stream.read(buffer)
+        }
+    }
+
+    impl Write for Peered {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.stream.write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.stream.flush()
+        }
+    }
+
+    impl AsRawFd for Peered {
+        fn as_raw_fd(&self) -> std::os::fd::RawFd {
+            self.stream.as_raw_fd()
+        }
+    }
+
+    impl Link for Peered {
+        fn limit(&self, wait: Option<Duration>) -> io::Result<()> {
+            self.stream.limit(wait)
+        }
+
+        fn streaming(&self) -> io::Result<()> {
+            self.stream.streaming()
+        }
+
+        fn peer(&self) -> Option<IpAddr> {
+            Some(self.peer)
+        }
+    }
+
+    const PATIENT: Waits = Waits {
+        idle: Duration::from_secs(5),
+        head: Duration::from_secs(10),
+        reply: Duration::from_secs(5),
+        refusal: Duration::from_secs(5),
+    };
+
+    struct Addresses {
+        connections: std::sync::mpsc::Sender<Peered>,
+        held: Vec<UnixStream>,
+    }
+
+    impl Addresses {
+        fn start() -> Self {
+            let (connections, incoming) = std::sync::mpsc::channel::<Peered>();
+            let shared = engine_for(Guard::Private, PATIENT);
+            std::thread::spawn(move || accept(incoming.into_iter().map(Ok), &shared));
+            Self {
+                connections,
+                held: Vec::new(),
+            }
+        }
+
+        fn open(&mut self, peer: &str) -> UnixStream {
+            let (browser, engine) = UnixStream::pair().unwrap();
+            let peer = peer.parse().unwrap();
+            self.connections
+                .send(Peered {
+                    stream: engine,
+                    peer,
+                })
+                .unwrap();
+            browser
+        }
+
+        fn hold(&mut self, peer: &str, count: usize) {
+            for _ in 0..count {
+                let browser = self.open(peer);
+                self.held.push(browser);
+            }
+        }
+
+        fn fetch(&mut self, peer: &str) -> String {
+            let mut browser = self.open(peer);
+            browser
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            browser
+                .write_all(b"GET / HTTP/1.1\r\nhost: sandbox\r\n\r\n")
+                .unwrap();
+            let mut reply = Vec::new();
+            let _ = browser.read_to_end(&mut reply);
+            String::from_utf8_lossy(&reply)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        }
+    }
+
+    #[test]
+    fn a_few_addresses_at_their_limit_leave_room_for_everyone_else() {
+        let mut addresses = Addresses::start();
+        for crowd in ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"] {
+            addresses.hold(crowd, MAX_WAITING_PER_PEER);
+        }
+        assert_eq!(addresses.fetch("10.0.0.9"), "HTTP/1.1 200 OK");
+        assert_eq!(
+            addresses.fetch("10.0.0.1"),
+            "HTTP/1.1 503 Service Unavailable"
+        );
+    }
+
+    #[test]
+    fn one_address_cannot_keep_others_from_hearing_busy() {
+        let mut addresses = Addresses::start();
+        for crowd in 0..MAX_WAITING.div_ceil(MAX_WAITING_PER_PEER) {
+            addresses.hold(&format!("10.0.1.{crowd}"), MAX_WAITING_PER_PEER);
+        }
+        addresses.hold("10.0.1.0", MAX_REFUSING);
+        assert_eq!(
+            addresses.fetch("10.0.2.1"),
+            "HTTP/1.1 503 Service Unavailable"
+        );
+    }
+
+    #[test]
+    fn a_browser_can_load_the_page_over_several_connections_at_once() {
+        let gate = Gate::new(MAX_WAITING, MAX_WAITING_PER_PEER);
+        let browser: IpAddr = "10.0.0.1".parse().unwrap();
+        let loading: Vec<_> = (0..6).map(|_| gate.take(Some(browser))).collect();
+        assert!(loading.iter().all(Option::is_some));
     }
 
     #[test]
