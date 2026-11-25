@@ -886,7 +886,6 @@ mod tests {
     #[test]
     fn long_typed_text_arrives_in_full_and_before_the_input_sent_after_it() {
         let mut session = open_with(steady(), None);
-        answering(&session);
         let long = "the quick brown fox jumps over the lazy dog\n".repeat(120);
         assert!(long.chars().count() > 5000);
         session.browser.write_all(&text(&long)).unwrap();
@@ -894,6 +893,7 @@ mod tests {
             .browser
             .write_all(&masked(0x2, &[CLIENT_KEY, 30, 0, 1]))
             .unwrap();
+        answering(&session);
         let mut expected = typed(&long);
         expected.push(Seen::Key(38, true));
         assert_eq!(wait_for(&session, expected.len()), expected);
@@ -902,11 +902,11 @@ mod tests {
     #[test]
     fn pointer_moves_during_long_off_layout_text_wait_for_it_and_keep_the_view_open() {
         let mut session = open_with(steady(), Some(layout()));
-        answering(&session);
         let long = off_layout(5000, 100);
         session.browser.write_all(&text(&long)).unwrap();
         session.browser.write_all(&pointer_to(10, 20)).unwrap();
         session.browser.write_all(&pointer_to(30, 40)).unwrap();
+        answering(&session);
         std::thread::sleep(Duration::from_secs(1));
         assert!(
             session.ended.try_recv().is_err(),
@@ -920,7 +920,6 @@ mod tests {
     #[test]
     fn clicks_and_keys_after_off_layout_text_happen_after_all_of_it() {
         let mut session = open_with(steady(), Some(layout()));
-        answering(&session);
         let mixed: String = off_layout(30, 30)
             .chars()
             .enumerate()
@@ -935,6 +934,7 @@ mod tests {
             .browser
             .write_all(&masked(0x2, &[CLIENT_KEY, 30, 0, 1]))
             .unwrap();
+        answering(&session);
         let mut expected = typed(&mixed);
         expected.extend([
             Seen::Pointer(5, 6),
@@ -948,13 +948,13 @@ mod tests {
     #[test]
     fn a_viewer_with_more_text_waiting_than_allowed_is_let_go() {
         let mut session = open_with(steady(), Some(layout()));
-        answering(&session);
         let part = off_layout(80_000, 1000);
         for _ in 0..4 {
             if session.browser.write_all(&text(&part)).is_err() {
                 break;
             }
         }
+        answering(&session);
         assert_eq!(
             session.ended.recv_timeout(Duration::from_secs(10)),
             Ok(Err(
