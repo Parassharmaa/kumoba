@@ -1,5 +1,5 @@
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
-import { type Duplex, Readable } from "node:stream";
+import { type Duplex, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { KumobaError } from "./errors.js";
@@ -63,6 +63,38 @@ export async function readBody(
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+function downloadBroken(received: number, declared: number | undefined, cause?: unknown) {
+  const of = declared === undefined ? "" : ` of ${String(declared)}`;
+  return new KumobaError(`kumobad download ended after ${String(received)}${of} bytes`, {
+    status: 502,
+    code: "protocol",
+    retryable: true,
+    ...(cause === undefined ? {} : { cause }),
+  });
+}
+
+export function checkedDownload(response: IncomingMessage): Readable {
+  const header = response.headers["x-file-size"];
+  const declared = typeof header === "string" && /^\d+$/.test(header) ? Number(header) : undefined;
+  let received = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      received += chunk.byteLength;
+      done(null, chunk);
+    },
+    flush(done) {
+      done(
+        declared !== undefined && received < declared ? downloadBroken(received, declared) : null
+      );
+    },
+  });
+  response.on("error", (cause) => counter.destroy(downloadBroken(received, declared, cause)));
+  counter.on("close", () => {
+    if (!response.complete) response.destroy();
+  });
+  return response.pipe(counter);
 }
 
 function safeJson(text: string): unknown {

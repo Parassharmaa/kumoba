@@ -8,7 +8,7 @@ mod session;
 mod terminal;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use client::{Connection, Failure};
+use client::{Connection, CopyError, Failure};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use std::io::{IsTerminal, Write};
@@ -382,20 +382,7 @@ async fn invoke(connection: &Connection, spec: &Value, tokens: &[String]) -> Res
     let response = connection.send(method, &path, payload).await?;
     match spec["output"].as_str() {
         Some("events") => stream_events(response).await,
-        Some("bytes") => {
-            let bytes = client::read_all(response).await?;
-            match &parsed.output {
-                Some(file) => std::fs::write(file, &bytes)
-                    .map_err(|error| Failure::Usage(format!("cannot write {file}: {error}")))?,
-                None => {
-                    let mut out = std::io::stdout().lock();
-                    if out.write_all(&bytes).and_then(|()| out.flush()).is_err() {
-                        return Ok(0);
-                    }
-                }
-            }
-            Ok(0)
-        }
+        Some("bytes") => save_bytes(response, parsed.output.as_deref()).await,
         _ => {
             let bytes = client::read_all(response).await?;
             let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -404,6 +391,35 @@ async fn invoke(connection: &Connection, spec: &Value, tokens: &[String]) -> Res
                 open_url(&value)?;
             }
             Ok(0)
+        }
+    }
+}
+
+async fn save_bytes(
+    response: hyper::Response<hyper::body::Incoming>,
+    output: Option<&str>,
+) -> Result<i32, Failure> {
+    let Some(file) = output else {
+        return match client::copy_body(response, &mut std::io::stdout()).await {
+            Ok(()) | Err(CopyError::Write(_)) => Ok(0),
+            Err(CopyError::Read(failure)) => Err(failure),
+        };
+    };
+    let cannot_write =
+        |error: std::io::Error| Failure::Usage(format!("cannot write {file}: {error}"));
+    let mut sink = std::fs::File::create(file).map_err(cannot_write)?;
+    let result = client::copy_body(response, &mut sink).await;
+    drop(sink);
+    match result {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            if std::fs::symlink_metadata(file).is_ok_and(|metadata| metadata.is_file()) {
+                let _ = std::fs::remove_file(file);
+            }
+            Err(match error {
+                CopyError::Read(failure) => failure,
+                CopyError::Write(error) => cannot_write(error),
+            })
         }
     }
 }

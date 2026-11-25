@@ -40,6 +40,8 @@ kumoba run --timeout-ms 30000 --cpu 1 --memory-mib 1024 -- python3 job.py
 
 タイムアウトを過ぎたコマンドは停止され、`kumoba run`は終了ステータス124で終わります。
 
+Ctrl-Cで`kumoba run`を止めると、起動中でもサンドボックスは削除されます。実行中に`kumobad`が止まった場合は、次に起動したときにそのサンドボックスを削除します。
+
 ## コードから使う
 
 ```ts
