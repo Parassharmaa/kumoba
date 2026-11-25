@@ -22,6 +22,10 @@ pub const BAND: usize = 64;
 pub const MAX_WIDTH: usize = 4096;
 pub const MAX_HEIGHT: usize = 4096;
 
+pub fn fits(width: usize, height: usize) -> bool {
+    (1..=MAX_WIDTH).contains(&width) && (1..=MAX_HEIGHT).contains(&height)
+}
+
 pub(crate) const TAG_INDEX: u8 = 0x00;
 pub(crate) const TAG_DIFF: u8 = 0x40;
 pub(crate) const TAG_LUMA: u8 = 0x80;
@@ -131,6 +135,18 @@ pub(crate) fn apply_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fits_takes_every_size_up_to_the_limit_and_nothing_empty() {
+        assert!(fits(1, 1));
+        assert!(fits(MAX_WIDTH, MAX_HEIGHT));
+        assert!(!fits(MAX_WIDTH + 1, 1));
+        assert!(!fits(1, MAX_HEIGHT + 1));
+        assert!(!fits(0, 10));
+        assert!(!fits(10, 0));
+        assert!(Decoder::new(MAX_WIDTH, 1).is_some());
+        assert!(Decoder::new(MAX_WIDTH + 1, 1).is_none());
+    }
 
     #[test]
     fn common_prefix_finds_the_first_difference_at_any_position() {

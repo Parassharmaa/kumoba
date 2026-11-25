@@ -31,6 +31,19 @@ pub fn frame_header(opcode: u8, length: usize) -> ([u8; 10], usize) {
     }
 }
 
+pub fn close_frame(code: u16, reason: &str) -> Vec<u8> {
+    const MAX_REASON: usize = 123;
+    let mut end = reason.len().min(MAX_REASON);
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    let (header, used) = frame_header(0x8, 2 + end);
+    let mut frame = header[..used].to_vec();
+    frame.extend_from_slice(&code.to_be_bytes());
+    frame.extend_from_slice(&reason.as_bytes()[..end]);
+    frame
+}
+
 pub enum Message {
     Binary(Vec<u8>),
     Close,
@@ -188,6 +201,18 @@ mod tests {
         assert_eq!(frame_header(2, 5).1, 2);
         assert_eq!(frame_header(2, 300).1, 4);
         assert_eq!(frame_header(2, 70_000).1, 10);
+    }
+
+    #[test]
+    fn a_close_frame_carries_its_code_and_as_much_of_the_reason_as_fits() {
+        assert_eq!(close_frame(1011, "no"), [0x88, 4, 0x03, 0xf3, b'n', b'o']);
+        let long = "é".repeat(100);
+        let frame = close_frame(1011, &long);
+        assert_eq!(frame[0], 0x88);
+        assert_eq!(usize::from(frame[1]), frame.len() - 2);
+        assert!(frame.len() - 2 <= 125);
+        let reason = std::str::from_utf8(&frame[4..]).unwrap();
+        assert_eq!(reason, "é".repeat(61));
     }
 
     #[test]

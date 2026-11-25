@@ -180,7 +180,7 @@ impl Remote {
     pub fn open(path: &Path) -> Result<Self, Failure> {
         let socket = UnixStream::connect(path).map_err(|error| {
             format!(
-                "the sandbox shares no screen at {}: {error}",
+                "the sandbox shares no screen: {error}, at {}",
                 path.display()
             )
         })?;
@@ -653,6 +653,14 @@ mod tests {
     }
 
     fn connected(name: &str, size: (u16, u16)) -> (Result<Remote, Failure>, Sandbox) {
+        offered(name, size, (WIDTH, HEIGHT))
+    }
+
+    fn offered(
+        name: &str,
+        size: (u16, u16),
+        shared: (u16, u16),
+    ) -> (Result<Remote, Failure>, Sandbox) {
         let path = std::env::temp_dir().join(format!("kv-{}-{name}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
@@ -664,7 +672,7 @@ mod tests {
             .open(path.with_extension("pixels"))
             .unwrap();
         memory
-            .set_len(u64::from(WIDTH) * u64::from(HEIGHT) * 4)
+            .set_len(u64::from(shared.0) * u64::from(shared.1) * 4)
             .unwrap();
         let fd = memory.as_raw_fd();
         let greeting = frame(HELLO, &kumoba_protocol::screen::size(size.0, size.1));
@@ -752,6 +760,50 @@ mod tests {
     fn a_screen_larger_than_its_memory_is_refused() {
         let (remote, _sandbox) = connected("short", (WIDTH * 2, HEIGHT * 2));
         assert!(remote.is_err());
+    }
+
+    fn started(name: &str, size: (u16, u16)) -> (Result<Remote, Failure>, Vec<u8>) {
+        let (remote, _sandbox) = offered(name, size, size);
+        let remote = remote.unwrap();
+        let (mut browser, mut engine) = UnixStream::pair().unwrap();
+        let starting = std::thread::spawn(move || {
+            let started = crate::session::start(&mut engine, move || Ok(remote));
+            drop(engine);
+            started
+        });
+        let mut said = Vec::new();
+        browser.read_to_end(&mut said).unwrap();
+        drop(browser);
+        (starting.join().unwrap(), said)
+    }
+
+    #[test]
+    fn a_screen_wider_or_taller_than_the_live_view_shows_is_refused_before_hello() {
+        for size in [(4097, 1), (1, 4097), (5120, 1440)] {
+            let (started, said) = started("large", size);
+            let error = started.err().unwrap().to_string();
+            let expected = format!(
+                "the desktop is {}x{} pixels; the live view shows at most 4096x4096",
+                size.0, size.1
+            );
+            assert_eq!(error, expected);
+            assert_eq!(said[..4], [0x88, said[1], 0x03, 0xf3]);
+            let mut reason = expected.clone();
+            reason.replace_range(..1, "T");
+            assert_eq!(std::str::from_utf8(&said[4..]).unwrap(), reason);
+        }
+    }
+
+    #[test]
+    fn a_screen_up_to_the_live_view_limit_starts_without_a_word() {
+        for size in [(4096, 1), (1, 4096)] {
+            let (started, said) = started("widest", size);
+            assert_eq!(
+                started.unwrap().size(),
+                (usize::from(size.0), usize::from(size.1))
+            );
+            assert!(said.is_empty());
+        }
     }
 
     #[test]

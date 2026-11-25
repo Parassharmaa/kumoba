@@ -185,7 +185,7 @@ fn wait_writable(stream: &impl Link, left: Duration) -> io::Result<()> {
     Ok(())
 }
 
-fn send(stream: &mut impl Link, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+pub fn send(stream: &mut impl Link, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
     while !bytes.is_empty() {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -639,6 +639,45 @@ mod tests {
         assert_eq!(
             answer(Guard::Private, "POST / HTTP/1.1\r\n\r\n"),
             "HTTP/1.1 405 Method Not Allowed"
+        );
+    }
+
+    fn stream_from(shared: Arc<Shared>) -> (String, Vec<u8>) {
+        let (mut browser, engine) = UnixStream::pair().unwrap();
+        browser
+            .write_all(b"GET /stream HTTP/1.1\r\nupgrade: websocket\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+            .unwrap();
+        let serving = std::thread::spawn(move || {
+            let slot = Gate::new(MAX_WAITING, MAX_WAITING_PER_PEER)
+                .take(None)
+                .unwrap();
+            handle(engine, slot, &shared)
+        });
+        let mut reply = Vec::new();
+        browser.read_to_end(&mut reply).unwrap();
+        drop(browser);
+        assert!(serving.join().unwrap().is_err());
+        let end = reply.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let head = String::from_utf8_lossy(&reply[..end])
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        (head, reply[end..].to_vec())
+    }
+
+    #[test]
+    fn a_stream_that_cannot_start_tells_the_browser_why() {
+        let (head, rest) = stream_from(engine_for(Guard::Private, WAITS));
+        assert_eq!(head, "HTTP/1.1 101 Switching Protocols");
+        assert_eq!(rest.first(), Some(&0x88), "got {rest:?}");
+        let length = usize::from(rest[1]);
+        assert_eq!(rest.len(), 2 + length);
+        assert_eq!(u16::from_be_bytes([rest[2], rest[3]]), 1011);
+        let reason = std::str::from_utf8(&rest[4..]).unwrap();
+        assert_eq!(
+            reason,
+            "The sandbox shares no screen: No such file or directory (os error 2), at /nonexistent/view.sock"
         );
     }
 
