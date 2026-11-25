@@ -7,6 +7,7 @@ pub const WHEEL: u8 = 4;
 pub const PASTE: u8 = 5;
 pub const CLIPBOARD_SET: u8 = 6;
 pub const COPY: u8 = 7;
+pub const PULL: u8 = 8;
 
 pub const HELLO: u8 = 1;
 pub const DAMAGE: u8 = 2;

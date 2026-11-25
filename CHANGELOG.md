@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- Live view: a **Copy from desktop** button at the top right of the viewer page puts the text on the sandbox's clipboard on your clipboard, for text copied with an app's menu, such as right-click, Copy in a browser or Edit, Copy in a terminal. Before, text came back only within two seconds of a copy shortcut pressed in the live view. The browser client has the same as `viewer.copyFromDesktop()`, whose answer arrives through `onClipboard`. Text still leaves the sandbox only when you ask for it. An engine older than this release ignores the request.
+
 ### Changed
 
 - Access log: a connection that was allowed but could not be set up, because its DNS lookup failed or got no answer in time, or the connection or upstream proxy failed, is now logged with `decision` `failed` instead of `allowed`, and gets its own 10000 per hour cap. Update the TypeScript SDK with the daemon: SDKs older than this release refuse an access log page that contains `failed`. From this release the SDK passes through decisions it does not know as plain strings (`AccessDecision`), so a later new value does not break it. In the Rust crate, `AccessRecord.allowed` is replaced by `decision: AccessDecision` (`Allowed`, `Denied`, `Failed`).

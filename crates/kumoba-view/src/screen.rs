@@ -30,6 +30,7 @@ pub trait Screen {
     fn chord(&mut self, letter: u8, shift: bool) -> Result<(), Failure>;
     fn offer(&mut self, text: &[u8]) -> Result<(), Failure>;
     fn expect_copy(&mut self);
+    fn pull(&mut self) -> Result<(), Failure>;
     fn copied(&mut self) -> Option<Vec<u8>>;
     fn chords(&self) -> bool {
         false

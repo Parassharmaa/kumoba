@@ -97,11 +97,12 @@ describe("encodeMessage", () => {
     expect(encoded({ type: "pause", paused: true })).toEqual([6, 1]);
   });
 
-  it("encodes text, clipboard, copy and chords", () => {
+  it("encodes text, clipboard, copy, chords and pull", () => {
     expect(encoded({ type: "text", text: "é" })).toEqual([8, 0xc3, 0xa9]);
     expect(encoded({ type: "clipboard", text: "a\nb" })).toEqual([9, 0x61, 0x0a, 0x62]);
     expect(encoded({ type: "copy" })).toEqual([10]);
     expect(encoded({ type: "chord", letter: "v", shift: true })).toEqual([11, 0x76, 1]);
+    expect(encoded({ type: "pull" })).toEqual([12]);
   });
 
   it("cuts long text on a character boundary", () => {

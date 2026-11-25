@@ -22,6 +22,7 @@ const CLIENT_TEXT: u8 = 8;
 const CLIENT_CLIPBOARD: u8 = 9;
 const CLIENT_COPY: u8 = 10;
 const CLIENT_CHORD: u8 = 11;
+const CLIENT_PULL: u8 = 12;
 
 const STALL: Duration = Duration::from_secs(5);
 const POINTER_EVERY: Duration = Duration::from_millis(33);
@@ -58,6 +59,7 @@ enum Stroke {
     Chord(u8, bool),
     Offer(Vec<u8>),
     ExpectCopy,
+    Pull,
 }
 
 fn queue(strokes: &mut VecDeque<Stroke>, stroke: Stroke) -> Result<(), Failure> {
@@ -271,6 +273,7 @@ pub fn run<S: Screen>(
                 Some(&CLIENT_CHORD) if data.len() >= 3 && b"cvx".contains(&data[1]) => {
                     queue(&mut strokes, Stroke::Chord(data[1], data[2] != 0))?;
                 }
+                Some(&CLIENT_PULL) => queue(&mut strokes, Stroke::Pull)?,
                 _ => {}
             }
         }
@@ -321,6 +324,7 @@ pub fn run<S: Screen>(
                 Some(&Stroke::Chord(letter, shift)) => screen.chord(letter, shift)?,
                 Some(Stroke::Offer(text)) => screen.offer(text)?,
                 Some(Stroke::ExpectCopy) => screen.expect_copy(),
+                Some(Stroke::Pull) => screen.pull()?,
             }
             strokes.pop_front();
         }
@@ -450,10 +454,12 @@ mod tests {
     use std::sync::mpsc;
 
     const SIDE: usize = 64;
+    const DESKTOP_CLIPBOARD: &[u8] = "copied from a menu".as_bytes();
 
     struct Still {
         wake: UnixStream,
         pixels: Vec<u32>,
+        pulled: Option<Vec<u8>>,
     }
 
     impl Screen for Still {
@@ -514,8 +520,12 @@ mod tests {
             Ok(())
         }
         fn expect_copy(&mut self) {}
+        fn pull(&mut self) -> Result<(), Failure> {
+            self.pulled = Some(DESKTOP_CLIPBOARD.to_vec());
+            Ok(())
+        }
         fn copied(&mut self) -> Option<Vec<u8>> {
-            None
+            self.pulled.take()
         }
     }
 
@@ -547,6 +557,7 @@ mod tests {
                 Ok(Still {
                     wake: screen_end,
                     pixels: vec![0x0033_6699; SIDE * SIDE],
+                    pulled: None,
                 })
             });
             let _ = done.send(result.map_err(|error| error.to_string()));
@@ -679,6 +690,43 @@ mod tests {
         let (watching, hidden) = pings.join().unwrap();
         assert!(watching >= 10, "only {watching} pings while watching");
         assert!(hidden >= 10, "only {hidden} pings while paused");
+    }
+
+    fn clipboard_within(browser: &mut UnixStream, wait: Duration) -> Option<Vec<u8>> {
+        let until = Instant::now() + wait;
+        browser
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        while Instant::now() < until {
+            let Ok((first, body)) = try_frame(browser) else {
+                continue;
+            };
+            let reply = match (first, body.first()) {
+                (0x89, _) => masked(0xa, &body),
+                (0x82, Some(&SERVER_FRAME)) => {
+                    ack(u32::from_le_bytes([body[1], body[2], body[3], body[4]]))
+                }
+                (0x82, Some(&SERVER_CLIPBOARD)) => return Some(body[1..].to_vec()),
+                _ => continue,
+            };
+            browser.write_all(&reply).unwrap();
+        }
+        None
+    }
+
+    #[test]
+    fn a_pull_brings_back_the_desktop_clipboard_without_a_copy_shortcut() {
+        let mut session = start(settings());
+        session
+            .browser
+            .write_all(&masked(0x2, &[CLIENT_PULL]))
+            .unwrap();
+        let pulled = clipboard_within(&mut session.browser, Duration::from_secs(1));
+        assert!(
+            session.ended.try_recv().is_err(),
+            "the session ended after a pull"
+        );
+        assert_eq!(pulled, Some(DESKTOP_CLIPBOARD.to_vec()));
     }
 
     #[test]

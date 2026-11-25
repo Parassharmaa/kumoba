@@ -363,6 +363,10 @@ impl Screen for X11 {
         self.clipboard.expect_copy();
     }
 
+    fn pull(&mut self) -> Result<(), Failure> {
+        self.clipboard.pull(&self.conn)
+    }
+
     fn copied(&mut self) -> Option<Vec<u8>> {
         self.clipboard.copied()
     }
