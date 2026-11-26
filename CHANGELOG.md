@@ -4,6 +4,10 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies: vitest 5.1.1 for the TypeScript SDK tests.
+
 ## [0.7.0] - 2026-11-25
 
 Upgrade notes: `GET /v1/sandboxes` now lists the newest sandboxes first and refuses a `label` filter that is not `key:value`; the access log has a new `failed` decision, which TypeScript SDKs before this release reject; and the TypeScript SDK needs Node 20.3 or later.
