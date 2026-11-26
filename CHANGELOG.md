@@ -4,6 +4,8 @@ All notable changes to kumoba are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-26
+
 ### Changed
 
 - Dependencies: vitest 5.1.1 for the TypeScript SDK tests.
@@ -212,7 +214,8 @@ The first release with these changes; the v0.6.4 tag was never published.
 - `scripts/install.sh`: one-line install of the daemon, worker and a prebuilt `default` or `test` image, verified against the release checksums.
 - Releases ship the four crates, the npm package, host tarballs for Linux x86_64, Linux arm64 and macOS arm64, and prebuilt guest images for both architectures. Every release is installed and booted before it is published.
 
-[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Parassharmaa/kumoba/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/Parassharmaa/kumoba/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/Parassharmaa/kumoba/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/Parassharmaa/kumoba/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/Parassharmaa/kumoba/compare/v0.6.3...v0.6.5
